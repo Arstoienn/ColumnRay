@@ -1,5 +1,7 @@
 package engine;
 
+import engine.World.Shape;
+
 /** 2D geometry for ray intersection and collision. A ray is p + r*t; r need not be a unit vector. */
 final class Geometry {
     private Geometry() {}
@@ -95,5 +97,14 @@ final class Geometry {
             if (distPointSeg(x, y, xs[i], ys[i], xs[j], ys[j]) < rad) return true;
         }
         return false;
+    }
+
+    /** Do the top-down footprints of the player disc and a shape overlap? */
+    static boolean overlaps(double x, double y, double rad, Shape s) {
+        return switch (s.kind) {
+            case SEG -> distPointSeg(x, y, s.ax, s.ay, s.bx, s.by) < rad;
+            case CIRCLE -> Math.hypot(x - s.cx, y - s.cy) < s.r + rad;
+            case POLY -> discTouchesPoly(x, y, rad, s.xs, s.ys);
+        };
     }
 }
