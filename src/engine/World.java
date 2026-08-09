@@ -12,7 +12,8 @@ import java.util.function.IntConsumer;
 
 /**
  * Map data: a list of regions (floor / ceiling) plus a list of shapes.
- * The grid is pure acceleration: each cell stores the shapes and regions touching it, built on load.
+ * The grid is a pure acceleration structure - each cell stores the shapes and regions whose
+ * bounding boxes touch it, and it is rebuilt automatically on load.
  */
 final class World {
     enum Kind { SEG, CIRCLE, POLY }
@@ -38,6 +39,7 @@ final class World {
         double z0, h;                 // bottom and top height
         int mat, topMat, color;
         double maxDist;               // not drawn beyond this distance
+        String label;                 // shown in the ray view, e.g. "box/wood"
         double minX, minY, maxX, maxY;
     }
 
@@ -212,6 +214,13 @@ final class World {
         s.topMat = Materials.id(str(m, "topMat", mat));
         s.color = color(m, "color", "#c8c8c8");
         s.maxDist = num(m, "maxDist", Double.POSITIVE_INFINITY);
+        s.label = switch (type) {
+            case "wall" -> "wall";
+            case "circle" -> "cylinder";
+            case "box" -> "box";
+            case "ngon" -> "ngon";
+            default -> "poly";
+        } + "/" + mat;
 
         switch (type) {
             case "wall" -> {
