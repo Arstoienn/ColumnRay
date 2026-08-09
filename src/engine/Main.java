@@ -250,7 +250,7 @@ public final class Main {
         cam.dirX = Math.cos(angle);
         cam.dirY = Math.sin(angle);
         cam.eye = viewFeet + eyeH;
-        cam.pitch = renderer.F * Math.tan(pitch);           // y-shearing
+        cam.pitch = renderer.focal() * Math.tan(pitch);     // y-shearing
         return cam;
     }
 
@@ -346,7 +346,7 @@ public final class Main {
             }
         }
 
-        double dx = Math.cos(angle), dy = Math.sin(angle), pl = Renderer.PL, len = 4;
+        double dx = Math.cos(angle), dy = Math.sin(angle), pl = renderer.planeHalfWidth(), len = 4;
         g.setColor(new Color(255, 230, 120, 200));
         g.draw(new Line2D.Double(x, y, x + (dx + dy * pl) * len, y + (dy - dx * pl) * len));
         g.draw(new Line2D.Double(x, y, x + (dx - dy * pl) * len, y + (dy + dx * pl) * len));

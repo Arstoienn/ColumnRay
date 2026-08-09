@@ -9,6 +9,7 @@ import engine.World.Shape;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
 import java.util.function.IntUnaryOperator;
 import java.util.stream.IntStream;
 
@@ -18,7 +19,7 @@ import java.util.stream.IntStream;
  * column that are still empty (the interval list), and the column stops once every row is filled.
  */
 final class Renderer {
-    static final double PL = 0.66;          // camera plane half-width = tan(FOV/2), about 66 degrees
+    static final double DEFAULT_FOV = Math.toDegrees(2 * Math.atan(0.66));   // PL = 0.66, about 67 degrees
     static final double NEAR = 1e-3;
     static final double MAX_DIST = 80;
     private static final double TIE = 1e-6;   // when a wall sits exactly on a region boundary, draw the wall first
@@ -38,22 +39,68 @@ final class Renderer {
         double dirX, dirY;    // unit direction
         double eye;           // eye height (world z)
         double pitch;         // horizon offset in pixels, positive when looking up
+        boolean fisheye;      // deliberately wrong comparison mode: project by straight-line distance
+    }
+
+    /** What kind of thing the ray ran into. Only SHAPE and PORTAL events get a number in the ray view. */
+    enum EventKind {
+        SHAPE("shape"), PORTAL("portal"), FLOOR("floor"), CEILING("ceiling");
+
+        final String text;
+
+        EventKind(String text) { this.text = text; }
+
+        boolean numbered() { return this == SHAPE || this == PORTAL; }
+    }
+
+    /** For the ray view: one thing that happened along the traced column. (x, y) is where it happened. */
+    record TraceEvent(EventKind kind, double t, String label, int rows, double x, double y) {}
+
+    static final class Trace {
+        int column;
+        double rx, ry, endT;
+        String endReason = "";
+        final List<int[]> cells = new ArrayList<>();
+        final List<TraceEvent> events = new ArrayList<>();
     }
 
     final int W, H;
-    final double F;                          // focal length in pixels
+    private double pl;                       // half-width of the camera plane = tan(FOV/2)
+    private double F;                        // focal length in pixels
     private final int[] pixels;
     private final World world;
     private final ThreadLocal<Column> columns;
+
+    // Ray-view statistics: where each column's ray stopped, how many cells it walked, how many shapes it tested
+    final double[] rayEnd;
+    final int[] cellsVisited, shapesTested;
+    volatile int traceColumn = -1;           // the column to record in detail
+    volatile Trace trace;                    // the most recent recording
 
     Renderer(World world, int w, int h, int[] pixels) {
         this.world = world;
         this.W = w;
         this.H = h;
         this.pixels = pixels;
-        this.F = (W / 2.0) / PL;
+        this.rayEnd = new double[w];
+        this.cellsVisited = new int[w];
+        this.shapesTested = new int[w];
         this.columns = ThreadLocal.withInitial(() -> new Column());
+        setFov(DEFAULT_FOV);
     }
+
+    /** Horizontal field of view in degrees. The vertical axis uses the same focal length,
+     *  so pixels stay square and nothing is stretched. */
+    void setFov(double deg) {
+        pl = Math.tan(Math.toRadians(deg) / 2);
+        F = (W / 2.0) / pl;
+    }
+
+    double fov() { return Math.toDegrees(2 * Math.atan(pl)); }
+
+    double planeHalfWidth() { return pl; }
+
+    double focal() { return F; }
 
     void render(Camera cam) {
         int chunks = Math.min(W, Runtime.getRuntime().availableProcessors() * 4);
@@ -77,10 +124,17 @@ final class Renderer {
 
         private int x;
         private double px, py, rx, ry, eye, hz;
+        private double dk;                                  // depth multiplier: 1 normally, |r| in fisheye mode
         private Region cur;                                 // region the ray is currently inside
         private double tPrev;                               // how far the floor / ceiling has been drawn
         private double crossT, crossU;                      // the next region boundary
         private int crossEdge, crossings;
+
+        // Statistics and recording
+        private Trace tr;
+        private double endT, lastT;
+        private String endReason;
+        private int cells, tests;
 
         void render(int x, Camera cam) {
             this.x = x;
@@ -89,14 +143,20 @@ final class Renderer {
             eye = cam.eye;
             hz = H / 2.0 + cam.pitch;                       // horizon row (looking up/down only moves this)
             double camX = 2 * (x + 0.5) / W - 1;            // -1 left ... +1 right
-            rx = cam.dirX - cam.dirY * PL * camX;           // plane = [-dir.y·PL, dir.x·PL]
-            ry = cam.dirY + cam.dirX * PL * camX;           // deliberately not normalised: t is perpendicular
+            rx = cam.dirX - cam.dirY * pl * camX;           // plane = [-dir.y*PL, dir.x*PL]
+            ry = cam.dirY + cam.dirX * pl * camX;           // deliberately not normalised: t is the perpendicular distance
+            dk = cam.fisheye ? Math.hypot(rx, ry) : 1;      // fisheye: turn perpendicular distance into straight-line distance
             open = 1;
             o0[0] = 0;
             o1[0] = H;
             if (++ray == Integer.MAX_VALUE) { Arrays.fill(stamp, 0); ray = 1; }
             pending.clear();
             crossings = 0;
+            cells = tests = 0;
+            endT = -1;
+            lastT = 0;
+            tr = x == traceColumn ? new Trace() : null;
+            if (tr != null) { tr.column = x; tr.rx = rx; tr.ry = ry; }
 
             Region start = world.regionAt(px, py);
             cur = start == null ? OUTSIDE : start;
@@ -105,7 +165,22 @@ final class Renderer {
             walkGrid();
             flush(Double.POSITIVE_INFINITY);
             surfaces(tPrev, MAX_DIST);
+            if (endT < 0) {
+                endT = Math.min(lastT, MAX_DIST);
+                endReason = open == 0 ? "column full"
+                        : lastT >= MAX_DIST ? "reached max distance"
+                        : "left the map, remaining rows are sky";
+            }
             fillRest();
+
+            rayEnd[x] = endT;
+            cellsVisited[x] = cells;
+            shapesTested[x] = tests;
+            if (tr != null) {
+                tr.endT = endT;
+                tr.endReason = endReason;
+                trace = tr;
+            }
         }
 
         // ---- DDA: only test the cells the ray actually passes through ----
@@ -121,9 +196,12 @@ final class Renderer {
             double ty = ry == 0 ? Double.POSITIVE_INFINITY : (ry > 0 ? cy + 1 - fy : fy - cy) * dy;
 
             while (open > 0 && cx >= 0 && cy >= 0 && cx < g.nx && cy < g.ny) {
+                cells++;
+                if (tr != null) tr.cells.add(new int[] {cx, cy});
                 for (int i : g.shapes[cy * g.nx + cx]) {
                     if (stamp[i] == ray) continue;
                     stamp[i] = ray;
+                    tests++;
                     Hit h = intersect(world.shapes[i]);
                     if (h != null) pending.add(h);
                 }
@@ -131,6 +209,7 @@ final class Renderer {
                 // A shape first seen in a later cell must enter beyond that cell, so the ordering
                 // of everything up to tout is already final.
                 flush(tout);
+                lastT = tout;
                 if (tout > MAX_DIST) return;
                 if (tx < ty) { tx += dx; cx += sx; } else { ty += dy; cy += sy; }
             }
@@ -155,6 +234,10 @@ final class Renderer {
                     surfaces(tPrev, crossT);
                     tPrev = crossT;
                     cross();
+                }
+                if (open == 0 && endT < 0) {
+                    endT = Math.max(tn, 0);
+                    endReason = "column full";
                 }
             }
             pending.subList(0, k).clear();
@@ -193,12 +276,15 @@ final class Renderer {
         private void exitOf(Region r, double tMin) {
             if (r == OUTSIDE) {                           // rays currently never come back in from outside
                 crossT = Double.POSITIVE_INFINITY;
+                crossEdge = -1;
+                crossU = 0;
                 return;
             }
             PolyHit ph = Geometry.rayPoly(px, py, rx, ry, r.xs, r.ys);
             if (ph == null || ph.t2() <= tMin) {          // grazing the corner: nudge forward and look again
                 crossT = tMin + 1e-3;
                 crossEdge = -1;
+                crossU = 0;
             } else {
                 crossT = ph.t2();
                 crossEdge = ph.exitEdge();
@@ -213,16 +299,26 @@ final class Renderer {
         private void drawHit(Hit h) {
             Shape s = h.s();
             double z0 = s.z0, top = Math.min(s.h, cur.ceil);
-            if (top <= z0) return;
+            if (top <= z0) {
+                if (tr != null) note(EventKind.SHAPE, h.t1(), s.label + " (entirely above the ceiling)", 0);
+                return;
+            }
             double t1 = h.t1(), yTop = rowZ(top, t1), yBot = rowZ(z0, t1);
             double light = cur.light;
+            int side = 0, cap = 0, under = 0;
             if (!h.inside()) {
                 double k = lambert(h.nx(), h.ny()) * fog(t1) * light;
                 double u = h.u();
-                paint(yTop, yBot, y -> shade(s.color, Materials.side(s.mat, u, eye - (y + 0.5 - hz) * t1 / F) * k));
+                side = paint(yTop, yBot, y -> shade(s.color, Materials.side(s.mat, u, eye - (y + 0.5 - hz) * t1 * dk / F) * k));
             }
-            if (eye > top) paint(rowZ(top, h.t2()), h.inside() ? H : yTop, flat(top, s.topMat, s.color, light));
-            if (eye < z0) paint(h.inside() ? 0 : yBot, rowZ(z0, h.t2()), flat(z0, s.mat, s.color, 0.45 * light));
+            if (eye > top) cap = paint(rowZ(top, h.t2()), h.inside() ? H : yTop, flat(top, s.topMat, s.color, light));
+            if (eye < z0) under = paint(h.inside() ? 0 : yBot, rowZ(z0, h.t2()), flat(z0, s.mat, s.color, 0.45 * light));
+            if (tr != null) {
+                String where = h.inside() ? " (eye inside its footprint)" : "";
+                note(EventKind.SHAPE, t1,
+                        String.format("%s%s side %d top %d bottom %d", s.label, where, side, cap, under),
+                        side + cap + under);
+            }
         }
 
         /** Cross a region boundary: a lower ceiling on the far side becomes a lintel,
@@ -232,16 +328,21 @@ final class Renderer {
             Region from = cur;
             Region found = world.regionAt(px + rx * (t + 1e-4), py + ry * (t + 1e-4));
             Region to = found == null || ++crossings > 256 ? OUTSIDE : found;
+            int lintel = 0, riser = 0;
             if (crossEdge >= 0 && to != from && to != OUTSIDE) {
                 int n = from.xs.length, i = crossEdge, j = (i + 1) % n;
                 double ex = from.xs[j] - from.xs[i], ey = from.ys[j] - from.ys[i], len = Math.hypot(ex, ey);
                 double nx = -ey / len, ny = ex / len;
                 if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }
                 double k = lambert(nx, ny) * fog(t) * to.light, u = crossU * len;
-                IntUnaryOperator wall = y -> shade(to.wallColor, Materials.side(to.wallMat, u, eye - (y + 0.5 - hz) * t / F) * k);
+                IntUnaryOperator wall = y -> shade(to.wallColor, Materials.side(to.wallMat, u, eye - (y + 0.5 - hz) * t * dk / F) * k);
                 double upper = from.sky ? to.top : from.ceil;
-                if (to.ceil < upper) paint(rowZ(upper, t), rowZ(to.ceil, t), wall);             // lintel
-                if (to.floor > from.floor) paint(rowZ(to.floor, t), rowZ(from.floor, t), wall); // step riser
+                if (to.ceil < upper) lintel = paint(rowZ(upper, t), rowZ(to.ceil, t), wall);
+                if (to.floor > from.floor) riser = paint(rowZ(to.floor, t), rowZ(from.floor, t), wall);
+            }
+            if (tr != null && to != from) {
+                String detail = (lintel > 0 ? " lintel " + lintel : "") + (riser > 0 ? " riser " + riser : "");
+                note(EventKind.PORTAL, t, from.name + " -> " + to.name + detail, lintel + riser);
             }
             cur = to;
             exitOf(to, t);
@@ -251,15 +352,21 @@ final class Renderer {
         private void surfaces(double ta, double tb) {
             if (tb <= ta) return;
             Region r = cur;
-            if (eye > r.floor) paint(rowZ(r.floor, tb), rowZ(r.floor, ta), flat(r.floor, r.floorMat, r.floorColor, r.light));
-            if (!r.sky && eye < r.ceil) paint(rowZ(r.ceil, ta), rowZ(r.ceil, tb), flat(r.ceil, r.ceilMat, r.ceilColor, r.light));
+            int f = 0, c = 0;
+            if (eye > r.floor) f = paint(rowZ(r.floor, tb), rowZ(r.floor, ta), flat(r.floor, r.floorMat, r.floorColor, r.light));
+            if (!r.sky && eye < r.ceil) c = paint(rowZ(r.ceil, ta), rowZ(r.ceil, tb), flat(r.ceil, r.ceilMat, r.ceilColor, r.light));
+            if (tr != null) {
+                String range = String.format("%s  t %.2f-%.2f", r.name, ta, Math.min(tb, MAX_DIST));
+                if (f > 0) note(EventKind.FLOOR, ta, range, f);
+                if (c > 0) note(EventKind.CEILING, ta, range, c);
+            }
         }
 
         /** Horizontal surfaces: invert the projection to get the distance for a row,
          *  then look up where that lands on the map. */
         private IntUnaryOperator flat(double z, int mat, int color, double k0) {
             return y -> {
-                double t = (eye - z) * F / (y + 0.5 - hz);
+                double t = (eye - z) * F / ((y + 0.5 - hz) * dk);
                 if (!(t > 0) || t > MAX_DIST) return shade(color, 0.3 * k0);
                 return shade(color, Materials.flat(mat, px + rx * t, py + ry * t) * k0 * fog(t));
             };
@@ -277,22 +384,29 @@ final class Renderer {
             return rgb(205 - 125 * s, 222 - 87 * s, 238 - 28 * s);
         }
 
+        private void note(EventKind kind, double t, String label, int rows) {
+            tr.events.add(new TraceEvent(kind, t, label, rows, px + rx * t, py + ry * t));
+        }
+
         // ---- Interval list: only ever fill rows that are still empty ----
 
-        private void paint(double a, double b, IntUnaryOperator colorOf) {
+        /** Returns how many rows were actually filled. */
+        private int paint(double a, double b, IntUnaryOperator colorOf) {
             int ia = clampRow(a), ib = clampRow(b);
-            if (ib <= ia) return;
-            int m = 0;
+            if (ib <= ia) return 0;
+            int m = 0, filled = 0;
             for (int k = 0; k < open; k++) {
                 int s0 = Math.max(o0[k], ia), s1 = Math.min(o1[k], ib);
                 if (s1 <= s0) { n0[m] = o0[k]; n1[m++] = o1[k]; continue; }
                 for (int y = s0; y < s1; y++) pixels[y * W + x] = colorOf.applyAsInt(y);
+                filled += s1 - s0;
                 if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above
                 if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // leftover below
             }
             int[] t0 = o0, t1 = o1;
             o0 = n0; o1 = n1; n0 = t0; n1 = t1;
             open = m;
+            return filled;
         }
 
         private int clampRow(double v) {
@@ -301,7 +415,7 @@ final class Renderer {
 
         /** The projection. This one line is the whole of it. */
         private double rowZ(double z, double t) {
-            return hz - (z - eye) * F / t;
+            return hz - (z - eye) * F / (t * dk);
         }
 
         private double lambert(double nx, double ny) {
