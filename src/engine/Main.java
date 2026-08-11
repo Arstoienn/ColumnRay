@@ -8,6 +8,8 @@ import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Graphics2D;
+import java.awt.GraphicsEnvironment;
+import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.Toolkit;
 import java.awt.event.KeyAdapter;
@@ -33,8 +35,8 @@ import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
 
 /**
- * Window, input, player physics and minimap.
- * Usage: java -cp out engine.Main [map.json] [--shot out.png [x y angle pitch]]
+ * Window, input, player physics and minimap. A second "ray view" window lives in RayView.
+ * Usage: java -cp out engine.Main [map.json] [--shot out.png [x y angle pitch [column]]] [--bench]
  */
 public final class Main {
     static final int W = 640, H = 360;
@@ -47,6 +49,7 @@ public final class Main {
     private final World world;
     private final BufferedImage image = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
     private final Renderer renderer;
+    private final RayView rayView;
     private final Renderer.Camera cam = new Renderer.Camera();
     private final Shape[] mapOrder;
 
@@ -57,13 +60,17 @@ public final class Main {
     // Input (written on the EDT, read by the main loop)
     private final Set<Integer> keys = ConcurrentHashMap.newKeySet();
     private double mouseDX, mouseDY;
-    private volatile boolean showMap = true;
+    private volatile boolean showMap = true, fisheye = false;
+    private volatile double fovDeg = Renderer.DEFAULT_FOV;
+    private volatile int hoverColumn = -1;                       // which column of the main view the mouse is over
+    private volatile int viewX, viewY, viewW = W, viewH = H;     // where the main view sits inside the window
     private double fps;
 
     Main(World world) {
         this.world = world;
         int[] pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
         renderer = new Renderer(world, W, H, pixels);
+        rayView = new RayView(world, renderer);
         mapOrder = world.shapes.clone();
         Arrays.sort(mapOrder, Comparator.comparingDouble(s -> s.h));
         x = world.spawnX;
@@ -87,11 +94,16 @@ public final class Main {
             if (args[i].equals("--bench")) {
                 bench = true;
             } else if (args[i].equals("--shot")) {
+                if (i + 1 >= args.length) { usage("--shot needs an output file"); return; }
                 shot = args[++i];
-                if (i + 4 < args.length) {
-                    at = new double[4];
-                    for (int k = 0; k < 4; k++) at[k] = Double.parseDouble(args[++i]);
-                }
+                // optionally followed by: x y angle pitch [column]
+                double[] nums = new double[5];
+                int n = 0;
+                while (n < 5 && i + 1 < args.length && args[i + 1].matches("-?[0-9.]+")) nums[n++] = Double.parseDouble(args[++i]);
+                if (n >= 4) at = Arrays.copyOf(nums, n);
+            } else if (args[i].startsWith("--")) {
+                usage("unknown option " + args[i]);
+                return;
             } else {
                 mapPath = args[i];
             }
@@ -119,18 +131,24 @@ public final class Main {
     private void run() throws Exception {
         Canvas canvas = new Canvas();
         SwingUtilities.invokeAndWait(() -> {
-            JFrame frame = new JFrame("ColumnRay — " + world.name);
-            canvas.setPreferredSize(new Dimension(W * 2, H * 2));
+            // Main view on the left, ray view on the right, both fitted onto the screen
+            Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+            int rayW = (int) Math.min(640, screen.width * 0.36);
+            int mainW = Math.max(W, Math.min(W * 2, screen.width - rayW - 30));
+            JFrame frame = new JFrame("ColumnRay - " + world.name);
+            canvas.setPreferredSize(new Dimension(mainW, mainW * H / W));
             canvas.setIgnoreRepaint(true);
             canvas.setFocusTraversalKeysEnabled(false);
             frame.add(canvas);
             frame.pack();
-            frame.setLocationRelativeTo(null);
+            frame.setLocation(screen.x + 8, screen.y + 8);
             frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
             frame.setVisible(true);
             canvas.createBufferStrategy(2);
-            canvas.requestFocus();
             installInput(canvas);
+            rayView.open(frame, rayW);
+            frame.toFront();
+            canvas.requestFocus();
         });
 
         long last = System.nanoTime();
@@ -141,6 +159,7 @@ public final class Main {
             update(dt);
             renderer.render(camera());
             present(canvas);
+            rayView.present(new RayView.View(x, y, angle, fisheye));
             fps = fps == 0 ? 1 / Math.max(dt, 1e-6) : fps * 0.95 + 0.05 / Math.max(dt, 1e-6);
             if (System.nanoTime() - now < 4_000_000) Thread.sleep(2);
         }
@@ -149,9 +168,17 @@ public final class Main {
     private void installInput(Canvas canvas) {
         canvas.addKeyListener(new KeyAdapter() {
             @Override public void keyPressed(KeyEvent e) {
-                if (e.getKeyCode() == KeyEvent.VK_ESCAPE) System.exit(0);
-                if (e.getKeyCode() == KeyEvent.VK_M && keys.add(KeyEvent.VK_M)) showMap = !showMap;
-                keys.add(e.getKeyCode());
+                int code = e.getKeyCode();
+                if (code == KeyEvent.VK_ESCAPE) System.exit(0);
+                if (!keys.add(code)) return;                     // ignore auto-repeat while a key is held
+                switch (code) {
+                    case KeyEvent.VK_M -> showMap = !showMap;
+                    case KeyEvent.VK_F -> fisheye = !fisheye;
+                    case KeyEvent.VK_R -> rayView.toggle();
+                    case KeyEvent.VK_OPEN_BRACKET, KeyEvent.VK_MINUS -> fovDeg = Math.max(30, fovDeg - 5);
+                    case KeyEvent.VK_CLOSE_BRACKET, KeyEvent.VK_EQUALS -> fovDeg = Math.min(120, fovDeg + 5);
+                    default -> { }
+                }
             }
             @Override public void keyReleased(KeyEvent e) { keys.remove(e.getKeyCode()); }
         });
@@ -163,6 +190,8 @@ public final class Main {
                 lx = e.getX();
                 ly = e.getY();
             }
+            @Override public void mouseMoved(MouseEvent e) { hoverColumn = columnAt(e.getX()); }
+            @Override public void mouseExited(MouseEvent e) { hoverColumn = -1; }
         };
         canvas.addMouseListener(drag);
         canvas.addMouseMotionListener(drag);
@@ -170,9 +199,20 @@ public final class Main {
 
     private boolean down(int key) { return keys.contains(key); }
 
+    /** Window coordinate -> column of the main view; -1 when the point is outside it. */
+    private int columnAt(int mx) {
+        int c = (int) Math.floor((mx - viewX) * (double) W / viewW);
+        return c >= 0 && c < W ? c : -1;
+    }
+
     // ---- Player physics ----
 
     private void update(double dt) {
+        double fov = fovDeg;
+        if (Math.abs(renderer.fov() - fov) > 1e-6) renderer.setFov(fov);
+        int hover = hoverColumn;
+        renderer.traceColumn = hover >= 0 ? hover : W / 2;       // the column the ray view records in detail
+
         double mdx, mdy;
         synchronized (this) { mdx = mouseDX; mdy = mouseDY; mouseDX = mouseDY = 0; }
         double turn = (down(KeyEvent.VK_RIGHT) || down(KeyEvent.VK_E) ? 1 : 0) - (down(KeyEvent.VK_LEFT) || down(KeyEvent.VK_Q) ? 1 : 0);
@@ -251,6 +291,7 @@ public final class Main {
         cam.dirY = Math.sin(angle);
         cam.eye = viewFeet + eyeH;
         cam.pitch = renderer.focal() * Math.tan(pitch);     // y-shearing
+        cam.fisheye = fisheye;
         return cam;
     }
 
@@ -264,9 +305,13 @@ public final class Main {
                 int cw = canvas.getWidth(), ch = canvas.getHeight();
                 double sc = Math.min(cw / (double) W, ch / (double) H);
                 int dw = (int) (W * sc), dh = (int) (H * sc);
+                viewX = (cw - dw) / 2;
+                viewY = (ch - dh) / 2;
+                viewW = dw;
+                viewH = dh;
                 g.setColor(Color.BLACK);
                 g.fillRect(0, 0, cw, ch);
-                drawFrame(g, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+                drawFrame(g, viewX, viewY, dw, dh, rayView.visible());
                 g.dispose();
             } while (bs.contentsRestored());
             bs.show();
@@ -282,20 +327,36 @@ public final class Main {
             pitch = Math.toRadians(at[3]);
             placeOnGround();
         }
+        renderer.traceColumn = at != null && at.length > 4 ? (int) at[4] : W / 2;
         renderer.render(camera());
         BufferedImage img = new BufferedImage(W * 2, H * 2, BufferedImage.TYPE_INT_RGB);
         Graphics2D g = img.createGraphics();
-        drawFrame(g, 0, 0, W * 2, H * 2);
+        drawFrame(g, 0, 0, W * 2, H * 2, true);
         g.dispose();
         ImageIO.write(img, "png", out);
         System.out.println("wrote " + out);
+
+        // Ray view of the same frame
+        File raysOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-rays.png"));
+        BufferedImage rays = new BufferedImage(640, 720, BufferedImage.TYPE_INT_RGB);
+        Graphics2D rg = rays.createGraphics();
+        rayView.draw(rg, rays.getWidth(), rays.getHeight(), new RayView.View(x, y, angle, fisheye));
+        rg.dispose();
+        ImageIO.write(rays, "png", raysOut);
+        System.out.println("wrote " + raysOut);
     }
 
-    private void drawFrame(Graphics2D g, int ox, int oy, int dw, int dh) {
+    private void drawFrame(Graphics2D g, int ox, int oy, int dw, int dh, boolean markColumn) {
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
         g.drawImage(image, ox, oy, dw, dh, null);
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        int col = renderer.traceColumn;
+        if (markColumn && col >= 0) {                        // the column shown in red in the ray view
+            double cx = ox + (col + 0.5) * dw / W;
+            g.setColor(new Color(255, 70, 50, 140));
+            g.draw(new Line2D.Double(cx, oy, cx, oy + dh));
+        }
         drawHud(g, ox + 12, oy + 20);
         if (showMap) drawMinimap(g, ox + dw - 12, oy + 12);
     }
@@ -303,9 +364,11 @@ public final class Main {
     private void drawHud(Graphics2D g, int left, int top) {
         Region r = world.regionAt(x, y);
         String[] lines = {
-            String.format("%s   %.0f fps   %d×%d", world.name, fps, W, H),
+            String.format("%s   %.0f fps   %dx%d   FOV %.0f deg   %s", world.name, fps, W, H, renderer.fov(),
+                    fisheye ? "fisheye demo (straight-line distance, wrong)" : "perpendicular distance"),
             String.format("%s   (%.1f, %.1f)   feet %.2f m", r == null ? "-" : r.name, x, y, feet),
-            "WASD move   drag mouse / arrows look   Space jump   C crouch   Shift run   M minimap   Esc quit",
+            "WASD move   drag mouse / arrows look   Space jump   C crouch   Shift run",
+            "[ ] FOV   F fisheye demo   R ray view   M minimap   Esc quit   hover the view to pick a column",
         };
         g.setFont(new Font(Font.DIALOG, Font.PLAIN, 13));
         for (int i = 0; i < lines.length; i++) {
@@ -365,5 +428,11 @@ public final class Main {
 
     private static Color withAlpha(int rgb, int a) {
         return new Color((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, a);
+    }
+
+    private static void usage(String problem) {
+        System.err.println(problem);
+        System.err.println("usage: java -cp out engine.Main [map.json] [--bench]");
+        System.err.println("       java -cp out engine.Main [map.json] --shot out.png [x y angle pitch [column]]");
     }
 }
