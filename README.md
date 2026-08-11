@@ -13,11 +13,44 @@ Needs JDK 21 or newer (developed on JDK 26).
 ./run.sh                                   # open the windows, load maps/school.json
 ./run.sh maps/school.json --shot a.png     # headless, write one screenshot (from the spawn point)
 ./run.sh --shot a.png 16 21.6 -100 5       # pick the position x y, heading and pitch (degrees)
+./run.sh --shot a.png 16 21.6 -100 5 100   # one more number: which column the ray view traces
 ./run.sh --bench                           # spin on the spot and time the renderer
 ```
 
+`--shot` also writes `a-rays.png`, the matching ray view.
+
 Controls: WASD to move, drag the mouse or use the arrow keys to look (pitch is clamped to +/-30 deg),
 Q / E to turn, Space to jump, C to crouch, Shift to run, M to toggle the minimap, Esc to quit.
+
+- `[` `]` (or `-` `=`): change the field of view
+- `F`: fisheye comparison - project by straight-line distance instead (the wrong way, on purpose)
+- `R`: show / hide the ray view
+
+## The ray view
+
+The second window is a top-down map. The player always points up, so left and right there match
+left and right in the main view.
+
+- **Yellow fan**: one line per column, drawn out to the point where that column became full. This is
+  where you can see each ray stop.
+- **Pale yellow cells**: the grid cells the red ray's DDA walked. Only shapes registered in those
+  cells are ever tested.
+- **Cyan**: the camera direction and the camera plane, plus the **perpendicular distance** t to the
+  first thing the red ray actually draws.
+- **Red line**: the column the mouse is hovering in the main view (the main view marks the same
+  column with a thin red line). Everything the ray runs into along the way is numbered: an orange dot
+  is a shape that got drawn, a grey dot a shape that was already hidden, a blue square a crossing
+  into another region. The list at the bottom gives every event in distance order and how many rows
+  it actually filled.
+
+Controls: mouse wheel to zoom, `N` to switch between "follow the player's turn" and "north up".
+
+## Fisheye
+
+Projection always uses the perpendicular distance t - the length of the hit point projected onto the
+view direction - so there is no fisheye distortion. Press `F` to switch to straight-line distance and
+compare. Things near the edge of the screen do look wider, which is what an ordinary perspective
+projection does; the wider the FOV the more obvious it gets, so try turning it down with `[`.
 
 ## Files
 
