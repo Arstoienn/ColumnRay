@@ -61,6 +61,7 @@ projection does; the wider the FOV the more obvious it gets, so try turning it d
 | `src/engine/World.java` | region and shape data, JSON loading, acceleration grid, point queries |
 | `src/engine/Materials.java` | procedural textures (to be replaced by image textures and normal maps) |
 | `src/engine/Main.java` | window, input, player physics (steps, jumping, crouching), HUD, minimap |
+| `src/engine/RayView.java` | the top-down ray view window |
 | `src/engine/Json.java` | minimal JSON parser (`//` comments allowed) |
 | `maps/school.json` | the demo map |
 
@@ -107,14 +108,3 @@ See the comments at the top of `maps/school.json`. In short:
   `h` (top). `maxDist` stops a shape being drawn beyond a given distance.
 - **array** repeats its `items` `count` times, translated by `step` (desks and chairs, colonnades).
 - Polygons must be convex; this is checked on load. An L shape has to be split into several pieces.
-
-## Not done yet
-
-- **Storeys**: still only one. It needs a per-storey filter: test only the storeys that can be seen
-  through the openings on screen, share one standard plan for F2-F5, give the floor slabs thickness,
-  and treat the courtyard and the stairwell as holes in them.
-- **Modern lighting**: take per-pixel shading off the CPU and write a G-buffer instead (depth,
-  normal, material, UV), leaving lighting, shadows, reflections, bloom and tone mapping to the GPU.
-- **Water reflections**: mirror the eye below the water plane, walk the same ray a second time, and
-  add a ripple normal map and a Fresnel term.
-- **Off the map**: once a ray walks off the map it never comes back.
