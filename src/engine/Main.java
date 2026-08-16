@@ -30,6 +30,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.IntStream;
 import javax.imageio.ImageIO;
 import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
@@ -46,11 +47,18 @@ public final class Main {
     static final double STEP = 0.35, GRAVITY = 18, JUMP_SPEED = 5.2, WALK = 3.2, RUN = 5.5;
     static final double MAX_PITCH = Math.toRadians(30);
 
-    /** Render resolution. One ray is cast per column, so W is literally the ray count. */
+    /** Output resolution: the size of the image that reaches the window. */
     private final int W, H;
+    /** Supersampling factor. The engine renders at (W*SS) x (H*SS) and the result is box-filtered
+     *  down to W x H, so SS is also the number of rays per output column. SS = 1 disables it. */
+    private final int SS;
+    /** Render resolution = the ray count. Equals W when SS is 1. */
+    private final int RW, RH;
 
     private final World world;
     private final BufferedImage image;
+    private final int[] out;      // the W x H pixels the window sees
+    private final int[] hi;       // the RW x RH pixels the renderer writes; same array as `out` when SS = 1
     private final Renderer renderer;
     private final RayView rayView;
     private final Renderer.Camera cam = new Renderer.Camera();
@@ -69,15 +77,19 @@ public final class Main {
     private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
     private double fps;
 
-    Main(World world, int w, int h) {
+    Main(World world, int w, int h, int ss) {
         this.world = world;
         this.W = w;
         this.H = h;
+        this.SS = ss;
+        this.RW = w * ss;
+        this.RH = h * ss;
         this.viewW = w;
         this.viewH = h;
         this.image = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
-        int[] pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
-        renderer = new Renderer(world, W, H, pixels);
+        this.out = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
+        this.hi = ss == 1 ? out : new int[RW * RH];   // SS = 1: the renderer writes straight into the window image
+        renderer = new Renderer(world, RW, RH, hi);
         rayView = new RayView(world, renderer);
         mapOrder = world.shapes.clone();
         Arrays.sort(mapOrder, Comparator.comparingDouble(s -> s.h));
@@ -98,7 +110,7 @@ public final class Main {
         String mapPath = "maps/school.json", shot = null;
         double[] at = null;
         boolean bench = false;
-        int w = DEFAULT_W, h = DEFAULT_H;
+        int w = DEFAULT_W, h = DEFAULT_H, ss = 1;
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("--bench")) {
                 bench = true;
@@ -114,6 +126,15 @@ public final class Main {
                     return;
                 }
                 if (w < 16 || h < 16 || w > 16384 || h > 16384) { usage("--size must be between 16x16 and 16384x16384"); return; }
+            } else if (args[i].equals("--ss")) {
+                if (i + 1 >= args.length) { usage("--ss needs a factor, e.g. 2"); return; }
+                try {
+                    ss = Integer.parseInt(args[++i].trim());
+                } catch (NumberFormatException e) {
+                    usage("--ss wants a whole number, e.g. 2, not " + args[i]);
+                    return;
+                }
+                if (ss < 1 || ss > 8) { usage("--ss must be between 1 and 8"); return; }
             } else if (args[i].equals("--shot")) {
                 if (i + 1 >= args.length) { usage("--shot needs an output file"); return; }
                 shot = args[++i];
@@ -131,7 +152,11 @@ public final class Main {
         }
         if (shot != null || bench) System.setProperty("java.awt.headless", "true");
 
-        Main game = new Main(World.load(Path.of(mapPath)), w, h);
+        if ((long) w * ss > 16384 || (long) h * ss > 16384) {
+            usage("--size times --ss must stay within 16384x16384 (that would be " + w * ss + "x" + h * ss + ")");
+            return;
+        }
+        Main game = new Main(World.load(Path.of(mapPath)), w, h, ss);
         if (bench) game.bench();
         else if (shot != null) game.screenshot(new File(shot), at);
         else game.run();
@@ -140,11 +165,12 @@ public final class Main {
     /** Spin on the spot and time each frame (headless, no window). */
     private void bench() {
         int frames = 720;
-        for (int i = 0; i < 120; i++) { angle += 0.05; renderer.render(camera()); }   // warm-up
+        for (int i = 0; i < 120; i++) { angle += 0.05; frame(); }                     // warm-up
         long t0 = System.nanoTime();
-        for (int i = 0; i < frames; i++) { angle += 2 * Math.PI / frames; renderer.render(camera()); }
+        for (int i = 0; i < frames; i++) { angle += 2 * Math.PI / frames; frame(); }
         double ms = (System.nanoTime() - t0) / 1e6 / frames;
-        System.out.printf("%dx%d: %.2f ms per frame on average (about %.0f fps)%n", W, H, ms, 1000 / ms);
+        System.out.printf("%dx%d out, %dx%d rendered (ss %d, %d rays): %.2f ms per frame on average (about %.0f fps)%n",
+                W, H, RW, RH, SS, RW, ms, 1000 / ms);
     }
 
     // ---- Main loop ----
@@ -178,7 +204,7 @@ public final class Main {
             double dt = Math.min(0.05, (now - last) / 1e9);
             last = now;
             update(dt);
-            renderer.render(camera());
+            frame();
             present(canvas);
             rayView.present(new RayView.View(x, y, angle, fisheye));
             fps = fps == 0 ? 1 / Math.max(dt, 1e-6) : fps * 0.95 + 0.05 / Math.max(dt, 1e-6);
@@ -222,8 +248,8 @@ public final class Main {
 
     /** Window coordinate -> column of the main view; -1 when the point is outside it. */
     private int columnAt(int mx) {
-        int c = (int) Math.floor((mx - viewX) * (double) W / viewW);
-        return c >= 0 && c < W ? c : -1;
+        int c = (int) Math.floor((mx - viewX) * (double) RW / viewW);
+        return c >= 0 && c < RW ? c : -1;
     }
 
     // ---- Player physics ----
@@ -232,7 +258,7 @@ public final class Main {
         double fov = fovDeg;
         if (Math.abs(renderer.fov() - fov) > 1e-6) renderer.setFov(fov);
         int hover = hoverColumn;
-        renderer.traceColumn = hover >= 0 ? hover : W / 2;       // the column the ray view records in detail
+        renderer.traceColumn = hover >= 0 ? hover : RW / 2;      // the column the ray view records in detail
 
         double mdx, mdy;
         synchronized (this) { mdx = mouseDX; mdy = mouseDY; mouseDX = mouseDY = 0; }
@@ -316,6 +342,35 @@ public final class Main {
         return cam;
     }
 
+    // ---- Rendering ----
+
+    /** Render one frame and, when supersampling, box-filter it down to the output image. */
+    private void frame() {
+        renderer.render(camera());
+        if (SS > 1) downsample();
+    }
+
+    /** Average each SS x SS block of the render buffer into one output pixel. */
+    private void downsample() {
+        final int n = SS * SS, half = n / 2;
+        IntStream.range(0, H).parallel().forEach(y -> {
+            int row = y * W;
+            for (int x = 0; x < W; x++) {
+                int r = 0, g = 0, b = 0;
+                for (int sy = 0; sy < SS; sy++) {
+                    int base = (y * SS + sy) * RW + x * SS;
+                    for (int sx = 0; sx < SS; sx++) {
+                        int c = hi[base + sx];
+                        r += (c >> 16) & 255;
+                        g += (c >> 8) & 255;
+                        b += c & 255;
+                    }
+                }
+                out[row + x] = (((r + half) / n) << 16) | (((g + half) / n) << 8) | ((b + half) / n);
+            }
+        });
+    }
+
     // ---- Output ----
 
     private void present(Canvas canvas) {
@@ -348,8 +403,10 @@ public final class Main {
             pitch = Math.toRadians(at[3]);
             placeOnGround();
         }
-        renderer.traceColumn = at != null && at.length > 4 ? (int) at[4] : W / 2;
-        renderer.render(camera());
+        // the column argument is an output column, so it means the same place whatever --ss is
+        int col = at != null && at.length > 4 ? Math.max(0, Math.min(W - 1, (int) at[4])) : W / 2;
+        renderer.traceColumn = col * SS + SS / 2;
+        frame();
         int scale = W < 1000 ? 2 : 1;          // upscale small renders so the HUD text stays readable
         BufferedImage img = new BufferedImage(W * scale, H * scale, BufferedImage.TYPE_INT_RGB);
         Graphics2D g = img.createGraphics();
@@ -375,7 +432,7 @@ public final class Main {
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
         int col = renderer.traceColumn;
         if (markColumn && col >= 0) {                        // the column shown in red in the ray view
-            double cx = ox + (col + 0.5) * dw / W;
+            double cx = ox + (col + 0.5) * dw / RW;
             g.setColor(new Color(255, 70, 50, 140));
             g.draw(new Line2D.Double(cx, oy, cx, oy + dh));
         }
@@ -386,7 +443,8 @@ public final class Main {
     private void drawHud(Graphics2D g, int left, int top) {
         Region r = world.regionAt(x, y);
         String[] lines = {
-            String.format("%s   %.0f fps   %dx%d   FOV %.0f deg   %s", world.name, fps, W, H, renderer.fov(),
+            String.format("%s   %.0f fps   %dx%d%s   FOV %.0f deg   %s", world.name, fps, W, H,
+                    SS > 1 ? " x" + SS + " AA" : "", renderer.fov(),
                     fisheye ? "fisheye demo (straight-line distance, wrong)" : "perpendicular distance"),
             String.format("%s   (%.1f, %.1f)   feet %.2f m", r == null ? "-" : r.name, x, y, feet),
             "WASD move   drag mouse / arrows look   Space jump   C crouch   Shift run",
@@ -454,9 +512,10 @@ public final class Main {
 
     private static void usage(String problem) {
         System.err.println(problem);
-        System.err.println("usage: java -cp out engine.Main [map.json] [--size WxH] [--bench]");
-        System.err.println("       java -cp out engine.Main [map.json] [--size WxH] --shot out.png [x y angle pitch [column]]");
-        System.err.println("  --size sets the render resolution; the width is the number of rays cast (default "
-                + DEFAULT_W + "x" + DEFAULT_H + ")");
+        System.err.println("usage: java -cp out engine.Main [map.json] [--size WxH] [--ss N] [--bench]");
+        System.err.println("       java -cp out engine.Main [map.json] [--size WxH] [--ss N] --shot out.png [x y angle pitch [column]]");
+        System.err.println("  --size  output resolution (default " + DEFAULT_W + "x" + DEFAULT_H + ")");
+        System.err.println("  --ss    supersampling factor 1-8: renders at size*N and averages down (default 1).");
+        System.err.println("          Rays cast per frame = width * N.");
     }
 }
