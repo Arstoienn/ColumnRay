@@ -15,12 +15,16 @@ Needs JDK 21 or newer (developed on JDK 26).
 ./run.sh --shot a.png 16 21.6 -100 5       # pick the position x y, heading and pitch (degrees)
 ./run.sh --shot a.png 16 21.6 -100 5 100   # one more number: which column the ray view traces
 ./run.sh --bench                           # spin on the spot and time the renderer
-./run.sh --size 1280x720                   # render resolution; the width IS the ray count
+./run.sh --size 1280x720                   # output resolution
+./run.sh --ss 2                            # 2x supersampling (anti-aliasing)
 ```
 
-`--size` combines with everything else, so `./run.sh --size 1920x1080 --bench` times 1920 rays
-per frame. One ray is cast per column, so the width is literally how many rays there are.
-Measured on an Apple Silicon Mac, whole frame, excluding the blit to the window:
+One ray is cast per rendered column, so **the rendered width is literally the ray count**:
+`--size` sets the output resolution and `--ss N` renders at N times that and averages back down,
+which means `rays per frame = width x N`. Both combine with `--bench` and `--shot`.
+
+Measured on an Apple Silicon Mac, whole frame including the downsample, excluding the blit to the
+window:
 
 | Rays (WxH) | ms / frame | fps |
 |---|---|---|
@@ -33,8 +37,28 @@ Measured on an Apple Silicon Mac, whole frame, excluding the blit to the window:
 | 7680x4320 | 120 | 8 |
 
 There is no hard limit on the ray count beyond memory (the pixel buffer is `W * H * 4` bytes) and
-the 16384x16384 sanity clamp. The *useful* limit is one ray per horizontal pixel of the window you
-are showing it in - past that, extra rays are supersampling rather than new detail.
+the 16384x16384 sanity clamp. The *useful* limit for raw detail is one ray per horizontal pixel of
+the window - past that, extra rays stop being new detail and become anti-aliasing, which is what
+`--ss` is for.
+
+## Anti-aliasing (`--ss`)
+
+`--ss N` renders at N times the output size in both axes and box-filters each N x N block down to
+one output pixel. `--ss 1` (the default) is a true no-op: the renderer writes straight into the
+window image, no copy, byte-identical to having no supersampling code at all.
+
+| Output | `--ss` | Rays | ms / frame | fps |
+|---|---|---|---|---|
+| 640x360 | 1 | 640 | 0.65 | 1550 |
+| 640x360 | 2 | 1280 | 2.64 | 378 |
+| 640x360 | 3 | 1920 | 6.39 | 157 |
+| 1280x720 | 1 | 1280 | 2.88 | 347 |
+| 1280x720 | 2 | 2560 | 11.7 | 86 |
+| 1920x1080 | 2 | 3840 | 29.0 | 34 |
+
+Cost scales with N squared, as it must - `--ss 2` is four times the rays. The clearest wins are
+rooflines against the sky and the speckle in the ceiling-panel and stone textures, which alias
+badly without it.
 
 `--shot` also writes `a-rays.png`, the matching ray view.
 
