@@ -39,15 +39,18 @@ import javax.swing.SwingUtilities;
  * Usage: java -cp out engine.Main [map.json] [--shot out.png [x y angle pitch [column]]] [--bench]
  */
 public final class Main {
-    static final int W = 640, H = 360;
+    static final int DEFAULT_W = 640, DEFAULT_H = 360;
 
     // Player dimensions (metres)
     static final double RADIUS = 0.3, EYE_STAND = 1.6, EYE_CROUCH = 1.0, HEAD_ABOVE_EYE = 0.15;
     static final double STEP = 0.35, GRAVITY = 18, JUMP_SPEED = 5.2, WALK = 3.2, RUN = 5.5;
     static final double MAX_PITCH = Math.toRadians(30);
 
+    /** Render resolution. One ray is cast per column, so W is literally the ray count. */
+    private final int W, H;
+
     private final World world;
-    private final BufferedImage image = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
+    private final BufferedImage image;
     private final Renderer renderer;
     private final RayView rayView;
     private final Renderer.Camera cam = new Renderer.Camera();
@@ -63,11 +66,16 @@ public final class Main {
     private volatile boolean showMap = true, fisheye = false;
     private volatile double fovDeg = Renderer.DEFAULT_FOV;
     private volatile int hoverColumn = -1;                       // which column of the main view the mouse is over
-    private volatile int viewX, viewY, viewW = W, viewH = H;     // where the main view sits inside the window
+    private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
     private double fps;
 
-    Main(World world) {
+    Main(World world, int w, int h) {
         this.world = world;
+        this.W = w;
+        this.H = h;
+        this.viewW = w;
+        this.viewH = h;
+        this.image = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
         int[] pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
         renderer = new Renderer(world, W, H, pixels);
         rayView = new RayView(world, renderer);
@@ -90,9 +98,22 @@ public final class Main {
         String mapPath = "maps/school.json", shot = null;
         double[] at = null;
         boolean bench = false;
+        int w = DEFAULT_W, h = DEFAULT_H;
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("--bench")) {
                 bench = true;
+            } else if (args[i].equals("--size")) {
+                if (i + 1 >= args.length) { usage("--size needs a WxH value, e.g. 1280x720"); return; }
+                String[] wh = args[++i].toLowerCase().split("x");
+                if (wh.length != 2) { usage("--size wants WxH, e.g. 1280x720, not " + args[i]); return; }
+                try {
+                    w = Integer.parseInt(wh[0].trim());
+                    h = Integer.parseInt(wh[1].trim());
+                } catch (NumberFormatException e) {
+                    usage("--size wants two whole numbers, e.g. 1280x720, not " + args[i]);
+                    return;
+                }
+                if (w < 16 || h < 16 || w > 16384 || h > 16384) { usage("--size must be between 16x16 and 16384x16384"); return; }
             } else if (args[i].equals("--shot")) {
                 if (i + 1 >= args.length) { usage("--shot needs an output file"); return; }
                 shot = args[++i];
@@ -110,7 +131,7 @@ public final class Main {
         }
         if (shot != null || bench) System.setProperty("java.awt.headless", "true");
 
-        Main game = new Main(World.load(Path.of(mapPath)));
+        Main game = new Main(World.load(Path.of(mapPath)), w, h);
         if (bench) game.bench();
         else if (shot != null) game.screenshot(new File(shot), at);
         else game.run();
@@ -329,9 +350,10 @@ public final class Main {
         }
         renderer.traceColumn = at != null && at.length > 4 ? (int) at[4] : W / 2;
         renderer.render(camera());
-        BufferedImage img = new BufferedImage(W * 2, H * 2, BufferedImage.TYPE_INT_RGB);
+        int scale = W < 1000 ? 2 : 1;          // upscale small renders so the HUD text stays readable
+        BufferedImage img = new BufferedImage(W * scale, H * scale, BufferedImage.TYPE_INT_RGB);
         Graphics2D g = img.createGraphics();
-        drawFrame(g, 0, 0, W * 2, H * 2, true);
+        drawFrame(g, 0, 0, W * scale, H * scale, true);
         g.dispose();
         ImageIO.write(img, "png", out);
         System.out.println("wrote " + out);
@@ -432,7 +454,9 @@ public final class Main {
 
     private static void usage(String problem) {
         System.err.println(problem);
-        System.err.println("usage: java -cp out engine.Main [map.json] [--bench]");
-        System.err.println("       java -cp out engine.Main [map.json] --shot out.png [x y angle pitch [column]]");
+        System.err.println("usage: java -cp out engine.Main [map.json] [--size WxH] [--bench]");
+        System.err.println("       java -cp out engine.Main [map.json] [--size WxH] --shot out.png [x y angle pitch [column]]");
+        System.err.println("  --size sets the render resolution; the width is the number of rays cast (default "
+                + DEFAULT_W + "x" + DEFAULT_H + ")");
     }
 }

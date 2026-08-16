@@ -15,7 +15,26 @@ Needs JDK 21 or newer (developed on JDK 26).
 ./run.sh --shot a.png 16 21.6 -100 5       # pick the position x y, heading and pitch (degrees)
 ./run.sh --shot a.png 16 21.6 -100 5 100   # one more number: which column the ray view traces
 ./run.sh --bench                           # spin on the spot and time the renderer
+./run.sh --size 1280x720                   # render resolution; the width IS the ray count
 ```
+
+`--size` combines with everything else, so `./run.sh --size 1920x1080 --bench` times 1920 rays
+per frame. One ray is cast per column, so the width is literally how many rays there are.
+Measured on an Apple Silicon Mac, whole frame, excluding the blit to the window:
+
+| Rays (WxH) | ms / frame | fps |
+|---|---|---|
+| 320x180 | 0.23 | 4340 |
+| 640x360 (default) | 0.65 | 1540 |
+| 1280x720 | 2.23 | 450 |
+| 1920x1080 | 5.11 | 196 |
+| 2560x1440 | 9.50 | 105 |
+| 3840x2160 | 23.7 | 42 |
+| 7680x4320 | 120 | 8 |
+
+There is no hard limit on the ray count beyond memory (the pixel buffer is `W * H * 4` bytes) and
+the 16384x16384 sanity clamp. The *useful* limit is one ray per horizontal pixel of the window you
+are showing it in - past that, extra rays are supersampling rather than new detail.
 
 `--shot` also writes `a-rays.png`, the matching ray view.
 
