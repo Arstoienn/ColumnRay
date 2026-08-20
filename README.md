@@ -140,6 +140,14 @@ that is only discovered in a later cell must enter beyond that point. Those shap
 the current region are drawn for the stretch between each pair of events. That is why the floor in
 front of an object is drawn first and the floor behind it is hidden by the object.
 
+On a tie the shape wins, so a wall sitting exactly on a region boundary is drawn while the ray is
+still in the near region and gets that region's light level and ceiling clip. For that tie-break to
+be reachable the shape has to already be in the pending list, which is why shape bounds are grown by
+a tiny epsilon before being registered into grid cells (`World.CELL_PAD`): a wall flush against a
+cell line belongs to both cells. Without that padding the wall is only discovered one cell later
+than the boundary event, and which of the two is handled first comes down to floating-point noise -
+visible as vertical streaks of two different brightnesses along a wall seen at a grazing angle.
+
 ## Map format
 
 See the comments at the top of `maps/school.json`. In short:

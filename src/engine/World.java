@@ -124,6 +124,13 @@ final class World {
             for (int cx = ix0; cx <= ix1; cx++) fn.accept(cy * g.nx + cx);
     }
 
+    /** Bounds are grown by this before being registered into cells, so that anything lying exactly
+     *  on a cell line lands in both neighbouring cells. Without it a wall flush against a cell
+     *  boundary is not yet in the ray's pending list when the DDA flushes the cell in front of it,
+     *  and a region-boundary event at the same distance can be processed first - which would light
+     *  and clip the wall using the region on the far side. */
+    private static final double CELL_PAD = 1e-9;
+
     private Grid buildGrid(double cell) {
         Grid g = new Grid();
         g.cell = cell;
@@ -140,12 +147,12 @@ final class World {
         for (int i = 0; i < shapes.length; i++) {
             final int id = i;
             Shape s = shapes[i];
-            forCells(g, s.minX, s.minY, s.maxX, s.maxY, c -> sh[c].add(id));
+            forCells(g, s.minX - CELL_PAD, s.minY - CELL_PAD, s.maxX + CELL_PAD, s.maxY + CELL_PAD, c -> sh[c].add(id));
         }
         for (int i = 0; i < regions.length; i++) {
             final int id = i;
             Region r = regions[i];
-            forCells(g, r.minX, r.minY, r.maxX, r.maxY, c -> rg[c].add(id));
+            forCells(g, r.minX - CELL_PAD, r.minY - CELL_PAD, r.maxX + CELL_PAD, r.maxY + CELL_PAD, c -> rg[c].add(id));
         }
         for (int c = 0; c < sh.length; c++) {
             g.shapes[c] = sh[c].stream().mapToInt(Integer::intValue).toArray();
