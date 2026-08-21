@@ -113,6 +113,9 @@
       { "type": "box", "x": 0, "y": 1.15, "w": 0.6, "d": 0.05, "h": 0.7, "mat": "metal", "color": "#5c6670", "maxDist": 20 },
       { "type": "box", "x": 0.75, "y": 0.35, "w": 0.42, "d": 0.45, "z0": 0.42, "h": 0.46, "mat": "wood", "color": "#a87c4c", "maxDist": 25 },
       { "type": "box", "x": 1.13, "y": 0.35, "w": 0.04, "d": 0.45, "z0": 0.46, "h": 0.95, "mat": "wood", "color": "#a87c4c", "maxDist": 25 },
-      { "type": "circle", "c": [0.96,0.575], "r": 0.04, "h": 0.42, "mat": "metal", "color": "#5c6670", "maxDist": 15 } ] }
+      { "type": "circle", "c": [0.80,0.40], "r": 0.025, "h": 0.42, "mat": "metal", "color": "#5c6670", "maxDist": 12 },
+      { "type": "circle", "c": [1.10,0.40], "r": 0.025, "h": 0.42, "mat": "metal", "color": "#5c6670", "maxDist": 12 },
+      { "type": "circle", "c": [0.80,0.75], "r": 0.025, "h": 0.42, "mat": "metal", "color": "#5c6670", "maxDist": 12 },
+      { "type": "circle", "c": [1.10,0.75], "r": 0.025, "h": 0.42, "mat": "metal", "color": "#5c6670", "maxDist": 12 } ] }
   ]
 }
