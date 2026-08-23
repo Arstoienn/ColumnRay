@@ -75,6 +75,7 @@ public final class Main {
     private volatile double fovDeg = Renderer.DEFAULT_FOV;
     private volatile int hoverColumn = -1;                       // which column of the main view the mouse is over
     private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
+    private double startFeet = Double.NaN;                       // --feet: which storey to start on
     private double fps;
 
     Main(World world, int w, int h, int ss) {
@@ -99,9 +100,17 @@ public final class Main {
         placeOnGround();
     }
 
+    /** Start on whichever storey has a floor at (or just below) this height. Handy for looking at
+     *  an upper floor without walking up to it: --feet 3.6 */
+    void standOn(double z) {
+        this.startFeet = z;
+        placeOnGround();
+    }
+
     private void placeOnGround() {
         Region r = world.regionAt(x, y);
-        feet = viewFeet = support(x, y, r == null ? 0 : r.floor)[0];
+        double from = Double.isNaN(startFeet) ? (r == null ? 0 : r.floor) : startFeet;
+        feet = viewFeet = support(x, y, from)[0];
         vz = 0;
         grounded = true;
     }
@@ -111,6 +120,7 @@ public final class Main {
         double[] at = null;
         boolean bench = false;
         int w = DEFAULT_W, h = DEFAULT_H, ss = 1;
+        double startFeet = Double.NaN;
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("--bench")) {
                 bench = true;
@@ -135,6 +145,14 @@ public final class Main {
                     return;
                 }
                 if (ss < 1 || ss > 8) { usage("--ss must be between 1 and 8"); return; }
+            } else if (args[i].equals("--feet")) {
+                if (i + 1 >= args.length) { usage("--feet needs a height in metres, e.g. 3.6"); return; }
+                try {
+                    startFeet = Double.parseDouble(args[++i].trim());
+                } catch (NumberFormatException e) {
+                    usage("--feet wants a number, e.g. 3.6, not " + args[i]);
+                    return;
+                }
             } else if (args[i].equals("--shot")) {
                 if (i + 1 >= args.length) { usage("--shot needs an output file"); return; }
                 shot = args[++i];
@@ -157,6 +175,7 @@ public final class Main {
             return;
         }
         Main game = new Main(World.load(Path.of(mapPath)), w, h, ss);
+        if (!Double.isNaN(startFeet)) game.standOn(startFeet);
         if (bench) game.bench();
         else if (shot != null) game.screenshot(new File(shot), at);
         else game.run();
@@ -308,30 +327,42 @@ public final class Main {
      *  above is not an obstacle to someone walking about on the one below. */
     private boolean blocked(double px, double py, double feet) {
         if (world.regionAt(px, py) == null) return true;
+        // Clearance has to be judged at the height we would end up at, not the one we are leaving:
+        // stepping up onto a stair whose underside is a low void would otherwise be rejected by the
+        // void's ceiling, even though our head ends up above it.
+        double up = support(px, py, feet)[0];
+        double stand = up > feet && up <= feet + STEP ? up : feet;
         for (Region r : world.regionsNear(px, py, RADIUS)) {
             if (!Geometry.discTouchesPoly(px, py, RADIUS, r.xs, r.ys)) continue;
-            if (r.ceil <= feet || r.floor >= head(feet)) continue;      // wholly below or above us
-            if (r.floor > feet + STEP || r.ceil < head(feet)) return true;
+            if (r.ceil <= stand || r.floor >= head(stand)) continue;    // wholly below or above us
+            if (r.floor > stand + STEP || r.ceil < head(stand)) return true;
         }
         for (Shape s : world.shapesNear(px, py, RADIUS))
-            if (s.z0 < head(feet) && s.h > feet + STEP && Geometry.overlaps(px, py, RADIUS, s)) return true;
+            if (s.z0 < head(stand) && s.h > stand + STEP && Geometry.overlaps(px, py, RADIUS, s)) return true;
         return false;
     }
 
     /** { highest surface we can stand on, lowest thing above our head } */
     private double[] support(double px, double py, double feet) {
-        double ground = Double.NEGATIVE_INFINITY, ceil = Double.POSITIVE_INFINITY;
+        double ground = Double.NEGATIVE_INFINITY;
         for (Region r : world.regionsNear(px, py, RADIUS)) {
             if (!Geometry.discTouchesPoly(px, py, RADIUS, r.xs, r.ys)) continue;
             if (r.floor <= feet + STEP) ground = Math.max(ground, r.floor);
-            if (r.ceil > feet) ceil = Math.min(ceil, r.ceil);           // ignore ceilings below our feet
         }
-        for (Shape s : world.shapesNear(px, py, RADIUS)) {
-            if (!Geometry.overlaps(px, py, RADIUS, s)) continue;
-            if (s.h <= feet + STEP) ground = Math.max(ground, s.h);
-            else if (s.z0 >= feet + STEP) ceil = Math.min(ceil, s.z0);
+        for (Shape s : world.shapesNear(px, py, RADIUS))
+            if (Geometry.overlaps(px, py, RADIUS, s) && s.h <= feet + STEP) ground = Math.max(ground, s.h);
+        if (ground == Double.NEGATIVE_INFINITY) ground = feet;
+
+        // The ceiling is whatever is above the surface we would stand on, so the underside of a
+        // stair we are climbing onto does not count as our own ceiling.
+        double ceil = Double.POSITIVE_INFINITY;
+        for (Region r : world.regionsNear(px, py, RADIUS)) {
+            if (!Geometry.discTouchesPoly(px, py, RADIUS, r.xs, r.ys)) continue;
+            if (r.ceil > ground) ceil = Math.min(ceil, r.ceil);
         }
-        return new double[] {ground == Double.NEGATIVE_INFINITY ? feet : ground, ceil};
+        for (Shape s : world.shapesNear(px, py, RADIUS))
+            if (Geometry.overlaps(px, py, RADIUS, s) && s.z0 >= ground + STEP) ceil = Math.min(ceil, s.z0);
+        return new double[] {ground, ceil};
     }
 
     private Renderer.Camera camera() {
@@ -443,8 +474,19 @@ public final class Main {
         if (showMap) drawMinimap(g, ox + dw - 12, oy + 12);
     }
 
+    /** The storey the player is actually standing on, rather than just the lowest one here. */
+    private Region here() {
+        Region best = null;
+        for (Region r : world.regionsNear(x, y, RADIUS)) {
+            if (!Geometry.discTouchesPoly(x, y, RADIUS, r.xs, r.ys)) continue;
+            if (feet + 0.05 < r.floor || feet >= r.ceil) continue;
+            if (best == null || r.floor > best.floor) best = r;
+        }
+        return best != null ? best : world.regionAt(x, y);
+    }
+
     private void drawHud(Graphics2D g, int left, int top) {
-        Region r = world.regionAt(x, y);
+        Region r = here();
         String[] lines = {
             String.format("%s   %.0f fps   %dx%d%s   FOV %.0f deg   %s", world.name, fps, W, H,
                     SS > 1 ? " x" + SS + " AA" : "", renderer.fov(),
@@ -518,6 +560,7 @@ public final class Main {
         System.err.println("usage: java -cp out engine.Main [map.json] [--size WxH] [--ss N] [--bench]");
         System.err.println("       java -cp out engine.Main [map.json] [--size WxH] [--ss N] --shot out.png [x y angle pitch [column]]");
         System.err.println("  --size  output resolution (default " + DEFAULT_W + "x" + DEFAULT_H + ")");
+        System.err.println("  --feet  starting floor height in metres, to begin on an upper storey (e.g. 3.6)");
         System.err.println("  --ss    supersampling factor 1-8: renders at size*N and averages down (default 1).");
         System.err.println("          Rays cast per frame = width * N.");
     }

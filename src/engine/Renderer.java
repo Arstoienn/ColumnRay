@@ -335,12 +335,8 @@ final class Renderer {
          *  A shape is clipped to the ceiling of the region the ray is in. */
         private void drawHit(Hit h) {
             Shape s = h.s();
-            // Clip to the ceiling of the storey the EYE is in, not the one the shape stands in:
-            // the point of the clip is that your own ceiling is opaque. A wall running the full
-            // height of the building is therefore drawn up to 3.2 m from the ground floor and up to
-            // the second floor's ceiling from up there, and the floor slab in between hides the rest.
-            Region in = storeyAt(eye);
-            double z0 = s.z0, top = Math.min(s.h, in == null ? Double.POSITIVE_INFINITY : in.ceil);
+            Region in = storeyAt(s.z0);
+            double z0 = s.z0, top = s.h;
             if (top <= z0) {
                 if (tr != null) note(EventKind.SHAPE, h.t1(), s.label + " (entirely above the ceiling)", 0);
                 return;
