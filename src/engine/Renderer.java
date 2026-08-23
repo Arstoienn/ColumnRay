@@ -22,17 +22,8 @@ final class Renderer {
     static final double DEFAULT_FOV = Math.toDegrees(2 * Math.atan(0.66));   // PL = 0.66, about 67 degrees
     static final double NEAR = 1e-3;
     static final double MAX_DIST = 80;
+    static final int MAX_STOREYS = 8;      // how many storeys can stack at one (x, y)
     private static final double TIE = 1e-6;   // when a wall sits exactly on a region boundary, draw the wall first
-
-    /** Outside the map: open air, no floor; only shapes that are still reachable keep being drawn. */
-    private static final Region OUTSIDE = new Region();
-    static {
-        OUTSIDE.name = "outside map";
-        OUTSIDE.sky = true;
-        OUTSIDE.floor = Double.NaN;
-        OUTSIDE.ceil = OUTSIDE.top = Double.POSITIVE_INFINITY;
-        OUTSIDE.light = 1;
-    }
 
     static final class Camera {
         double x, y;          // position
@@ -125,7 +116,16 @@ final class Renderer {
         private int x;
         private double px, py, rx, ry, eye, hz;
         private double dk;                                  // depth multiplier: 1 normally, |r| in fisheye mode
-        private Region cur;                                 // region the ray is currently inside
+
+        // The stack of storeys the ray is currently inside, lowest floor first. Empty means off the
+        // map. Everything *not* inside one of these [floor, ceil) ranges is solid: that is the floor
+        // slab between two storeys, and its absence is a hole to see through.
+        private final Region[] stack = new Region[MAX_STOREYS];
+        private final Region[] prev = new Region[MAX_STOREYS];
+        private final Region[] next = new Region[MAX_STOREYS];
+        private int stackN;
+        private final double[] openLo = new double[MAX_STOREYS + 1], openHi = new double[MAX_STOREYS + 1];
+
         private double tPrev;                               // how far the floor / ceiling has been drawn
         private double crossT, crossU;                      // the next region boundary
         private int crossEdge, crossings;
@@ -158,10 +158,9 @@ final class Renderer {
             tr = x == traceColumn ? new Trace() : null;
             if (tr != null) { tr.column = x; tr.rx = rx; tr.ry = ry; }
 
-            Region start = world.regionAt(px, py);
-            cur = start == null ? OUTSIDE : start;
+            stackN = world.regionsAt(px, py, stack);
             tPrev = NEAR;
-            exitOf(cur, NEAR);
+            nextCross(NEAR);
             walkGrid();
             flush(Double.POSITIVE_INFINITY);
             surfaces(tPrev, MAX_DIST);
@@ -273,23 +272,61 @@ final class Renderer {
             };
         }
 
-        private void exitOf(Region r, double tMin) {
-            if (r == OUTSIDE) {                           // rays currently never come back in from outside
-                crossT = Double.POSITIVE_INFINITY;
-                crossEdge = -1;
-                crossU = 0;
-                return;
+        /** The nearest point at which any storey in the stack ends. Once off the map, rays currently
+         *  never come back in, so there is nothing further to cross. */
+        private void nextCross(double tMin) {
+            crossT = Double.POSITIVE_INFINITY;
+            crossEdge = -1;
+            crossU = 0;
+            if (stackN == 0) return;
+            for (int i = 0; i < stackN; i++) {
+                Region r = stack[i];
+                PolyHit ph = Geometry.rayPoly(px, py, rx, ry, r.xs, r.ys);
+                if (ph == null || ph.t2() <= tMin) {      // grazing the corner: nudge forward and look again
+                    if (tMin + 1e-3 < crossT) { crossT = tMin + 1e-3; crossEdge = -1; crossU = 0; }
+                } else if (ph.t2() < crossT) {
+                    crossT = ph.t2();
+                    crossEdge = ph.exitEdge();
+                    crossU = ph.exitU();
+                }
             }
-            PolyHit ph = Geometry.rayPoly(px, py, rx, ry, r.xs, r.ys);
-            if (ph == null || ph.t2() <= tMin) {          // grazing the corner: nudge forward and look again
-                crossT = tMin + 1e-3;
-                crossEdge = -1;
-                crossU = 0;
-            } else {
-                crossT = ph.t2();
-                crossEdge = ph.exitEdge();
-                crossU = ph.exitU();
+        }
+
+        /** The storey whose [floor, ceil) contains z, else the highest one below it, else null. */
+        private Region storeyAt(double z) {
+            Region best = null;
+            for (int i = 0; i < stackN; i++) {
+                Region r = stack[i];
+                if (z >= r.floor && z < r.ceil) return r;
+                if (r.floor <= z && (best == null || r.floor > best.floor)) best = r;
             }
+            return best != null ? best : stackN > 0 ? stack[0] : null;
+        }
+
+        /**
+         * Open (walkable / see-through) z ranges of a stack, ascending, into openLo/openHi;
+         * everything in between is solid. The last entry, when there is one, is the sky above the
+         * topmost storey's `top` - only usable by a viewer who is themselves under open sky, which
+         * is why the count is returned separately from {@link #openSpansNoSky}. Someone standing
+         * indoors has their own ceiling in the way, so for them the far side stays solid all the
+         * way up to it.
+         */
+        private int skySpans;
+
+        private int openSpans(Region[] st, int n) {
+            int m = 0;
+            double highestTop = Double.NEGATIVE_INFINITY;
+            for (int i = 0; i < n; i++) {
+                openLo[m] = st[i].floor;
+                openHi[m++] = st[i].ceil;
+                highestTop = Math.max(highestTop, Math.max(st[i].top, st[i].ceil));
+            }
+            skySpans = m;
+            if (n > 0 && highestTop < Double.POSITIVE_INFINITY) {
+                openLo[m] = highestTop;                   // out over the roof: sky
+                openHi[m++] = Double.POSITIVE_INFINITY;
+            }
+            return m;
         }
 
         // ---- Drawing: shapes, region boundaries, floors and ceilings ----
@@ -298,13 +335,18 @@ final class Renderer {
          *  A shape is clipped to the ceiling of the region the ray is in. */
         private void drawHit(Hit h) {
             Shape s = h.s();
-            double z0 = s.z0, top = Math.min(s.h, cur.ceil);
+            // Clip to the ceiling of the storey the EYE is in, not the one the shape stands in:
+            // the point of the clip is that your own ceiling is opaque. A wall running the full
+            // height of the building is therefore drawn up to 3.2 m from the ground floor and up to
+            // the second floor's ceiling from up there, and the floor slab in between hides the rest.
+            Region in = storeyAt(eye);
+            double z0 = s.z0, top = Math.min(s.h, in == null ? Double.POSITIVE_INFINITY : in.ceil);
             if (top <= z0) {
                 if (tr != null) note(EventKind.SHAPE, h.t1(), s.label + " (entirely above the ceiling)", 0);
                 return;
             }
             double t1 = h.t1(), yTop = rowZ(top, t1), yBot = rowZ(z0, t1);
-            double light = cur.light;
+            double light = in == null ? 1 : in.light;
             int side = 0, cap = 0, under = 0;
             if (!h.inside()) {
                 double k = lambert(h.nx(), h.ny()) * fog(t1) * light;
@@ -321,44 +363,112 @@ final class Renderer {
             }
         }
 
-        /** Cross a region boundary: a lower ceiling on the far side becomes a lintel,
-         *  a higher floor becomes a step riser. */
+        /**
+         * Cross a region boundary. Wall is visible wherever open space on the near side meets solid
+         * on the far side: that one rule produces a lintel where the far ceiling is lower, a step
+         * riser where the far floor is higher, and the face of a floor slab seen from the storey
+         * below or above - which the old near/far pair of special cases could not express.
+         */
         private void cross() {
             double t = crossT;
-            Region from = cur;
-            Region found = world.regionAt(px + rx * (t + 1e-4), py + ry * (t + 1e-4));
-            Region to = found == null || ++crossings > 256 ? OUTSIDE : found;
-            int lintel = 0, riser = 0;
-            if (crossEdge >= 0 && to != from && to != OUTSIDE) {
-                int n = from.xs.length, i = crossEdge, j = (i + 1) % n;
-                double ex = from.xs[j] - from.xs[i], ey = from.ys[j] - from.ys[i], len = Math.hypot(ex, ey);
+            int fromN = stackN;
+            System.arraycopy(stack, 0, prev, 0, fromN);
+            int toN = ++crossings > 256 ? 0
+                    : world.regionsAt(px + rx * (t + 1e-4), py + ry * (t + 1e-4), next);
+
+            int rows = 0;
+            if (crossEdge >= 0 && toN > 0 && !same(prev, fromN, next, toN)) {
+                Region edgeOf = prev[0];
+                int n = edgeOf.xs.length, i = Math.min(crossEdge, n - 1), j = (i + 1) % n;
+                double ex = edgeOf.xs[j] - edgeOf.xs[i], ey = edgeOf.ys[j] - edgeOf.ys[i];
+                double len = Math.hypot(ex, ey);
                 double nx = -ey / len, ny = ex / len;
                 if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }
-                double k = lambert(nx, ny) * fog(t) * to.light, u = crossU * len;
-                IntUnaryOperator wall = y -> shade(to.wallColor, Materials.side(to.wallMat, u, eye - (y + 0.5 - hz) * t * dk / F) * k);
-                double upper = from.sky ? to.top : from.ceil;
-                if (to.ceil < upper) lintel = paint(rowZ(upper, t), rowZ(to.ceil, t), wall);
-                if (to.floor > from.floor) riser = paint(rowZ(to.floor, t), rowZ(from.floor, t), wall);
+                double u = crossU * len;
+                double lam = lambert(nx, ny) * fog(t);
+
+                int farN = openSpans(next, toN), farNoSky = skySpans;
+                double[] flo = openLo.clone(), fhi = openHi.clone();
+                for (int a = 0; a < fromN; a++) {
+                    double z = prev[a].floor, zEnd = prev[a].ceil;
+                    int spans = prev[a].sky ? farN : farNoSky;   // only open sky sees sky
+                    for (int b = 0; b < spans && z < zEnd; b++) {
+                        if (fhi[b] <= z) continue;
+                        if (flo[b] >= zEnd) break;
+                        if (flo[b] > z) rows += wallBand(z, Math.min(flo[b], zEnd), t, u, lam, nearestFar(toN, z));
+                        z = Math.max(z, fhi[b]);
+                    }
+                    if (z < zEnd) rows += wallBand(z, zEnd, t, u, lam, next[toN - 1]);
+                }
             }
-            if (tr != null && to != from) {
-                String detail = (lintel > 0 ? " lintel " + lintel : "") + (riser > 0 ? " riser " + riser : "");
-                note(EventKind.PORTAL, t, from.name + " -> " + to.name + detail, lintel + riser);
-            }
-            cur = to;
-            exitOf(to, t);
+
+            if (tr != null && !same(prev, fromN, next, toN))
+                note(EventKind.PORTAL, t, name(prev, fromN) + " -> " + name(next, toN)
+                        + (rows > 0 ? " wall " + rows : ""), rows);
+
+            stackN = toN;
+            System.arraycopy(next, 0, stack, 0, toN);
+            nextCross(t);
         }
 
-        /** The floor and ceiling of the current region between distances ta and tb. */
+        /** One solid band of the far side, seen through an opening on the near side. */
+        private int wallBand(double zLo, double zHi, double t, double u, double lam, Region skin) {
+            if (!(zHi > zLo) || skin == null) return 0;
+            double k = lam * skin.light;
+            IntUnaryOperator wall = y ->
+                    shade(skin.wallColor, Materials.side(skin.wallMat, u, eye - (y + 0.5 - hz) * t * dk / F) * k);
+            return paint(rowZ(zHi, t), rowZ(zLo, t), wall);
+        }
+
+        /** Which far storey's wall finish to use for a solid band starting at z. */
+        private Region nearestFar(int toN, double z) {
+            Region best = next[0];
+            double bestD = Double.POSITIVE_INFINITY;
+            for (int i = 0; i < toN; i++) {
+                double d = Math.min(Math.abs(next[i].floor - z), Math.abs(next[i].ceil - z));
+                if (d < bestD) { bestD = d; best = next[i]; }
+            }
+            return best;
+        }
+
+        private static boolean same(Region[] a, int an, Region[] b, int bn) {
+            if (an != bn) return false;
+            for (int i = 0; i < an; i++) if (a[i] != b[i]) return false;
+            return true;
+        }
+
+        private static String name(Region[] st, int n) {
+            if (n == 0) return "outside map";
+            StringBuilder b = new StringBuilder(st[0].name);
+            for (int i = 1; i < n; i++) b.append('+').append(st[i].name);
+            return b.toString();
+        }
+
+        /**
+         * The floors and ceilings of every storey in the stack, between distances ta and tb.
+         *
+         * Drawing the whole stack needs no depth sorting: for any given row, a higher floor is
+         * always seen at a nearer distance than a lower one, and a lower ceiling nearer than a
+         * higher one (t scales with |z - eye|). Since segments are handled near-to-far and paint()
+         * only fills rows that are still empty, the surface you should see always claims the row
+         * first. Going highest-floor-first and lowest-ceiling-first keeps that true within a single
+         * segment too, where the two bands can overlap.
+         */
         private void surfaces(double ta, double tb) {
             if (tb <= ta) return;
-            Region r = cur;
-            int f = 0, c = 0;
-            if (eye > r.floor) f = paint(rowZ(r.floor, tb), rowZ(r.floor, ta), flat(r.floor, r.floorMat, r.floorColor, r.light));
-            if (!r.sky && eye < r.ceil) c = paint(rowZ(r.ceil, ta), rowZ(r.ceil, tb), flat(r.ceil, r.ceilMat, r.ceilColor, r.light));
-            if (tr != null) {
-                String range = String.format("%s  t %.2f-%.2f", r.name, ta, Math.min(tb, MAX_DIST));
-                if (f > 0) note(EventKind.FLOOR, ta, range, f);
-                if (c > 0) note(EventKind.CEILING, ta, range, c);
+            for (int i = stackN - 1; i >= 0; i--) {
+                Region r = stack[i];
+                if (eye <= r.floor) continue;
+                int f = paint(rowZ(r.floor, tb), rowZ(r.floor, ta), flat(r.floor, r.floorMat, r.floorColor, r.light));
+                if (tr != null && f > 0)
+                    note(EventKind.FLOOR, ta, String.format("%s  t %.2f-%.2f", r.name, ta, Math.min(tb, MAX_DIST)), f);
+            }
+            for (int i = 0; i < stackN; i++) {
+                Region r = stack[i];
+                if (r.sky || eye >= r.ceil) continue;
+                int c = paint(rowZ(r.ceil, ta), rowZ(r.ceil, tb), flat(r.ceil, r.ceilMat, r.ceilColor, r.light));
+                if (tr != null && c > 0)
+                    note(EventKind.CEILING, ta, String.format("%s  t %.2f-%.2f", r.name, ta, Math.min(tb, MAX_DIST)), c);
             }
         }
 

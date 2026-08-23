@@ -84,15 +84,42 @@ final class World {
 
     // ---- Queries ----
 
+    /** The lowest region containing the point, or null if the point is off the map.
+     *  Storeys stack, so use {@link #regionsAt} whenever more than the ground one matters. */
     Region regionAt(double x, double y) {
         int cx = (int) Math.floor((x - grid.x0) / grid.cell);
         int cy = (int) Math.floor((y - grid.y0) / grid.cell);
         if (cx < 0 || cy < 0 || cx >= grid.nx || cy >= grid.ny) return null;
+        Region best = null;
         for (int i : grid.regions[cy * grid.nx + cx]) {
             Region r = regions[i];
-            if (Geometry.pointInPoly(x, y, r.xs, r.ys)) return r;
+            if (Geometry.pointInPoly(x, y, r.xs, r.ys) && (best == null || r.floor < best.floor)) best = r;
         }
-        return null;
+        return best;
+    }
+
+    /**
+     * Every region containing the point, written into {@code out} sorted by floor height, lowest
+     * first; returns how many. This is the vertical stack of storeys at that spot: one entry over
+     * open ground, two where a floor slab has another storey on top of it, and none off the map.
+     * Anything not inside one of the returned [floor, ceil) ranges is solid - that is what makes a
+     * slab a slab, and what makes a missing entry (a stairwell, the courtyard) a hole to fall or
+     * see through.
+     */
+    int regionsAt(double x, double y, Region[] out) {
+        int cx = (int) Math.floor((x - grid.x0) / grid.cell);
+        int cy = (int) Math.floor((y - grid.y0) / grid.cell);
+        if (cx < 0 || cy < 0 || cx >= grid.nx || cy >= grid.ny) return 0;
+        int n = 0;
+        for (int i : grid.regions[cy * grid.nx + cx]) {
+            Region r = regions[i];
+            if (!Geometry.pointInPoly(x, y, r.xs, r.ys)) continue;
+            if (n == out.length) continue;                       // more storeys than we have room for
+            int k = n++;
+            while (k > 0 && out[k - 1].floor > r.floor) { out[k] = out[k - 1]; k--; }
+            out[k] = r;
+        }
+        return n;
     }
 
     List<Region> regionsNear(double x, double y, double rad) {

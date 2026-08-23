@@ -303,11 +303,14 @@ public final class Main {
     private double head(double feet) { return feet + eyeH + HEAD_ABOVE_EYE; }
 
     /** Blocked when the floor is more than one step up, the ceiling is below head height,
-     *  or a solid shape is in the way. */
+     *  or a solid shape is in the way. Storeys stack, so only regions that actually overlap the
+     *  body between the feet and the top of the head are considered - the floor of the storey
+     *  above is not an obstacle to someone walking about on the one below. */
     private boolean blocked(double px, double py, double feet) {
         if (world.regionAt(px, py) == null) return true;
         for (Region r : world.regionsNear(px, py, RADIUS)) {
             if (!Geometry.discTouchesPoly(px, py, RADIUS, r.xs, r.ys)) continue;
+            if (r.ceil <= feet || r.floor >= head(feet)) continue;      // wholly below or above us
             if (r.floor > feet + STEP || r.ceil < head(feet)) return true;
         }
         for (Shape s : world.shapesNear(px, py, RADIUS))
@@ -321,7 +324,7 @@ public final class Main {
         for (Region r : world.regionsNear(px, py, RADIUS)) {
             if (!Geometry.discTouchesPoly(px, py, RADIUS, r.xs, r.ys)) continue;
             if (r.floor <= feet + STEP) ground = Math.max(ground, r.floor);
-            ceil = Math.min(ceil, r.ceil);
+            if (r.ceil > feet) ceil = Math.min(ceil, r.ceil);           // ignore ceilings below our feet
         }
         for (Shape s : world.shapesNear(px, py, RADIUS)) {
             if (!Geometry.overlaps(px, py, RADIUS, s)) continue;
