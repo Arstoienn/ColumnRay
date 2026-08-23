@@ -2,8 +2,8 @@
 
 A 2.5D raycasting engine in plain Java (Swing), no external libraries. The map is a 2D top-down
 plan and one ray is cast per screen column; every height on screen comes out of the same projection
-formula. The demo scene is part of floor F1 of a school: a classroom, corridors, a courtyard with a
-pool, and a staircase.
+formula. The demo scene is two storeys of a school: a classroom, corridors, a courtyard with a
+pool, and a staircase you can climb to the first floor walkway and look back down from.
 
 ## Running
 
@@ -17,6 +17,7 @@ Needs JDK 21 or newer (developed on JDK 26).
 ./run.sh --bench                           # spin on the spot and time the renderer
 ./run.sh --size 1280x720                   # output resolution
 ./run.sh --ss 2                            # 2x supersampling (anti-aliasing)
+./run.sh --feet 3.6                        # start on the upper storey instead of the ground one
 ```
 
 One ray is cast per rendered column, so **the rendered width is literally the ray count**:
@@ -159,3 +160,23 @@ See the comments at the top of `maps/school.json`. In short:
   `h` (top). `maxDist` stops a shape being drawn beyond a given distance.
 - **array** repeats its `items` `count` times, translated by `step` (desks and chairs, colonnades).
 - Polygons must be convex; this is checked on load. An L shape has to be split into several pieces.
+
+## Storeys
+
+Regions stack. `World.regionsAt(x, y, out)` returns every region containing a point, lowest floor
+first, and a ray carries that whole stack rather than a single region. Two rules follow from it:
+
+- **Anything not inside one of the stack's `[floor, ceil)` ranges is solid.** The gap between the
+  ground floor's 3.2 m ceiling and the first floor's 3.6 m floor *is* the slab; nobody models it.
+- **A hole is an absence.** The courtyard and the stairwell simply have no upper-storey region, so
+  the stack there is one deep and you see - and fall - straight down.
+
+Drawing every storey in the stack needs no depth sorting. For any given row, a higher floor is
+always seen at a nearer distance than a lower one, and a lower ceiling nearer than a higher one,
+because `t` scales with `|z - eye|`. Segments are handled near-to-far and `paint()` only fills rows
+that are still empty, so the surface you ought to see always claims the row first.
+
+Crossing a boundary is one rule: **wall wherever open space on the near side meets solid on the far
+side**. That produces a lintel where the far ceiling is lower, a step riser where the far floor is
+higher, and the edge of a floor slab seen from either storey. The sky above a region's `top` only
+opens up for a viewer who is themselves under open sky - indoors, your own ceiling is in the way.
