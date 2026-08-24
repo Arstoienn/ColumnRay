@@ -42,6 +42,24 @@ the 16384x16384 sanity clamp. The *useful* limit for raw detail is one ray per h
 the window - past that, extra rays stop being new detail and become anti-aliasing, which is what
 `--ss` is for.
 
+## Where the frame time actually goes
+
+`--bench` times the raycaster only. With both windows open the loop also has to blit the main view
+and redraw the ray view, and those dominate. Measured in the real windowed loop, 640x360, both
+windows open:
+
+| | before | after |
+|---|---|---|
+| raycaster | 1.0 ms | 0.9 ms |
+| main window blit + HUD + minimap | 6.6 ms | 2.3 ms |
+| ray view redraw | 19.4 ms | 5.3 ms |
+| **whole frame** | **27.6 ms (36 fps)** | **8.5 ms (117 fps)** |
+
+Closing the ray view with `R` roughly triples it again - it is a debugging window, not part of the
+engine. What made it expensive was redrawing several hundred translucent antialiased shapes every
+frame; the grid, regions and shape footprints never move, so they are now drawn once into an image
+(rebuilt only when you zoom) and blitted with the view transform.
+
 ## Anti-aliasing (`--ss`)
 
 `--ss N` renders at N times the output size in both axes and box-filters each N x N block down to
