@@ -200,8 +200,10 @@ final class Renderer {
                 for (int i : g.shapes[cy * g.nx + cx]) {
                     if (stamp[i] == ray) continue;
                     stamp[i] = ray;
+                    Shape sh = world.shapes[i];
+                    if (skip(sh)) continue;
                     tests++;
-                    Hit h = intersect(world.shapes[i]);
+                    Hit h = intersect(sh);
                     if (h != null) pending.add(h);
                 }
                 double tout = Math.min(tx, ty);
@@ -243,6 +245,43 @@ final class Renderer {
         }
 
         // ---- Intersection ----
+
+        /**
+         * Cheap reject, before the real intersection: a slab test against the shape's bounding box
+         * gives the range of distances it could be hit at, and from that the band of rows it could
+         * possibly occupy. If every row in that band is already painted, the shape cannot show and
+         * is not worth intersecting.
+         *
+         * This is what stops the upper storeys paying for the furniture on the ones below: standing
+         * on the second floor, the floor slab fills those rows almost immediately, so the desks and
+         * chairs downstairs are rejected in a few flops each. It stays correct when you look down
+         * through the courtyard, because there the rows really are still open.
+         */
+        private boolean skip(Shape s) {
+            double t0 = NEAR, t1 = MAX_DIST;
+            if (rx != 0) {
+                double a = (s.minX - px) / rx, b = (s.maxX - px) / rx;
+                if (a > b) { double q = a; a = b; b = q; }
+                t0 = Math.max(t0, a);
+                t1 = Math.min(t1, b);
+            } else if (px < s.minX || px > s.maxX) {
+                return true;
+            }
+            if (ry != 0) {
+                double a = (s.minY - py) / ry, b = (s.maxY - py) / ry;
+                if (a > b) { double q = a; a = b; b = q; }
+                t0 = Math.max(t0, a);
+                t1 = Math.min(t1, b);
+            } else if (py < s.minY || py > s.maxY) {
+                return true;
+            }
+            if (t1 < t0 || t0 > s.maxDist) return true;          // the ray misses it, or it is too far
+            int top = clampRow(Math.min(rowZ(s.h, t0), rowZ(s.h, t1)));
+            int bot = clampRow(Math.max(rowZ(s.z0, t0), rowZ(s.z0, t1)));
+            if (bot <= top) return true;
+            for (int k = 0; k < open; k++) if (o0[k] < bot && o1[k] > top) return false;
+            return true;
+        }
 
         private Hit intersect(Shape s) {
             return switch (s.kind) {

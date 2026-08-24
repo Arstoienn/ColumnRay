@@ -27,6 +27,7 @@ import java.awt.geom.Path2D;
 import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferStrategy;
+import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
 import javax.swing.JFrame;
@@ -57,6 +58,15 @@ final class RayView {
     private final World world;
     private final Renderer renderer;
     private final java.awt.Shape[] outlines;
+    private final Path2D gridPath;                   // every grid line as one path: one draw call
+    private final Path2D[] regionPaths;              // region outlines, built once
+    private final Path2D fan = new Path2D.Double();  // reused each frame for the whole ray fan
+
+    /** The grid, the regions and the shape footprints never move, so they are drawn once into this
+     *  image and blitted with the view transform. That replaces several hundred translucent
+     *  antialiased shape operations per frame - by far the most expensive thing this window did. */
+    private BufferedImage staticMap;
+    private double mapX0, mapY0, mapPpm;
     private JFrame frame;
     private Canvas canvas;
     private volatile double zoom = 30;               // pixels per metre
@@ -65,6 +75,19 @@ final class RayView {
     RayView(World world, Renderer renderer) {
         this.world = world;
         this.renderer = renderer;
+        Grid g = world.grid;
+        gridPath = new Path2D.Double();
+        double gx1 = g.x0 + g.nx * g.cell, gy1 = g.y0 + g.ny * g.cell;
+        for (int i = 0; i <= g.nx; i++) {
+            gridPath.moveTo(g.x0 + i * g.cell, g.y0);
+            gridPath.lineTo(g.x0 + i * g.cell, gy1);
+        }
+        for (int j = 0; j <= g.ny; j++) {
+            gridPath.moveTo(g.x0, g.y0 + j * g.cell);
+            gridPath.lineTo(gx1, g.y0 + j * g.cell);
+        }
+        regionPaths = new Path2D[world.regions.length];
+        for (int i = 0; i < regionPaths.length; i++) regionPaths[i] = path(world.regions[i].xs, world.regions[i].ys);
         outlines = new java.awt.Shape[world.shapes.length];
         for (int i = 0; i < outlines.length; i++) {
             Shape s = world.shapes[i];
@@ -74,6 +97,59 @@ final class RayView {
                 case POLY -> path(s.xs, s.ys);
             };
         }
+        buildStaticMap(zoom);
+    }
+
+    /** Rebuild the cached map if the zoom has moved far enough that it would visibly resample.
+     *  Built at the display zoom so it blits 1:1 and hairlines survive; only zooming pays for it. */
+    private void ensureStaticMap(double z) {
+        Grid g = world.grid;
+        double maxPpm = Math.sqrt(8e6 / Math.max(1, g.nx * g.cell * g.ny * g.cell));
+        double ppm = Math.max(8, Math.min(z, maxPpm));
+        if (staticMap != null && Math.abs(ppm - mapPpm) <= mapPpm * 0.15) return;
+        buildStaticMap(ppm);
+    }
+
+    private void buildStaticMap(double ppm) {
+        Grid g = world.grid;
+        double maxPpm = Math.sqrt(8e6 / Math.max(1, g.nx * g.cell * g.ny * g.cell));
+        mapPpm = Math.max(8, Math.min(ppm, maxPpm));
+        mapX0 = g.x0;
+        mapY0 = g.y0;
+        int w = (int) Math.ceil(g.nx * g.cell * mapPpm);
+        int h = (int) Math.ceil(g.ny * g.cell * mapPpm);
+        staticMap = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D d = staticMap.createGraphics();
+        d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        d.scale(mapPpm, mapPpm);
+        d.translate(-mapX0, -mapY0);
+        float px = (float) (1 / mapPpm);
+
+        d.setStroke(new BasicStroke(px));
+        d.setColor(GRID);
+        d.draw(gridPath);
+        for (int i = 0; i < regionPaths.length; i++) {
+            Region r = world.regions[i];
+            d.setColor(alpha(r.floorColor, r.sky ? 45 : 75));
+            d.fill(regionPaths[i]);
+            d.setColor(alpha(r.floorColor, 130));
+            d.draw(regionPaths[i]);
+        }
+        for (int i = 0; i < outlines.length; i++) {
+            Shape s = world.shapes[i];
+            if (s.kind == World.Kind.SEG) {
+                d.setStroke(new BasicStroke(px * 2.5f));
+                d.setColor(alpha(s.color, 230));
+                d.draw(outlines[i]);
+                continue;
+            }
+            d.setStroke(new BasicStroke(px));
+            d.setColor(alpha(s.color, s.z0 > 0.3 ? 35 : 120));   // things up in the air are fainter
+            d.fill(outlines[i]);
+            d.setColor(alpha(s.color, 230));
+            d.draw(outlines[i]);
+        }
+        d.dispose();
     }
 
     /** Call on the EDT: opens to the right of the main window, at the same height. */
@@ -149,50 +225,36 @@ final class RayView {
         AffineTransform screen = g.getTransform();
         g.transform(m);
 
-        // The acceleration grid, and the cells the traced ray's DDA walked
+        // The static world - grid, regions, shape footprints - as one prebuilt image
         Grid gr = world.grid;
-        g.setStroke(new BasicStroke(px));
-        g.setColor(GRID);
-        double gx1 = gr.x0 + gr.nx * gr.cell, gy1 = gr.y0 + gr.ny * gr.cell;
-        for (int i = 0; i <= gr.nx; i++) g.draw(new Line2D.Double(gr.x0 + i * gr.cell, gr.y0, gr.x0 + i * gr.cell, gy1));
-        for (int j = 0; j <= gr.ny; j++) g.draw(new Line2D.Double(gr.x0, gr.y0 + j * gr.cell, gx1, gr.y0 + j * gr.cell));
+        ensureStaticMap(z);
+        // g already carries the view transform, so this only has to map image pixels to world metres
+        AffineTransform mapAt = AffineTransform.getTranslateInstance(mapX0, mapY0);
+        mapAt.scale(1 / mapPpm, 1 / mapPpm);
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.drawImage(staticMap, mapAt, null);
+
+        // The cells the traced ray's DDA walked
         if (tr != null) {
             g.setColor(CELL);
             for (int[] c : tr.cells)
                 g.fill(new Rectangle2D.Double(gr.x0 + c[0] * gr.cell, gr.y0 + c[1] * gr.cell, gr.cell, gr.cell));
         }
 
-        // Regions and shapes
-        for (Region r : world.regions) {
-            Path2D p = path(r.xs, r.ys);
-            g.setColor(alpha(r.floorColor, r.sky ? 45 : 75));
-            g.fill(p);
-            g.setColor(alpha(r.floorColor, 130));
-            g.draw(p);
-        }
-        for (int i = 0; i < outlines.length; i++) {
-            Shape s = world.shapes[i];
-            if (s.kind == World.Kind.SEG) {
-                g.setStroke(new BasicStroke(px * 2.5f));
-                g.setColor(alpha(s.color, 230));
-                g.draw(outlines[i]);
-                continue;
-            }
-            g.setStroke(new BasicStroke(px));
-            g.setColor(alpha(s.color, s.z0 > 0.3 ? 35 : 120));   // things up in the air (desktops, tree canopies) are fainter
-            g.fill(outlines[i]);
-            g.setColor(alpha(s.color, 230));
-            g.draw(outlines[i]);
-        }
-
         // Every ray, drawn from the player to the point where its column became full
         int W = renderer.W;
         g.setStroke(new BasicStroke(px));
         g.setColor(RAY);
-        for (int x = 0; x < W; x += 2) {
+        fan.reset();
+        // Every 4th column is plenty to read the fan, and these are translucent antialiased lines -
+        // the single most expensive thing this window draws.
+        int stride = Math.max(1, W / 160);
+        for (int x = 0; x < W; x += stride) {
             double camX = 2 * (x + 0.5) / W - 1, rx = dx + plX * camX, ry = dy + plY * camX, t = renderer.rayEnd[x];
-            g.draw(new Line2D.Double(v.x(), v.y(), v.x() + rx * t, v.y() + ry * t));
+            fan.moveTo(v.x(), v.y());
+            fan.lineTo(v.x() + rx * t, v.y() + ry * t);
         }
+        g.draw(fan);
 
         // Camera: direction vector and camera plane
         List<Label> labels = new ArrayList<>();
@@ -278,8 +340,9 @@ final class RayView {
 
         List<String> head = new ArrayList<>();
         head.add("Ray view    wheel = zoom    N = follow turn / north up    (R in the main window toggles this)");
-        head.add(String.format("Yellow: %d rays, each drawn until its column is full    avg %.1f cells walked, %.1f shapes tested per ray",
-                W, cells / W, tests / W));
+        head.add(String.format("Yellow: %d rays, every %d drawn, each to where its column filled",
+                W, Math.max(1, W / 160)));
+        head.add(String.format("Per ray: %.1f grid cells walked, %.1f shapes tested", cells / W, tests / W));
         head.add(String.format("FOV %.0f deg    %s", renderer.fov(),
                 v.fisheye() ? "fisheye demo: projecting by straight-line distance (wrong)"
                             : "projecting by perpendicular distance (no fisheye)"));
