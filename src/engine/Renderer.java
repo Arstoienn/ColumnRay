@@ -31,6 +31,8 @@ final class Renderer {
         double eye;           // eye height (world z)
         double pitch;         // horizon offset in pixels, positive when looking up
         boolean fisheye;      // deliberately wrong comparison mode: project by straight-line distance
+        // Which part of the buffer to render this frame: columns [x0, x1), rows [y0, y1).
+        int x0, y0, x1 = Integer.MAX_VALUE, y1 = Integer.MAX_VALUE;
     }
 
     /** What kind of thing the ray ran into. Only SHAPE and PORTAL events get a number in the ray view. */
@@ -55,49 +57,68 @@ final class Renderer {
         final List<TraceEvent> events = new ArrayList<>();
     }
 
-    final int W, H;
-    private double pl;                       // half-width of the camera plane = tan(FOV/2)
+    /** The pixel buffer. It can be larger than the view: looking up or down needs a little
+     *  overscan around it, which Main then warps into the tilted view (see Main.preparePitch). */
+    int W, H;
+    final int viewW, viewH;                  // the image the camera actually shows
     private double F;                        // focal length in pixels
-    private final int[] pixels;
+    private int[] pixels;
     private final World world;
-    private final ThreadLocal<Column> columns;
+    private ThreadLocal<Column> columns;
 
     // Ray-view statistics: where each column's ray stopped, how many cells it walked, how many shapes it tested
-    final double[] rayEnd;
-    final int[] cellsVisited, shapesTested;
-    volatile int traceColumn = -1;           // the column to record in detail
+    double[] rayEnd;
+    int[] cellsVisited, shapesTested;
+    int drawnX0, drawnX1;                    // the columns the last frame actually rendered
+    volatile int traceColumn = -1;           // the column to record in detail (buffer column)
     volatile Trace trace;                    // the most recent recording
 
     Renderer(World world, int w, int h, int[] pixels) {
         this.world = world;
+        this.viewW = w;
+        this.viewH = h;
+        resize(w, h, pixels);
+        setFov(DEFAULT_FOV);
+    }
+
+    /** Point the renderer at a (usually larger) buffer. Call between frames only. */
+    void resize(int w, int h, int[] pixels) {
         this.W = w;
         this.H = h;
         this.pixels = pixels;
         this.rayEnd = new double[w];
         this.cellsVisited = new int[w];
         this.shapesTested = new int[w];
-        this.columns = ThreadLocal.withInitial(() -> new Column());
-        setFov(DEFAULT_FOV);
+        this.columns = ThreadLocal.withInitial(() -> new Column());   // per-column scratch is sized by H
     }
 
-    /** Horizontal field of view in degrees. The vertical axis uses the same focal length,
-     *  so pixels stay square and nothing is stretched. */
+    /** Horizontal field of view in degrees, across the view (not the overscan). The vertical axis
+     *  uses the same focal length, so pixels stay square and nothing is stretched. */
     void setFov(double deg) {
-        pl = Math.tan(Math.toRadians(deg) / 2);
-        F = (W / 2.0) / pl;
+        F = (viewW / 2.0) / Math.tan(Math.toRadians(deg) / 2);
     }
 
-    double fov() { return Math.toDegrees(2 * Math.atan(pl)); }
+    double fov() { return Math.toDegrees(2 * Math.atan(planeHalfWidth())); }
 
-    double planeHalfWidth() { return pl; }
+    /** Half-width of the camera plane at distance 1 = tan(FOV/2): the edge of the view. */
+    double planeHalfWidth() { return (viewW / 2.0) / F; }
 
     double focal() { return F; }
 
+    /** The buffer column the view direction goes through. Column x casts the ray
+     *  dir + perp * (x + 0.5 - centerX()) / F. */
+    double centerX() { return W / 2.0; }
+
     void render(Camera cam) {
-        int chunks = Math.min(W, Runtime.getRuntime().availableProcessors() * 4);
+        int x0 = Math.max(0, cam.x0), x1 = Math.min(W, cam.x1), n = x1 - x0;
+        drawnX0 = x0;
+        drawnX1 = Math.max(x0, x1);
+        if (n <= 0) return;
+        ThreadLocal<Column> cols = columns;
+        int chunks = Math.min(n, Runtime.getRuntime().availableProcessors() * 4);
         IntStream.range(0, chunks).parallel().forEach(c -> {
-            Column col = columns.get();
-            for (int x = c * W / chunks, end = (c + 1) * W / chunks; x < end; x++) col.render(x, cam);
+            Column col = cols.get();
+            for (int x = x0 + c * n / chunks, end = x0 + (c + 1) * n / chunks; x < end; x++) col.render(x, cam);
         });
     }
 
@@ -141,14 +162,15 @@ final class Renderer {
             px = cam.x;
             py = cam.y;
             eye = cam.eye;
-            hz = H / 2.0 + cam.pitch;                       // horizon row (looking up/down only moves this)
-            double camX = 2 * (x + 0.5) / W - 1;            // -1 left ... +1 right
-            rx = cam.dirX - cam.dirY * pl * camX;           // plane = [-dir.y*PL, dir.x*PL]
-            ry = cam.dirY + cam.dirX * pl * camX;           // deliberately not normalised: t is the perpendicular distance
+            hz = H / 2.0 + cam.pitch;                       // horizon row (the renderer itself only ever y-shears)
+            double off = (x + 0.5 - W / 2.0) / F;           // where this column crosses the camera plane
+            rx = cam.dirX - cam.dirY * off;                 // plane = [-dir.y, dir.x]
+            ry = cam.dirY + cam.dirX * off;                 // deliberately not normalised: t is the perpendicular distance
             dk = cam.fisheye ? Math.hypot(rx, ry) : 1;      // fisheye: turn perpendicular distance into straight-line distance
-            open = 1;
-            o0[0] = 0;
-            o1[0] = H;
+            int y0 = Math.max(0, cam.y0), y1 = Math.min(H, cam.y1);
+            open = y1 > y0 ? 1 : 0;
+            o0[0] = y0;
+            o1[0] = y1;
             if (++ray == Integer.MAX_VALUE) { Arrays.fill(stamp, 0); ray = 1; }
             pending.clear();
             crossings = 0;
@@ -525,7 +547,7 @@ final class Renderer {
         }
 
         private int sky(int y) {
-            double s = Math.max(0, Math.min(1, (hz - y) / (H * 0.9)));
+            double s = Math.max(0, Math.min(1, (hz - y) / (viewH * 0.9)));
             return rgb(205 - 125 * s, 222 - 87 * s, 238 - 28 * s);
         }
 

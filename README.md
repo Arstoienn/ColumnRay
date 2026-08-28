@@ -18,6 +18,7 @@ Needs JDK 21 or newer (developed on JDK 26).
 ./run.sh --size 1280x720                   # output resolution
 ./run.sh --ss 2                            # 2x supersampling (anti-aliasing)
 ./run.sh --feet 3.6                        # start on the upper storey instead of the ground one
+./run.sh --shear                           # look up / down the old way (y-shearing), for comparison
 ```
 
 One ray is cast per rendered column, so **the rendered width is literally the ray count**:
@@ -63,8 +64,8 @@ frame; the grid, regions and shape footprints never move, so they are now drawn 
 ## Anti-aliasing (`--ss`)
 
 `--ss N` renders at N times the output size in both axes and box-filters each N x N block down to
-one output pixel. `--ss 1` (the default) is a true no-op: the renderer writes straight into the
-window image, no copy, byte-identical to having no supersampling code at all.
+one output pixel. `--ss 1` (the default) is a no-op: the pitch warp (see below) writes straight
+into the window image and no downsample runs.
 
 | Output | `--ss` | Rays | ms / frame | fps |
 |---|---|---|---|---|
@@ -86,6 +87,7 @@ Q / E to turn, Space to jump, C to crouch, Shift to run, M to toggle the minimap
 
 - `[` `]` (or `-` `=`): change the field of view
 - `F`: fisheye comparison - project by straight-line distance instead (the wrong way, on purpose)
+- `P`: pitch comparison - look up / down by y-shearing instead of a true tilt (the old way)
 - `R`: show / hide the ray view
 
 ## The ray view
@@ -114,6 +116,39 @@ view direction - so there is no fisheye distortion. Press `F` to switch to strai
 compare. Things near the edge of the screen do look wider, which is what an ordinary perspective
 projection does; the wider the FOV the more obvious it gets, so try turning it down with `[`.
 
+## Looking up and down
+
+A column renderer can only draw columns that stay vertical, so on its own it can only look up and
+down by **y-shearing**: slide the horizon and keep every vertical edge vertical. A real camera that
+tilts back sees verticals converge towards the top of the picture. Without that, the top and bottom
+of the screen get stretched - looking down from the first floor, the pool comes out far too wide -
+which feels like a vertical fisheye.
+
+So the renderer still y-shears, and `Main.warp()` turns the result into a real tilt. Both are
+pinhole cameras at the same eye point, one with an upright image plane and one with a tilted one, so
+the tilted picture is an exact projective warp of the upright one, and for pitch alone that warp
+works row by row. Output row `v` (measured up from the centre) reads a single upright row `v'`,
+stretched horizontally about the centre by `s`, where `p` is the pitch:
+
+```
+z = F cos p - v sin p      s = F / z      v' = F (F sin p + v cos p) / z
+```
+
+Looking up, the top rows have `s > 1` - they need rays outside the normal field of view - so the
+renderer draws a slightly wider and taller upright image (overscan), and only the columns and rows
+the warp will actually read. At pitch 0 the warp is an exact 1:1 copy: the frame is pixel-identical
+to the old y-sheared one.
+
+| 640x360 | rays | ms / frame |
+|---|---|---|
+| pitch 0 | 644 | 0.82 |
+| pitch 30, true perspective | 946 | 1.10 |
+| pitch 30, y-shearing (`--shear`) | 644 | 0.69 |
+
+Press `P` to switch to the old y-shearing and compare; `--shear` does the same for `--shot` and
+`--bench`. The red line marking the traced column in the main view leans with the tilt: one ray is a
+vertical line in the world, so it converges like every other vertical.
+
 ## Files
 
 | File | Contents |
@@ -133,7 +168,8 @@ projection does; the wider the FOV the more obvious it gets, so try turning it d
    normalised, so the intersection parameter t *is* the perpendicular distance and there is no
    fisheye. -> `Renderer.Column.render`
 2. **Projection**: `rowZ(z, t) = hz - (z - eye) * F / t`, with `hz = H/2 + pitch` (y-shearing).
-   -> `rowZ`
+   -> `rowZ`. The renderer only ever y-shears; `Main.warp()` turns that into a true tilt (see
+   "Looking up and down").
 3. **Intersection**: segments, circles (enter t1, exit t2), convex polygons (test every edge, take
    the smallest and largest t). A negative t1 means the eye is inside the shape's footprint.
    -> `Geometry`
