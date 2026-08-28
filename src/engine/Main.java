@@ -58,7 +58,9 @@ public final class Main {
     private final World world;
     private final BufferedImage image;
     private final int[] out;      // the W x H pixels the window sees
-    private final int[] hi;       // the RW x RH pixels the renderer writes; same array as `out` when SS = 1
+    private final int[] hi;       // the RW x RH tilted view after the pitch warp; same array as `out` when SS = 1
+    private int[] src;            // what the renderer writes: the upright (y-sheared) view plus overscan
+    private int srcW, srcH;
     private final Renderer renderer;
     private final RayView rayView;
     private final Renderer.Camera cam = new Renderer.Camera();
@@ -72,8 +74,15 @@ public final class Main {
     private final Set<Integer> keys = ConcurrentHashMap.newKeySet();
     private double mouseDX, mouseDY;
     private volatile boolean showMap = true, fisheye = false;
+    private volatile boolean shear = false;                      // P: the old y-shearing pitch, for comparison
     private volatile double fovDeg = Renderer.DEFAULT_FOV;
-    private volatile int hoverColumn = -1;                       // which column of the main view the mouse is over
+    private volatile int hoverColumn = -1, hoverRow = -1;        // which pixel of the main view the mouse is over
+    private int traceI = -1, traceJ = -1;                        // the output pixel whose ray the ray view traces
+
+    // This frame's pitch warp, set by preparePitch()
+    private boolean warpShear;
+    private double warpSin, warpCos, warpTan, warpHz, warpCx;
+    private int warpX0, warpX1, warpY1;
     private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
     private double startFeet = Double.NaN;                       // --feet: which storey to start on
     private double fps;
@@ -89,8 +98,11 @@ public final class Main {
         this.viewH = h;
         this.image = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
         this.out = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
-        this.hi = ss == 1 ? out : new int[RW * RH];   // SS = 1: the renderer writes straight into the window image
-        renderer = new Renderer(world, RW, RH, hi);
+        this.hi = ss == 1 ? out : new int[RW * RH];   // SS = 1: the pitch warp writes straight into the window image
+        this.srcW = RW;
+        this.srcH = RH;
+        this.src = new int[RW * RH];                  // grows on demand, see preparePitch()
+        renderer = new Renderer(world, RW, RH, src);
         rayView = new RayView(world, renderer);
         mapOrder = world.shapes.clone();
         Arrays.sort(mapOrder, Comparator.comparingDouble(s -> s.h));
@@ -118,12 +130,14 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         String mapPath = "maps/school.json", shot = null;
         double[] at = null;
-        boolean bench = false;
+        boolean bench = false, shear = false;
         int w = DEFAULT_W, h = DEFAULT_H, ss = 1;
         double startFeet = Double.NaN;
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("--bench")) {
                 bench = true;
+            } else if (args[i].equals("--shear")) {
+                shear = true;
             } else if (args[i].equals("--size")) {
                 if (i + 1 >= args.length) { usage("--size needs a WxH value, e.g. 1280x720"); return; }
                 String[] wh = args[++i].toLowerCase().split("x");
@@ -175,6 +189,7 @@ public final class Main {
             return;
         }
         Main game = new Main(World.load(Path.of(mapPath)), w, h, ss);
+        game.shear = shear;
         if (!Double.isNaN(startFeet)) game.standOn(startFeet);
         if (bench) game.bench();
         else if (shot != null) game.screenshot(new File(shot), at);
@@ -184,12 +199,18 @@ public final class Main {
     /** Spin on the spot and time each frame (headless, no window). */
     private void bench() {
         int frames = 720;
-        for (int i = 0; i < 120; i++) { angle += 0.05; frame(); }                     // warm-up
-        long t0 = System.nanoTime();
-        for (int i = 0; i < frames; i++) { angle += 2 * Math.PI / frames; frame(); }
-        double ms = (System.nanoTime() - t0) / 1e6 / frames;
-        System.out.printf("%dx%d out, %dx%d rendered (ss %d, %d rays): %.2f ms per frame on average (about %.0f fps)%n",
-                W, H, RW, RH, SS, RW, ms, 1000 / ms);
+        double saved = pitch;
+        for (double p : new double[] {0, MAX_PITCH}) {          // level, and fully tilted (the most overscan)
+            pitch = p;
+            for (int i = 0; i < 120; i++) { angle += 0.05; frame(); }                     // warm-up
+            long t0 = System.nanoTime();
+            for (int i = 0; i < frames; i++) { angle += 2 * Math.PI / frames; frame(); }
+            double ms = (System.nanoTime() - t0) / 1e6 / frames;
+            System.out.printf("%dx%d out, %dx%d rendered (ss %d), pitch %2.0f deg %s: %d rays, %.2f ms per frame (about %.0f fps)%n",
+                    W, H, RW, RH, SS, Math.toDegrees(p), shear ? "shear" : "true",
+                    renderer.drawnX1 - renderer.drawnX0, ms, 1000 / ms);
+        }
+        pitch = saved;
     }
 
     // ---- Main loop ----
@@ -225,7 +246,7 @@ public final class Main {
             update(dt);
             frame();
             present(canvas);
-            rayView.present(new RayView.View(x, y, angle, fisheye));
+            rayView.present(view());
             fps = fps == 0 ? 1 / Math.max(dt, 1e-6) : fps * 0.95 + 0.05 / Math.max(dt, 1e-6);
             if (System.nanoTime() - now < 4_000_000) Thread.sleep(2);
         }
@@ -240,6 +261,7 @@ public final class Main {
                 switch (code) {
                     case KeyEvent.VK_M -> showMap = !showMap;
                     case KeyEvent.VK_F -> fisheye = !fisheye;
+                    case KeyEvent.VK_P -> shear = !shear;
                     case KeyEvent.VK_R -> rayView.toggle();
                     case KeyEvent.VK_OPEN_BRACKET, KeyEvent.VK_MINUS -> fovDeg = Math.max(30, fovDeg - 5);
                     case KeyEvent.VK_CLOSE_BRACKET, KeyEvent.VK_EQUALS -> fovDeg = Math.min(120, fovDeg + 5);
@@ -256,8 +278,8 @@ public final class Main {
                 lx = e.getX();
                 ly = e.getY();
             }
-            @Override public void mouseMoved(MouseEvent e) { hoverColumn = columnAt(e.getX()); }
-            @Override public void mouseExited(MouseEvent e) { hoverColumn = -1; }
+            @Override public void mouseMoved(MouseEvent e) { hoverColumn = columnAt(e.getX()); hoverRow = rowAt(e.getY()); }
+            @Override public void mouseExited(MouseEvent e) { hoverColumn = hoverRow = -1; }
         };
         canvas.addMouseListener(drag);
         canvas.addMouseMotionListener(drag);
@@ -271,13 +293,20 @@ public final class Main {
         return c >= 0 && c < RW ? c : -1;
     }
 
+    /** Window coordinate -> row of the main view; -1 when the point is outside it. */
+    private int rowAt(int my) {
+        int r = (int) Math.floor((my - viewY) * (double) RH / viewH);
+        return r >= 0 && r < RH ? r : -1;
+    }
+
     // ---- Player physics ----
 
     private void update(double dt) {
         double fov = fovDeg;
         if (Math.abs(renderer.fov() - fov) > 1e-6) renderer.setFov(fov);
-        int hover = hoverColumn;
-        renderer.traceColumn = hover >= 0 ? hover : RW / 2;      // the column the ray view records in detail
+        int hc = hoverColumn, hr = hoverRow;
+        traceI = hc >= 0 && hr >= 0 ? hc : -1;                   // the pixel the ray view traces; -1 = centre
+        traceJ = hc >= 0 && hr >= 0 ? hr : -1;
 
         double mdx, mdy;
         synchronized (this) { mdx = mouseDX; mdy = mouseDY; mouseDX = mouseDY = 0; }
@@ -371,17 +400,112 @@ public final class Main {
         cam.dirX = Math.cos(angle);
         cam.dirY = Math.sin(angle);
         cam.eye = viewFeet + eyeH;
-        cam.pitch = renderer.focal() * Math.tan(pitch);     // y-shearing
-        cam.fisheye = fisheye;
+        cam.fisheye = fisheye;                              // pitch and the render window: preparePitch()
         return cam;
+    }
+
+    private RayView.View view() {
+        return new RayView.View(x, y, angle, fisheye, Math.toDegrees(pitch), shear);
     }
 
     // ---- Rendering ----
 
-    /** Render one frame and, when supersampling, box-filter it down to the output image. */
+    /** Render one frame, tilt it, and when supersampling box-filter it down to the output image. */
     private void frame() {
-        renderer.render(camera());
+        Renderer.Camera c = camera();
+        preparePitch(c);
+        renderer.traceColumn = sourceColumn(traceI >= 0 ? traceI : RW / 2, traceJ >= 0 ? traceJ : RH / 2);
+        renderer.render(c);
+        warp();
         if (SS > 1) downsample();
+    }
+
+    /**
+     * Looking up and down.
+     *
+     * A column renderer can only draw columns that stay vertical, and on its own that means
+     * y-shearing: slide the horizon, keep every vertical edge vertical. That is not what a camera
+     * does when it tilts - looking up, verticals converge towards the top of the screen, and without
+     * that the top and bottom of the picture get stretched, which reads as a vertical fisheye.
+     *
+     * Both are pinhole cameras at the same eye point, one with an upright image plane and one with a
+     * tilted one, so each is an exact projective warp of the other, and for a pure pitch that warp
+     * is simple row by row. Measuring v upwards from the centre of the screen, v' upwards from the
+     * horizon of the upright image, and p = pitch:
+     *
+     *   z = F cos p - v sin p      s = F / z      v' = F (F sin p + v cos p) / z
+     *
+     * Output row v shows upright row v', stretched horizontally about the centre by s. So the
+     * renderer draws the upright view - taller than the screen, and wider for the rows where s > 1
+     * (the top when looking up) - and warp() resamples it. At p = 0 this is an exact 1:1 copy.
+     */
+    private void preparePitch(Renderer.Camera c) {
+        double h2 = RH / 2.0, w2 = RW / 2.0;
+        warpShear = shear;
+        warpSin = Math.sin(pitch);
+        warpCos = Math.cos(pitch);
+        warpTan = Math.tan(pitch);
+        double sMax = Math.max(rowScale(h2), rowScale(-h2));   // the widest row is the top or the bottom one
+        double vHi = rowSource(h2), vLo = rowSource(-h2);       // rowSource is monotonic in v
+        int needW = 2 * (int) Math.ceil(w2 * sMax) + 4;
+        int needH = (int) Math.ceil(vHi - vLo) + 4;
+        if (needW > srcW || needH > srcH) {                     // grow only: an unused margin costs nothing
+            srcW = Math.max(srcW, (int) (needW * 1.1));
+            srcH = Math.max(srcH, (int) (needH * 1.1));
+            src = new int[srcW * srcH];
+            renderer.resize(srcW, srcH, src);
+        }
+        warpCx = renderer.centerX();
+        warpHz = vHi + 2;                                       // the top of the screen lands on source row ~2
+        warpX0 = Math.max(0, (int) Math.floor(warpCx - needW / 2.0));
+        warpX1 = Math.min(srcW, warpX0 + needW);
+        warpY1 = Math.min(srcH, needH);
+        c.pitch = warpHz - srcH / 2.0;                          // the renderer puts the horizon at H/2 + pitch
+        c.x0 = warpX0;
+        c.x1 = warpX1;
+        c.y0 = 0;
+        c.y1 = warpY1;
+    }
+
+    /** Horizontal stretch s for output row v (measured up from the centre). */
+    private double rowScale(double v) {
+        if (warpShear) return 1;
+        double F = renderer.focal();
+        return F / Math.max(1e-3, F * warpCos - v * warpSin);
+    }
+
+    /** The height v' in the upright image that output row v shows. */
+    private double rowSource(double v) {
+        double F = renderer.focal();
+        if (warpShear) return v + F * warpTan;
+        return F * (F * warpSin + v * warpCos) / Math.max(1e-3, F * warpCos - v * warpSin);
+    }
+
+    /** Resample the upright render into the tilted output, one source row per output row. */
+    private void warp() {
+        double w2 = RW / 2.0, h2 = RH / 2.0;
+        int[] s = src;
+        int sw = srcW, xLo = warpX0, xHi = warpX1 - 1, yHi = warpY1 - 1;
+        IntStream.range(0, RH).parallel().forEach(j -> {
+            double v = h2 - (j + 0.5), k = rowScale(v);
+            int ys = Math.max(0, Math.min(yHi, (int) Math.floor(warpHz - rowSource(v))));
+            int srow = ys * sw, orow = j * RW;
+            double sx = warpCx + (0.5 - w2) * k;               // source x of output column 0's centre
+            for (int i = 0; i < RW; i++, sx += k)
+                hi[orow + i] = s[srow + Math.max(xLo, Math.min(xHi, (int) Math.floor(sx)))];
+        });
+    }
+
+    /** The source (renderer) column that output pixel (i, j) comes from. */
+    private int sourceColumn(int i, int j) {
+        double k = rowScale(RH / 2.0 - (j + 0.5));
+        return Math.max(warpX0, Math.min(warpX1 - 1, (int) Math.floor(warpCx + (i + 0.5 - RW / 2.0) * k)));
+    }
+
+    /** Where source column col shows up on output row j, in output pixels from the left edge. */
+    private double outputX(int col, int j) {
+        double k = rowScale(RH / 2.0 - (j + 0.5));
+        return (col + 0.5 - warpCx) / k + RW / 2.0;
     }
 
     /** Average each SS x SS block of the render buffer into one output pixel. */
@@ -439,7 +563,8 @@ public final class Main {
         }
         // the column argument is an output column, so it means the same place whatever --ss is
         int col = at != null && at.length > 4 ? Math.max(0, Math.min(W - 1, (int) at[4])) : W / 2;
-        renderer.traceColumn = col * SS + SS / 2;
+        traceI = col * SS + SS / 2;
+        traceJ = -1;
         frame();
         int scale = W < 1000 ? 2 : 1;          // upscale small renders so the HUD text stays readable
         BufferedImage img = new BufferedImage(W * scale, H * scale, BufferedImage.TYPE_INT_RGB);
@@ -453,7 +578,7 @@ public final class Main {
         File raysOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-rays.png"));
         BufferedImage rays = new BufferedImage(640, 720, BufferedImage.TYPE_INT_RGB);
         Graphics2D rg = rays.createGraphics();
-        rayView.draw(rg, rays.getWidth(), rays.getHeight(), new RayView.View(x, y, angle, fisheye));
+        rayView.draw(rg, rays.getWidth(), rays.getHeight(), view());
         rg.dispose();
         ImageIO.write(rays, "png", raysOut);
         System.out.println("wrote " + raysOut);
@@ -465,10 +590,13 @@ public final class Main {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
         int col = renderer.traceColumn;
-        if (markColumn && col >= 0) {                        // the column shown in red in the ray view
-            double cx = ox + (col + 0.5) * dw / RW;
+        if (markColumn && col >= 0) {
+            // The column shown in red in the ray view, mapped back through the pitch warp: one ray
+            // is a vertical line in the world, so when the view tilts it leans like every other vertical.
+            double sx = (double) dw / RW, sy = (double) dh / RH;
             g.setColor(new Color(255, 70, 50, 140));
-            g.draw(new Line2D.Double(cx, oy, cx, oy + dh));
+            g.draw(new Line2D.Double(ox + outputX(col, 0) * sx, oy + 0.5 * sy,
+                                     ox + outputX(col, RH - 1) * sx, oy + (RH - 0.5) * sy));
         }
         drawHud(g, ox + 12, oy + 20);
         if (showMap) drawMinimap(g, ox + dw - 12, oy + 12);
@@ -491,9 +619,10 @@ public final class Main {
             String.format("%s   %.0f fps   %dx%d%s   FOV %.0f deg   %s", world.name, fps, W, H,
                     SS > 1 ? " x" + SS + " AA" : "", renderer.fov(),
                     fisheye ? "fisheye demo (straight-line distance, wrong)" : "perpendicular distance"),
-            String.format("%s   (%.1f, %.1f)   feet %.2f m", r == null ? "-" : r.name, x, y, feet),
+            String.format("%s   (%.1f, %.1f)   feet %.2f m   pitch %+.0f deg %s", r == null ? "-" : r.name, x, y, feet,
+                    Math.toDegrees(pitch), shear ? "y-shearing (old)" : "true perspective"),
             "WASD move   drag mouse / arrows look   Space jump   C crouch   Shift run",
-            "[ ] FOV   F fisheye demo   R ray view   M minimap   Esc quit   hover the view to pick a column",
+            "[ ] FOV   F fisheye demo   P pitch: true / shear   R ray view   M minimap   Esc quit   hover to pick a column",
         };
         g.setFont(new Font(Font.DIALOG, Font.PLAIN, 13));
         for (int i = 0; i < lines.length; i++) {
@@ -561,6 +690,7 @@ public final class Main {
         System.err.println("       java -cp out engine.Main [map.json] [--size WxH] [--ss N] --shot out.png [x y angle pitch [column]]");
         System.err.println("  --size  output resolution (default " + DEFAULT_W + "x" + DEFAULT_H + ")");
         System.err.println("  --feet  starting floor height in metres, to begin on an upper storey (e.g. 3.6)");
+        System.err.println("  --shear look up / down the old way (y-shearing) instead of true perspective");
         System.err.println("  --ss    supersampling factor 1-8: renders at size*N and averages down (default 1).");
         System.err.println("          Rays cast per frame = width * N.");
     }

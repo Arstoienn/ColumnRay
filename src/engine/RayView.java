@@ -34,7 +34,7 @@ import javax.swing.JFrame;
 
 /** Second window: a top-down view of where every column's ray goes and where it stops. */
 final class RayView {
-    record View(double x, double y, double angle, boolean fisheye) {}
+    record View(double x, double y, double angle, boolean fisheye, double pitchDeg, boolean shear) {}
 
     /** left: draw the text to the left of the point (right-aligned against it). */
     private record Label(double x, double y, String text, Color color, boolean left) {
@@ -241,16 +241,18 @@ final class RayView {
                 g.fill(new Rectangle2D.Double(gr.x0 + c[0] * gr.cell, gr.y0 + c[1] * gr.cell, gr.cell, gr.cell));
         }
 
-        // Every ray, drawn from the player to the point where its column became full
-        int W = renderer.W;
+        // Every ray, drawn from the player to the point where its column became full. When pitched
+        // this includes the overscan columns only the top (or bottom) rows of the screen use.
+        int x0 = renderer.drawnX0, x1 = renderer.drawnX1;
+        double cx = renderer.centerX(), F = renderer.focal();
         g.setStroke(new BasicStroke(px));
         g.setColor(RAY);
         fan.reset();
-        // Every 4th column is plenty to read the fan, and these are translucent antialiased lines -
-        // the single most expensive thing this window draws.
-        int stride = Math.max(1, W / 160);
-        for (int x = 0; x < W; x += stride) {
-            double camX = 2 * (x + 0.5) / W - 1, rx = dx + plX * camX, ry = dy + plY * camX, t = renderer.rayEnd[x];
+        // A couple of hundred lines is plenty to read the fan, and these are translucent antialiased
+        // lines - the single most expensive thing this window draws.
+        int stride = Math.max(1, (x1 - x0) / 160);
+        for (int x = x0; x < x1; x += stride) {
+            double off = (x + 0.5 - cx) / F, rx = dx - dy * off, ry = dy + dx * off, t = renderer.rayEnd[x];
             fan.moveTo(v.x(), v.y());
             fan.lineTo(v.x() + rx * t, v.y() + ry * t);
         }
@@ -334,23 +336,26 @@ final class RayView {
     }
 
     private void drawText(Graphics2D g, int w, int h, View v, Trace tr) {
-        int W = renderer.W;
+        int x0 = renderer.drawnX0, x1 = renderer.drawnX1, W = Math.max(1, x1 - x0);
         double cells = 0, tests = 0;
-        for (int x = 0; x < W; x++) { cells += renderer.cellsVisited[x]; tests += renderer.shapesTested[x]; }
+        for (int x = x0; x < x1; x++) { cells += renderer.cellsVisited[x]; tests += renderer.shapesTested[x]; }
 
         List<String> head = new ArrayList<>();
         head.add("Ray view    wheel = zoom    N = follow turn / north up    (R in the main window toggles this)");
-        head.add(String.format("Yellow: %d rays, every %d drawn, each to where its column filled",
-                W, Math.max(1, W / 160)));
+        head.add(String.format("Yellow: %d rays (%d across the view), every %d drawn, each to where its column filled",
+                W, renderer.viewW, Math.max(1, W / 160)));
         head.add(String.format("Per ray: %.1f grid cells walked, %.1f shapes tested", cells / W, tests / W));
         head.add(String.format("FOV %.0f deg    %s", renderer.fov(),
                 v.fisheye() ? "fisheye demo: projecting by straight-line distance (wrong)"
                             : "projecting by perpendicular distance (no fisheye)"));
+        head.add(String.format("Pitch %+.0f deg    %s", v.pitchDeg(),
+                v.shear() ? "y-shearing (old way: verticals stay vertical, top and bottom stretch)"
+                          : "true perspective (verticals converge; extra rays cover the wider rows)"));
         panel(g, head, 8, 8, TEXT);
 
         if (tr == null) return;
         List<String> list = new ArrayList<>();
-        double camX = 2 * (tr.column + 0.5) / W - 1;
+        double camX = (tr.column + 0.5 - renderer.centerX()) / renderer.focal() / renderer.planeHalfWidth();
         list.add(String.format("Red: column %d (camX %+.2f) stopped at t = %.2f, %s, after %d cells",
                 tr.column, camX, tr.endT, tr.endReason, tr.cells.size()));
         int maxLines = Math.max(4, (int) (h * 0.34 / LINE));
