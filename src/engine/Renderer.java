@@ -55,6 +55,9 @@ final class Renderer {
         String endReason = "";
         final List<int[]> cells = new ArrayList<>();
         final List<TraceEvent> events = new ArrayList<>();
+        final List<Shape> tested = new ArrayList<>();     // every shape that got a real intersection test
+        int skipped;                                      // shapes rejected one by one by skip()
+        int groupsSkipped, groupMembersSkipped;           // whole groups rejected at once, and their size
     }
 
     /** The pixel buffer. It can be larger than the view: looking up or down needs a little
@@ -219,20 +222,33 @@ final class Renderer {
             while (open > 0 && cx >= 0 && cy >= 0 && cx < g.nx && cy < g.ny) {
                 cells++;
                 if (tr != null) tr.cells.add(new int[] {cx, cy});
-                for (int i : g.shapes[cy * g.nx + cx]) {
-                    if (stamp[i] == ray) continue;
-                    stamp[i] = ray;
-                    Shape sh = world.shapes[i];
-                    if (skip(sh)) continue;
-                    tests++;
-                    Hit h = intersect(sh);
-                    if (h != null) pending.add(h);
+                for (World.Group gp : g.groups[cy * g.nx + cx]) {
+                    // One test for a whole storey's worth of furniture in this cell. Members are not
+                    // stamped, so the ones reaching into the next cell get the same cheap test there.
+                    if (gp.members.length > 1 && hidden(gp.minX, gp.minY, gp.maxX, gp.maxY, gp.z0, gp.h, gp.maxDist)) {
+                        if (tr != null) { tr.groupsSkipped++; tr.groupMembersSkipped += gp.members.length; }
+                        continue;
+                    }
+                    for (int i : gp.members) {
+                        if (stamp[i] == ray) continue;
+                        stamp[i] = ray;
+                        Shape sh = world.shapes[i];
+                        if (skip(sh)) {
+                            if (tr != null) tr.skipped++;
+                            continue;
+                        }
+                        tests++;
+                        if (tr != null) tr.tested.add(sh);
+                        Hit h = intersect(sh);
+                        if (h != null) pending.add(h);
+                    }
                 }
                 double tout = Math.min(tx, ty);
                 // A shape first seen in a later cell must enter beyond that cell, so the ordering
                 // of everything up to tout is already final.
                 flush(tout);
                 lastT = tout;
+                paintAhead(tout);
                 if (tout > MAX_DIST) return;
                 if (tx < ty) { tx += dx; cx += sx; } else { ty += dy; cy += sy; }
             }
@@ -280,29 +296,58 @@ final class Renderer {
          * through the courtyard, because there the rows really are still open.
          */
         private boolean skip(Shape s) {
+            return hidden(s.minX, s.minY, s.maxX, s.maxY, s.z0, s.h, s.maxDist);
+        }
+
+        /** The same test for any box in x, y, z: a shape's bounds, or a whole group's. */
+        private boolean hidden(double minX, double minY, double maxX, double maxY, double z0, double h, double maxDist) {
             double t0 = NEAR, t1 = MAX_DIST;
             if (rx != 0) {
-                double a = (s.minX - px) / rx, b = (s.maxX - px) / rx;
+                double a = (minX - px) / rx, b = (maxX - px) / rx;
                 if (a > b) { double q = a; a = b; b = q; }
                 t0 = Math.max(t0, a);
                 t1 = Math.min(t1, b);
-            } else if (px < s.minX || px > s.maxX) {
+            } else if (px < minX || px > maxX) {
                 return true;
             }
             if (ry != 0) {
-                double a = (s.minY - py) / ry, b = (s.maxY - py) / ry;
+                double a = (minY - py) / ry, b = (maxY - py) / ry;
                 if (a > b) { double q = a; a = b; b = q; }
                 t0 = Math.max(t0, a);
                 t1 = Math.min(t1, b);
-            } else if (py < s.minY || py > s.maxY) {
+            } else if (py < minY || py > maxY) {
                 return true;
             }
-            if (t1 < t0 || t0 > s.maxDist) return true;          // the ray misses it, or it is too far
-            int top = clampRow(Math.min(rowZ(s.h, t0), rowZ(s.h, t1)));
-            int bot = clampRow(Math.max(rowZ(s.z0, t0), rowZ(s.z0, t1)));
+            if (t1 < t0 || t0 > maxDist) return true;            // the ray misses it, or it is too far
+            int top = clampRow(Math.min(rowZ(h, t0), rowZ(h, t1)));
+            int bot = clampRow(Math.max(rowZ(z0, t0), rowZ(z0, t1)));
             if (bot <= top) return true;
             for (int k = 0; k < open; k++) if (o0[k] < bot && o1[k] > top) return false;
             return true;
+        }
+
+        /**
+         * Draw the floors and ceilings up to tout now, rather than at the next event.
+         *
+         * flush() has just handled everything up to tout, so nothing can happen before it any more
+         * (the pending hits are sorted; the next crossing and the next hit bound it too). skip() and
+         * the group test can only reject what is already painted, and floors used to be painted
+         * lazily - only when the next shape or boundary came along. Walking across an empty room
+         * upstairs, the rows your own floor was about to cover were therefore still open, and the
+         * furniture on the storey below was intersection-tested only to be hidden. The pixels are
+         * the same either way: splitting one stretch of floor into several paints the same rows.
+         */
+        private void paintAhead(double tout) {
+            if (open == 0) return;
+            double upTo = Math.min(Math.min(tout, crossT), MAX_DIST);
+            if (!pending.isEmpty()) upTo = Math.min(upTo, pending.get(0).t1());
+            if (upTo <= tPrev) return;
+            surfaces(tPrev, upTo);
+            tPrev = upTo;
+            if (open == 0 && endT < 0) {
+                endT = upTo;
+                endReason = "column full";
+            }
         }
 
         private Hit intersect(Shape s) {
@@ -517,16 +562,30 @@ final class Renderer {
                 Region r = stack[i];
                 if (eye <= r.floor) continue;
                 int f = paint(rowZ(r.floor, tb), rowZ(r.floor, ta), flat(r.floor, r.floorMat, r.floorColor, r.light));
-                if (tr != null && f > 0)
-                    note(EventKind.FLOOR, ta, String.format("%s  t %.2f-%.2f", r.name, ta, Math.min(tb, MAX_DIST)), f);
+                if (tr != null && f > 0) noteSurface(EventKind.FLOOR, r, ta, tb, f);
             }
             for (int i = 0; i < stackN; i++) {
                 Region r = stack[i];
                 if (r.sky || eye >= r.ceil) continue;
                 int c = paint(rowZ(r.ceil, ta), rowZ(r.ceil, tb), flat(r.ceil, r.ceilMat, r.ceilColor, r.light));
-                if (tr != null && c > 0)
-                    note(EventKind.CEILING, ta, String.format("%s  t %.2f-%.2f", r.name, ta, Math.min(tb, MAX_DIST)), c);
+                if (tr != null && c > 0) noteSurface(EventKind.CEILING, r, ta, tb, c);
             }
+        }
+
+        /** Floors are now painted a cell at a time, so merge each run of the same floor (or
+         *  ceiling) back into one line of the ray view's list instead of one per grid cell. */
+        private void noteSurface(EventKind kind, Region r, double ta, double tb, int rows) {
+            String prefix = r.name + "  t ";
+            for (int k = tr.events.size() - 1; k >= 0; k--) {
+                TraceEvent e = tr.events.get(k);
+                if (e.kind().numbered()) break;                   // a shape or portal in between: start a new line
+                if (e.kind() == kind && e.label().startsWith(prefix)) {
+                    tr.events.set(k, new TraceEvent(kind, e.t(),
+                            String.format("%s%.2f-%.2f", prefix, e.t(), Math.min(tb, MAX_DIST)), e.rows() + rows, e.x(), e.y()));
+                    return;
+                }
+            }
+            note(kind, ta, String.format("%s%.2f-%.2f", prefix, ta, Math.min(tb, MAX_DIST)), rows);
         }
 
         /** Horizontal surfaces: invert the projection to get the distance for a row,

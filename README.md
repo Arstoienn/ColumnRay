@@ -234,3 +234,29 @@ Crossing a boundary is one rule: **wall wherever open space on the near side mee
 side**. That produces a lintel where the far ceiling is lower, a step riser where the far floor is
 higher, and the edge of a floor slab seen from either storey. The sky above a region's `top` only
 opens up for a viewer who is themselves under open sky - indoors, your own ceiling is in the way.
+
+### Not paying for the other storeys
+
+The grid is 2D, so the cells a ray walks upstairs are full of the furniture downstairs, and vice
+versa. Nothing is decided per storey up front - the courtyard proves you *can* see the other floor -
+so it is left to the row test: a shape whose every possible row is already painted cannot show, and
+is rejected before any intersection (`skip()`). Two things make that test bite:
+
+- **Floors are painted a cell at a time** (`paintAhead`). They used to be painted only when the next
+  shape or boundary came along, so crossing an empty room upstairs left the rows your own floor was
+  about to cover still open, and the desks below were intersection-tested only to be hidden.
+- **Each cell bundles its shapes by the region they stand in** (`World.Group`), so one room's
+  furniture in that cell gets a single test on the union of their bounds. Full-height walls belong
+  to no single storey and stay on their own.
+
+Neither changes a pixel (the frame hashes are identical before and after, at pitch 0 and +/-30).
+Measured per 640-column frame, standing in the first-floor classroom above the ground-floor desks:
+
+| | before | after |
+|---|---|---|
+| per-shape `skip()` tests | 11,634 | 349 |
+| group tests (shapes rejected by them) | - | 3,463 (15,508) |
+| ground-floor shapes intersected, all hidden | 7 | 0 |
+
+The same holds looking up from the ground floor. On this two-storey map the saving is below the
+noise in frame time; it matters because the cost grows with every storey stacked on the grid.
