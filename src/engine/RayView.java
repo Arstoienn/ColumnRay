@@ -358,6 +358,8 @@ final class RayView {
         double camX = (tr.column + 0.5 - renderer.centerX()) / renderer.focal() / renderer.planeHalfWidth();
         list.add(String.format("Red: column %d (camX %+.2f) stopped at t = %.2f, %s, after %d cells",
                 tr.column, camX, tr.endT, tr.endReason, tr.cells.size()));
+        list.add(String.format("     %d shapes intersected, %d rejected one by one, %d groups (%d shapes) rejected at once",
+                tr.tested.size(), tr.skipped, tr.groupsSkipped, tr.groupMembersSkipped));
         int maxLines = Math.max(4, (int) (h * 0.34 / LINE));
         int n = 0;
         for (TraceEvent e : tr.events) {
