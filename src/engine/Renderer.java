@@ -453,7 +453,9 @@ final class Renderer {
             if (!h.inside()) {
                 double k = lambert(h.nx(), h.ny()) * fog(t1) * light;
                 double u = h.u();
-                side = paint(yTop, yBot, y -> shade(s.color, Materials.side(s.mat, u, eye - (y + 0.5 - hz) * t1 * dk / F) * k));
+                side = paint(yTop, yBot, y -> shade(s.color,
+                        Materials.side(s.mat, u, eye - (y + 0.5 - hz) * t1 * dk / F,
+                                pixelSize(t1)) * k));
             }
             if (eye > top) cap = paint(rowZ(top, h.t2()), h.inside() ? H : yTop, flat(top, s.topMat, s.color, light));
             if (eye < z0) under = paint(h.inside() ? 0 : yBot, rowZ(z0, h.t2()), flat(z0, s.mat, s.color, 0.45 * light));
@@ -518,7 +520,8 @@ final class Renderer {
             if (!(zHi > zLo) || skin == null) return 0;
             double k = lam * skin.light;
             IntUnaryOperator wall = y ->
-                    shade(skin.wallColor, Materials.side(skin.wallMat, u, eye - (y + 0.5 - hz) * t * dk / F) * k);
+                    shade(skin.wallColor, Materials.side(skin.wallMat, u,
+                            eye - (y + 0.5 - hz) * t * dk / F, pixelSize(t)) * k);
             return paint(rowZ(zHi, t), rowZ(zLo, t), wall);
         }
 
@@ -588,13 +591,17 @@ final class Renderer {
             note(kind, ta, String.format("%s%.2f-%.2f", prefix, ta, Math.min(tb, MAX_DIST)), rows);
         }
 
+        /** How wide one pixel is, in metres, on a surface square to the eye at distance t. */
+        private double pixelSize(double t) { return t * dk / F; }
+
         /** Horizontal surfaces: invert the projection to get the distance for a row,
          *  then look up where that lands on the map. */
         private IntUnaryOperator flat(double z, int mat, int color, double k0) {
             return y -> {
                 double t = (eye - z) * F / ((y + 0.5 - hz) * dk);
                 if (!(t > 0) || t > MAX_DIST) return shade(color, 0.3 * k0);
-                return shade(color, Materials.flat(mat, px + rx * t, py + ry * t) * k0 * fog(t));
+                return shade(color,
+                        Materials.flat(mat, px + rx * t, py + ry * t, pixelSize(t)) * k0 * fog(t));
             };
         }
 
