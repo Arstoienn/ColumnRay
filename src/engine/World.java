@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -25,9 +27,13 @@ final class World {
         double floor, ceil;
         double top;          // top of the wall above the opening, seen from an open-air region
         boolean sky;
+        /** false: the floor is only the bottom of the world, and the ground is made of shapes (an
+         *  imported map). The minimap does not count it as somewhere to stand. */
+        boolean walkable = true;
         int floorMat, ceilMat, wallMat;
         int floorColor, ceilColor, wallColor;
         double light;        // ambient brightness (indoor regions are dimmer)
+        int id;              // index into World.regions
         double minX, minY, maxX, maxY;
     }
 
@@ -37,10 +43,61 @@ final class World {
         double cx, cy, r;             // cylinder
         double[] xs, ys;              // convex polygon
         double z0, h;                 // bottom and top height
+        // An optional tilted top: top(x, y) = h + hx * (x - midX) + hy * (y - midY), so h stays the
+        // height at the middle and a shape with no tilt is exactly what it always was. Roofs, eaves
+        // and rocky ground are not flat, and read as flat they come out as staircases of steps.
+        double hx, hy;
+        double hTop;                  // the highest corner: what the grid and the culling must use
+        // The bottom can tilt the same way: bottom(x, y) = z0 + zx * (x - midX) + zy * (y - midY).
+        // With both planes free a shape is a slab of any slope - a diagonal brace, the underside of
+        // an arch, one triangle of a mesh - and it is still a column of solid between two heights
+        // wherever a ray meets it, which is all the renderer ever asks of anything.
+        double zx, zy;
+        double zLow;                  // the lowest corner of the bottom
         int mat, topMat, color;
+        Materials.Texture tex, topTex; // shared atlas tiles; null keeps the procedural material
+        // Or the mesh's own texture: a whole image, placed by uv = [a, b, c, d, e, f] with
+        // u = a p + b q + c, v = d p + e q + f. (p, q) is the world (x, y) for a shape with a plan,
+        // and for a wall the distance along it from a and the height. Null when not mapped.
+        Materials.Texture img;
+        double[] uv;
+        // A blend material's second layer and the height that sharpens the edge between the two,
+        // mixed by the mesh's vertex alpha: va = [g, h, i], alpha = g p + h q + i. See Materials.blend.
+        Materials.Texture imgB, hmap;
+        double[] va;
+        // The mesh's vertex colour for a material that multiplies by it, linear, as three planes:
+        // channel c = vc[3c] p + vc[3c + 1] q + vc[3c + 2]. Null when the material ignores it.
+        double[] vc;
+        // A cut-out's alpha (leaves, netting, rocks painted on the ground), placed by the same uv:
+        // the shape is drawn through it rather than as a solid. Null for a solid shape.
+        Materials.Texture amap;
+        double vb;
+        boolean inv;
+        double ts = 1, topTs = 1;      // metres per tile; the bottom uses tex/ts, like the sides
+        int albedoColor;              // the map colour, before a canopy varies its cards
+        int mask = -1;                // a masked surface: leaves, ferns, grass. -1 = solid
         double maxDist;               // not drawn beyond this distance
         String label;                 // shown in the ray view, e.g. "box/wood"
+        String site;                  // a bomb site's floor ("A", "B", ...): green on the minimap
+        int id;                       // index into World.shapes
         double minX, minY, maxX, maxY;
+
+        /** The top at a point. Flat shapes - everything but a roof or a slope - return h. */
+        double topAt(double x, double y) {
+            return hx == 0 && hy == 0 ? h
+                    : h + hx * (x - (minX + maxX) / 2) + hy * (y - (minY + maxY) / 2);
+        }
+
+        /** How fast the top climbs along a ray going (rx, ry): top(t) = topAt(px, py) + slope * t. */
+        double topSlope(double rx, double ry) { return hx * rx + hy * ry; }
+
+        /** The bottom at a point, and how fast it climbs along a ray: the top's two, for z0. */
+        double bottomAt(double x, double y) {
+            return zx == 0 && zy == 0 ? z0
+                    : z0 + zx * (x - (minX + maxX) / 2) + zy * (y - (minY + maxY) / 2);
+        }
+
+        double bottomSlope(double rx, double ry) { return zx * rx + zy * ry; }
     }
 
     static final class Grid {
@@ -58,21 +115,100 @@ final class World {
      * furniture in that cell is rejected with one test instead of one per shape.
      */
     static final class Group {
-        final int[] members;
+        final int[] members;                  // in tree order: every node's members are one run of it
         final double minX, minY, maxX, maxY, z0, h, maxDist;
 
+        /**
+         * A bounding volume hierarchy over the members.
+         *
+         * One union for the whole group rejects a storey's furniture at once, but it cannot reject
+         * part of it: in a cell of an imported mesh there are hundreds of triangles, a ray through
+         * the cell passes a few of them, and every one of the rest still got its own test - two
+         * fifths of Haven's frame time, measured, once one square of it was its triangles. So the
+         * members are split in half along the widest spread of their middles, and again, down to
+         * LEAF; a test on a node rejects everything under it. Node k holds members[start[k],
+         * end[k]); a leaf has right[k] = -1, otherwise its children are k + 1 and right[k]. Its
+         * bounds are nb[7k..7k+6]: minX, minY, maxX, maxY, lowest bottom, highest top, maxDist.
+         * A node's bounds contain every member's, so "the node cannot show" still implies "no
+         * member can", and what is drawn does not change.
+         */
+        static final int LEAF = 4;
+        final int[] start, end, right;
+        final double[] nb;
+
         Group(int[] members, Shape[] shapes) {
-            this.members = members;
+            int n = members.length;
+            this.members = members.clone();
+            int cap = Math.max(1, 2 * n - 1);           // halves are never empty: under 2n nodes
+            int[] st = new int[cap], en = new int[cap], rt = new int[cap];
+            double[] b = new double[7 * cap];
+            int used = build(this.members, 0, n, shapes, st, en, rt, b, 0);
+            start = Arrays.copyOf(st, used);
+            end = Arrays.copyOf(en, used);
+            right = Arrays.copyOf(rt, used);
+            nb = Arrays.copyOf(b, 7 * used);
+            minX = nb[0]; minY = nb[1]; maxX = nb[2]; maxY = nb[3]; z0 = nb[4]; h = nb[5]; maxDist = nb[6];
+        }
+
+        /** Node k over a[lo, hi); returns the next free node index. */
+        private static int build(int[] a, int lo, int hi, Shape[] shapes, int[] st, int[] en, int[] rt,
+                                 double[] b, int k) {
             double x0 = Double.POSITIVE_INFINITY, y0 = x0, zLo = x0;
             double x1 = Double.NEGATIVE_INFINITY, y1 = x1, zHi = x1, far = x1;
-            for (int i : members) {
-                Shape s = shapes[i];
+            double[] cLo = {x0, x0, x0}, cHi = {x1, x1, x1};
+            for (int m = lo; m < hi; m++) {
+                Shape s = shapes[a[m]];
                 x0 = Math.min(x0, s.minX); y0 = Math.min(y0, s.minY);
                 x1 = Math.max(x1, s.maxX); y1 = Math.max(y1, s.maxY);
-                zLo = Math.min(zLo, s.z0); zHi = Math.max(zHi, s.h);
+                zLo = Math.min(zLo, s.zLow); zHi = Math.max(zHi, s.hTop);
                 far = Math.max(far, s.maxDist);
+                for (int axis = 0; axis < 3; axis++) {
+                    double c = middle(s, axis);
+                    cLo[axis] = Math.min(cLo[axis], c);
+                    cHi[axis] = Math.max(cHi[axis], c);
+                }
             }
-            minX = x0; minY = y0; maxX = x1; maxY = y1; z0 = zLo; h = zHi; maxDist = far;
+            int o = 7 * k;
+            b[o] = x0; b[o + 1] = y0; b[o + 2] = x1; b[o + 3] = y1; b[o + 4] = zLo; b[o + 5] = zHi; b[o + 6] = far;
+            st[k] = lo;
+            en[k] = hi;
+            if (hi - lo <= LEAF) {
+                rt[k] = -1;
+                return k + 1;
+            }
+            int axis = 0;
+            for (int i = 1; i < 3; i++) if (cHi[i] - cLo[i] > cHi[axis] - cLo[axis]) axis = i;
+            int mid = (lo + hi) >>> 1;
+            select(a, lo, hi, mid, shapes, axis);
+            int next = build(a, lo, mid, shapes, st, en, rt, b, k + 1);
+            rt[k] = next;
+            return build(a, mid, hi, shapes, st, en, rt, b, next);
+        }
+
+        /** Twice the middle of a shape's bounds along x, y or z. */
+        private static double middle(Shape s, int axis) {
+            return axis == 0 ? s.minX + s.maxX : axis == 1 ? s.minY + s.maxY : s.zLow + s.hTop;
+        }
+
+        /** Quickselect: afterwards a[nth] is where a sort by middle would put it, with nothing larger
+         *  before it and nothing smaller after it. */
+        private static void select(int[] a, int lo, int hi, int nth, Shape[] shapes, int axis) {
+            while (hi - lo > 1) {
+                double pivot = middle(shapes[a[(lo + hi) >>> 1]], axis);
+                int i = lo, j = hi - 1;
+                while (i <= j) {
+                    while (middle(shapes[a[i]], axis) < pivot) i++;
+                    while (middle(shapes[a[j]], axis) > pivot) j--;
+                    if (i <= j) {
+                        int t = a[i]; a[i] = a[j]; a[j] = t;
+                        i++;
+                        j--;
+                    }
+                }
+                if (nth <= j) hi = j + 1;
+                else if (nth >= i) lo = i;
+                else return;
+            }
         }
     }
 
@@ -83,12 +219,18 @@ final class World {
     final double sunX, sunY;
     final double spawnX, spawnY, spawnAngle;
     final double minX, minY, maxX, maxY;
+    final Map<String, Object> lighting;   // the map's "lighting" block, or null; read by Lighting
+    double minimapRotate;                 // "minimap": {"rotate": degrees clockwise, in quarter turns}
 
     private World(String name, Region[] regions, Shape[] shapes, double cell,
-                  double sunX, double sunY, double spawnX, double spawnY, double spawnAngle) {
+                  double sunX, double sunY, double spawnX, double spawnY, double spawnAngle,
+                  Map<String, Object> lighting) {
         this.name = name;
         this.regions = regions;
         this.shapes = shapes;
+        this.lighting = lighting;
+        for (int i = 0; i < regions.length; i++) regions[i].id = i;
+        for (int i = 0; i < shapes.length; i++) shapes[i].id = i;
         double len = Math.hypot(sunX, sunY);
         this.sunX = sunX / len;
         this.sunY = sunY / len;
@@ -233,9 +375,9 @@ final class World {
             int n = regionsAt((s.minX + s.maxX) / 2, (s.minY + s.maxY) / 2, stack);
             Region home = null;
             for (int k = 0; k < n; k++)
-                if (stack[k].floor <= s.z0 + 1e-6 && s.z0 < stack[k].ceil && (home == null || stack[k].floor > home.floor))
+                if (stack[k].floor <= s.zLow + 1e-6 && s.zLow < stack[k].ceil && (home == null || stack[k].floor > home.floor))
                     home = stack[k];
-            key[i] = home != null && s.h <= home.ceil + 1e-6 ? index.get(home) : -1;
+            key[i] = home != null && s.hTop <= home.ceil + 1e-6 ? index.get(home) : -1;
         }
         g.groups = new Group[g.shapes.length][];
         for (int c = 0; c < g.shapes.length; c++) {
@@ -255,17 +397,100 @@ final class World {
 
     static World load(Path path) throws IOException {
         Map<String, Object> root = obj(Json.parse(Files.readString(path)));
+        Assets textures = new Assets(parseTextures(root, path), parseImages(root, path));
         List<Region> regions = new ArrayList<>();
         for (Object o : list(root.get("regions"))) regions.add(parseRegion(obj(o)));
         List<Shape> shapes = new ArrayList<>();
-        for (Object o : list(root.get("shapes"))) parseShape(obj(o), 0, 0, shapes);
+        if (root.get("shapes") != null)
+            for (Object o : list(root.get("shapes"))) parseShape(obj(o), 0, 0, shapes, textures);
+        // A big map keeps its shapes in pieces beside it: "chunks": ["haven/0_0.json", ...], each
+        // {"shapes": [...]}, paths relative to this file. One 33 MB file had to be rewritten whole
+        // for any change anywhere, and a diff of it said nothing.
+        if (root.get("chunks") != null)
+            for (Object c : list(root.get("chunks"))) {
+                Path file = path.resolveSibling((String) c);
+                Map<String, Object> chunk = obj(Json.parse(Files.readString(file)));
+                for (Object o : list(chunk.get("shapes"))) parseShape(obj(o), 0, 0, shapes, textures);
+            }
 
         double[] sun = root.containsKey("sun") ? pt(root.get("sun")) : new double[] {0.5, 0.8};
         Map<String, Object> spawn = obj(root.get("spawn"));
         double[] sp = pt(spawn.get("pos"));
-        return new World(str(root, "name", path.getFileName().toString()),
+        World world = new World(str(root, "name", path.getFileName().toString()),
                 regions.toArray(Region[]::new), shapes.toArray(Shape[]::new), num(root, "cell", 1.0),
-                sun[0], sun[1], sp[0], sp[1], Math.toRadians(num(spawn, "angle", 0)));
+                sun[0], sun[1], sp[0], sp[1], Math.toRadians(num(spawn, "angle", 0)),
+                root.get("lighting") instanceof Map ? obj(root.get("lighting")) : null);
+        if (root.get("minimap") instanceof Map) world.minimapRotate = num(obj(root.get("minimap")), "rotate", 0);
+        return world;
+    }
+
+    private static Materials.Texture[] parseTextures(Map<String, Object> root, Path map) throws IOException {
+        if (!root.containsKey("textures")) return null;
+        if (!(root.get("textures") instanceof Map))
+            throw new IllegalArgumentException("textures must be an object");
+        Map<String, Object> m = obj(root.get("textures"));
+        int size = textureInt(m, "size", 1), cols = textureInt(m, "cols", 1), count = textureInt(m, "count", 1);
+        if (!(m.get("file") instanceof String file) || file.isBlank())
+            throw new IllegalArgumentException("textures.file must name the atlas PNG beside the map");
+        if (!(m.get("mean") instanceof List<?> means) || means.size() != count)
+            throw new IllegalArgumentException("textures.mean must have exactly count colours");
+        int[] colors = new int[count];
+        for (int i = 0; i < count; i++) {
+            if (!(means.get(i) instanceof String color) || !color.matches("#[0-9a-fA-F]{6}"))
+                throw new IllegalArgumentException("textures.mean[" + i + "] must be #rrggbb");
+            colors[i] = Integer.parseInt(color.substring(1), 16);
+        }
+        return Materials.loadAtlas(map.resolveSibling(file), size, cols, count, colors);
+    }
+
+    /** The atlas's tiles and the map's whole images, whichever of the two it has. */
+    private record Assets(Materials.Texture[] tiles, Materials.Texture[] images) {}
+
+    /** "images": ["haven-img/0.png", ...], paths relative to the map: whole textures at their own
+     *  size, picked by a shape's "img" and placed by its "uv". */
+    private static Materials.Texture[] parseImages(Map<String, Object> root, Path map) throws IOException {
+        if (root.get("images") == null) return null;
+        List<Object> files = list(root.get("images"));
+        Materials.Texture[] out = new Materials.Texture[files.size()];
+        IOException[] failed = new IOException[1];
+        java.util.stream.IntStream.range(0, out.length).parallel().forEach(i -> {
+            try {
+                out[i] = Materials.loadImage(map.resolveSibling((String) files.get(i)));
+            } catch (IOException e) {
+                failed[0] = e;
+            }
+        });
+        if (failed[0] != null) throw failed[0];
+        return out;
+    }
+
+    private static Materials.Texture image(Assets a, Map<String, Object> m, String key) {
+        int k = textureInt(m, key, 0);
+        if (a.images() == null || k >= a.images().length)
+            throw new IllegalArgumentException("shape " + key + " is outside the map's images: " + k);
+        return a.images()[k];
+    }
+
+    private static int textureInt(Map<String, Object> m, String key, int min) {
+        if (!(m.get(key) instanceof Number n) || !Double.isFinite(n.doubleValue())
+                || n.doubleValue() < min || n.doubleValue() > Integer.MAX_VALUE
+                || n.doubleValue() != Math.rint(n.doubleValue()))
+            throw new IllegalArgumentException("textures/shape " + key + " must be an integer >= " + min);
+        return n.intValue();
+    }
+
+    private static Materials.Texture texture(Map<String, Object> m, String key, Materials.Texture[] tiles) {
+        int index = textureInt(m, key, 0);
+        if (tiles == null) throw new IllegalArgumentException("shape " + key + " needs a map textures block");
+        if (index >= tiles.length) throw new IllegalArgumentException("shape " + key + " is outside textures.count: " + index);
+        return tiles[index];
+    }
+
+    private static double textureScale(Map<String, Object> m, String key, double fallback) {
+        if (!m.containsKey(key)) return fallback;
+        if (!(m.get(key) instanceof Number n) || !Double.isFinite(n.doubleValue()) || n.doubleValue() <= 0)
+            throw new IllegalArgumentException("shape " + key + " must be finite and positive (metres per tile)");
+        return n.doubleValue();
     }
 
     private static Region parseRegion(Map<String, Object> m) {
@@ -280,6 +505,7 @@ final class World {
         r.sky = c == null;
         r.ceil = r.sky ? Double.POSITIVE_INFINITY : ((Number) c).doubleValue();
         r.top = num(m, "top", r.ceil);
+        r.walkable = !(m.get("walkable") instanceof Boolean b) || b;
         r.floorMat = Materials.id(str(m, "floorMat", "concrete"));
         r.ceilMat = Materials.id(str(m, "ceilMat", "concrete"));
         r.wallMat = Materials.id(str(m, "wallMat", "plaster"));
@@ -291,26 +517,136 @@ final class World {
         return r;
     }
 
-    /** type: wall / circle / box / poly / ngon / array (array tiles its items into a grid of copies). */
-    private static void parseShape(Map<String, Object> m, double ox, double oy, List<Shape> out) {
+    /**
+     * A tree crown, scattered.
+     *
+     * One card of leaves is a piece of cardboard however good its outline is: the whole of it is
+     * lit the same, so there is no inside to the tree. A crown is really hundreds of small sprays
+     * of leaves at every angle, the outer ones bright and the ones behind them in their shade - so
+     * make it out of a dozen or two small cards spread through the volume instead, each with its
+     * own place, size, angle and shade of green. Every one of them gets its own lightmap, which is
+     * what puts a lit side, a shaded side and a dark middle into the tree for nothing.
+     *
+     * The cards are placed by rule from a seed, so a map says "a crown here, this big" and never
+     * has to list them - the same thing a forest will do with its trees.
+     */
+    private static void canopy(Map<String, Object> m, double ox, double oy, List<Shape> out,
+                               Assets textures) {
+        double[] c = pt(m.get("c"));
+        double cx = c[0] + ox, cy = c[1] + oy;
+        double r = num(m, "r", 1.8), z0 = num(m, "z0", 1.8), z1 = num(m, "h", 4.8);
+        int cards = (int) num(m, "cards", 16), seed = (int) num(m, "seed", 1);
+        int color = color(m, "color", "#4d7d36");
+        double mid = (z0 + z1) / 2, halfZ = (z1 - z0) / 2;
+        for (int i = 0; i < cards; i++) {
+            // Somewhere inside the crown, as a squashed ball: pick a height first, then how far
+            // out the crown still reaches at that height.
+            double up = 2 * rnd(seed, i, 1) - 1;                  // -1 bottom, +1 top
+            double reach = Math.sqrt(Math.max(0, 1 - up * up));   // the ball's width up there
+            double a = 2 * Math.PI * rnd(seed, i, 2);
+            double d = r * reach * 0.72 * Math.sqrt(rnd(seed, i, 3));
+            double x = cx + d * Math.cos(a), y = cy + d * Math.sin(a);
+            double zc = mid + up * halfZ * 0.78;
+
+            double half = r * (0.34 + 0.30 * rnd(seed, i, 4)) * (0.55 + 0.45 * reach);
+            double tall = halfZ * (0.42 + 0.30 * rnd(seed, i, 5)) * (0.55 + 0.45 * reach);
+            double dir = Math.PI * rnd(seed, i, 6);
+            double ex = half * Math.cos(dir), ey = half * Math.sin(dir);
+
+            Map<String, Object> card = new LinkedHashMap<>(m);
+            card.put("type", "wall");
+            card.put("a", List.of(x - ex - ox, y - ey - oy));
+            card.put("b", List.of(x + ex - ox, y + ey - oy));
+            card.put("z0", Math.max(0, zc - tall));
+            card.put("h", zc + tall);
+            card.put("mask", str(m, "mask", "canopy"));
+            card.put("color", shadeOf(color, 0.82 + 0.30 * rnd(seed, i, 7)));
+            parseShape(card, ox, oy, out, textures);
+            out.get(out.size() - 1).albedoColor = color;
+        }
+    }
+
+    /** A repeatable number in [0, 1) - the same crown every time the map is loaded. */
+    private static double rnd(int seed, int i, int salt) {
+        int h = seed * 374761393 ^ i * 668265263 ^ salt * 2147483647;
+        h ^= h >>> 13;
+        h *= 1274126177;
+        h ^= h >>> 16;
+        return (h & 0xffffff) / (double) 0x1000000;
+    }
+
+    private static String shadeOf(int c, double k) {
+        int r = (int) Math.min(255, ((c >> 16) & 255) * k);
+        int g = (int) Math.min(255, ((c >> 8) & 255) * k);
+        int b = (int) Math.min(255, (c & 255) * k);
+        return String.format("#%02x%02x%02x", r, g, b);
+    }
+
+    /** type: wall / circle / box / poly / ngon / array (tiles its items into a grid of copies)
+     *  / canopy (scatters masked cards through the volume of a tree crown). */
+    private static void parseShape(Map<String, Object> m, double ox, double oy, List<Shape> out,
+                                   Assets textures) {
         String type = str(m, "type", "box");
+        if (type.equals("canopy")) {
+            canopy(m, ox, oy, out, textures);
+            return;
+        }
         if (type.equals("array")) {
             double[] o = pt(m.get("origin")), n = pt(m.get("count")), st = pt(m.get("step"));
             for (int j = 0; j < (int) n[1]; j++)
                 for (int i = 0; i < (int) n[0]; i++)
                     for (Object item : list(m.get("items")))
-                        parseShape(obj(item), ox + o[0] + i * st[0], oy + o[1] + j * st[1], out);
+                        parseShape(obj(item), ox + o[0] + i * st[0], oy + o[1] + j * st[1], out, textures);
             return;
         }
 
         Shape s = new Shape();
         s.z0 = num(m, "z0", 0);
         s.h = num(m, "h", 1);
+        s.hx = num(m, "hx", 0);
+        s.hy = num(m, "hy", 0);
+        s.zx = num(m, "z0x", 0);
+        s.zy = num(m, "z0y", 0);
         String mat = str(m, "mat", "concrete");
         s.mat = Materials.id(mat);
         s.topMat = Materials.id(str(m, "topMat", mat));
+        // A shape without tex is unchanged, even in a textured map. Top overrides are independent:
+        // topTex alone inherits ts, topTs alone changes the scale of the inherited tile.
+        if (m.containsKey("tex")) {
+            s.tex = texture(m, "tex", textures.tiles());
+            s.ts = textureScale(m, "ts", 1);
+            s.topTex = m.containsKey("topTex") ? texture(m, "topTex", textures.tiles()) : s.tex;
+            s.topTs = textureScale(m, "topTs", s.ts);
+        }
+        if (m.containsKey("img")) {
+            if (!(m.get("uv") instanceof List<?> uv) || uv.size() != 6)
+                throw new IllegalArgumentException("a shape with img needs uv: six numbers");
+            s.img = image(textures, m, "img");
+            s.uv = new double[6];
+            for (int i = 0; i < 6; i++) s.uv[i] = ((Number) uv.get(i)).doubleValue();
+            if (m.containsKey("imgB")) {
+                if (!(m.get("va") instanceof List<?> va) || va.size() != 3)
+                    throw new IllegalArgumentException("a shape with imgB needs va: three numbers");
+                s.imgB = image(textures, m, "imgB");
+                s.hmap = image(textures, m, "hmap");
+                s.va = new double[3];
+                for (int i = 0; i < 3; i++) s.va[i] = ((Number) va.get(i)).doubleValue();
+                s.vb = num(m, "vb", 0);
+                s.inv = num(m, "inv", 0) != 0;
+            }
+            if (m.containsKey("amap")) s.amap = image(textures, m, "amap");
+            if (m.containsKey("vc")) {
+                if (!(m.get("vc") instanceof List<?> vc) || vc.size() != 9)
+                    throw new IllegalArgumentException("shape vc must be nine numbers");
+                s.vc = new double[9];
+                for (int i = 0; i < 9; i++) s.vc[i] = ((Number) vc.get(i)).doubleValue();
+            }
+        }
         s.color = color(m, "color", "#c8c8c8");
+        s.albedoColor = s.color;
         s.maxDist = num(m, "maxDist", Double.POSITIVE_INFINITY);
+        if (m.get("mask") != null) s.mask = Materials.maskId(str(m, "mask", ""));
+        s.site = str(m, "site", null);
         s.label = switch (type) {
             case "wall" -> "wall";
             case "circle" -> "cylinder";
@@ -363,30 +699,32 @@ final class World {
             }
             default -> throw new IllegalArgumentException("unknown shape type: " + type);
         }
+        s.hTop = s.h + Math.abs(s.hx) * (s.maxX - s.minX) / 2 + Math.abs(s.hy) * (s.maxY - s.minY) / 2;
+        s.zLow = s.z0 - Math.abs(s.zx) * (s.maxX - s.minX) / 2 - Math.abs(s.zy) * (s.maxY - s.minY) / 2;
         out.add(s);
     }
 
     // ---- JSON helpers ----
 
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> obj(Object o) { return (Map<String, Object>) o; }
+    static Map<String, Object> obj(Object o) { return (Map<String, Object>) o; }
 
     @SuppressWarnings("unchecked")
-    private static List<Object> list(Object o) { return (List<Object>) o; }
+    static List<Object> list(Object o) { return (List<Object>) o; }
 
-    private static double num(Map<String, Object> m, String k, double def) {
+    static double num(Map<String, Object> m, String k, double def) {
         return m.get(k) instanceof Number n ? n.doubleValue() : def;
     }
 
-    private static String str(Map<String, Object> m, String k, String def) {
+    static String str(Map<String, Object> m, String k, String def) {
         return m.get(k) instanceof String s ? s : def;
     }
 
-    private static int color(Map<String, Object> m, String k, String def) {
+    static int color(Map<String, Object> m, String k, String def) {
         return Integer.parseInt(str(m, k, def).substring(1), 16);
     }
 
-    private static double[] pt(Object o) {
+    static double[] pt(Object o) {
         List<Object> l = list(o);
         return new double[] {((Number) l.get(0)).doubleValue(), ((Number) l.get(1)).doubleValue()};
     }
