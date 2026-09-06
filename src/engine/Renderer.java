@@ -31,6 +31,8 @@ final class Renderer {
         double eye;           // eye height (world z)
         double pitch;         // horizon offset in pixels, positive when looking up
         boolean fisheye;      // deliberately wrong comparison mode: project by straight-line distance
+        boolean captureDepth; // only screenshots need depth and albedo buffers
+        boolean baked;        // shade from the baked lightmaps (Lighting) instead of the old flat model
         // Which part of the buffer to render this frame: columns [x0, x1), rows [y0, y1).
         int x0, y0, x1 = Integer.MAX_VALUE, y1 = Integer.MAX_VALUE;
     }
@@ -63,9 +65,11 @@ final class Renderer {
     /** The pixel buffer. It can be larger than the view: looking up or down needs a little
      *  overscan around it, which Main then warps into the tilted view (see Main.preparePitch). */
     int W, H;
-    final int viewW, viewH;                  // the image the camera actually shows
+    int viewW, viewH;                        // the image the camera actually shows
     private double F;                        // focal length in pixels
     private int[] pixels;
+    float[] depth;                          // perpendicular metres, or null outside a screenshot
+    int[] albedo;                           // map colours, with no shading; shot only, like depth
     private final World world;
     private ThreadLocal<Column> columns;
 
@@ -75,6 +79,9 @@ final class Renderer {
     int drawnX0, drawnX1;                    // the columns the last frame actually rendered
     volatile int traceColumn = -1;           // the column to record in detail (buffer column)
     volatile Trace trace;                    // the most recent recording
+    private volatile Lighting lighting;      // baked lightmaps, or null: then only the flat model exists
+
+    void setLighting(Lighting l) { lighting = l; }
 
     Renderer(World world, int w, int h, int[] pixels) {
         this.world = world;
@@ -82,6 +89,15 @@ final class Renderer {
         this.viewH = h;
         resize(w, h, pixels);
         setFov(DEFAULT_FOV);
+    }
+
+    /** Change the size of the view itself - the ray count. The field of view is an angle, so it
+     *  stays what it was and only the focal length that realises it changes. Between frames only. */
+    void setView(int w, int h) {
+        double deg = fov();
+        viewW = w;
+        viewH = h;
+        setFov(deg);
     }
 
     /** Point the renderer at a (usually larger) buffer. Call between frames only. */
@@ -113,33 +129,115 @@ final class Renderer {
     double centerX() { return W / 2.0; }
 
     void render(Camera cam) {
+        if (cam.captureDepth) {
+            if (depth == null || depth.length != W * H) depth = new float[W * H];
+            else Arrays.fill(depth, 0);                       // sky and anything not hit stay zero
+            if (albedo == null || albedo.length != W * H) albedo = new int[W * H];
+        } else {
+            depth = null;
+            albedo = null;
+        }
         int x0 = Math.max(0, cam.x0), x1 = Math.min(W, cam.x1), n = x1 - x0;
         drawnX0 = x0;
         drawnX1 = Math.max(x0, x1);
         if (n <= 0) return;
         ThreadLocal<Column> cols = columns;
         int chunks = Math.min(n, Runtime.getRuntime().availableProcessors() * 4);
+        // Every chunk takes every chunks-th column rather than a block of neighbours. A column down
+        // one of Haven's long lanes shades many times the rows of one facing a wall, and neighbouring
+        // columns see the same thing: a block of them was one slow chunk, the frame waited for it,
+        // and on the M3's efficiency cores it waited longer. Interleaved, every chunk gets a share of
+        // everything. Columns are independent, so the picture is the same.
         IntStream.range(0, chunks).parallel().forEach(c -> {
             Column col = cols.get();
-            for (int x = x0 + c * n / chunks, end = x0 + (c + 1) * n / chunks; x < end; x++) col.render(x, cam);
+            for (int x = x0 + c; x < x1; x += chunks) col.render(x, cam);
         });
     }
 
-    private record Hit(Shape s, double t1, double t2, boolean inside, double nx, double ny, double u) {}
+    /** face: which of the shape's side lightmaps the hit is on - the side of a thin wall (0/1),
+     *  the edge of a polygon, or 0 for a cylinder. */
+    private record Hit(Shape s, double t1, double t2, boolean inside, double nx, double ny, double u, int face) {}
 
-    private static final Comparator<Hit> BY_T1 = Comparator.comparingDouble(Hit::t1);
+    // An exact tie in distance goes to the lower shape id, so what is drawn does not depend on the
+    // order the grid happens to hand the shapes over in.
+    private static final Comparator<Hit> BY_T1 = Comparator.comparingDouble(Hit::t1).thenComparingInt(h -> h.s().id);
 
     /** Scratch state for a single column; one instance per thread. */
     private final class Column {
         private int[] o0 = new int[H + 2], o1 = new int[H + 2], n0 = new int[H + 2], n1 = new int[H + 2];
         private int open;                                   // number of row intervals still empty
         private final int[] stamp = new int[world.shapes.length];
+        private final int[] nodes = new int[128];           // the tree walk's stack; a tree is ~log2(n) deep
         private int ray;
         private final ArrayList<Hit> pending = new ArrayList<>();
+
+        /**
+         * A masked surface waiting to be blended in - a crown of leaves, a clump of ferns. It
+         * cannot be painted when the ray reaches it, because what shows through its holes is
+         * whatever is behind it and that has not been drawn yet. So the rows it could cover are
+         * recorded, clipped there and then to what was still open (anything nearer has already had
+         * its say), and blended over the finished picture afterwards, far to near.
+         */
+        private static final class Masked {
+            Shape s;
+            Lighting.LightMap lm;
+            double t, u, sq, f, w;
+            int y0, y1;
+            // A cut-out's top or bottom rather than a side: each row finds its own distance on the
+            // plane (z, slope) and its colour from the plane's own colour function.
+            boolean plane;
+            double z, slope;
+            IntUnaryOperator color;
+        }
+
+        private final double[] A = new double[6];          // an alpha sample; T is the colour's
+
+        private final ArrayList<Masked> masked = new ArrayList<>();
+        private int maskedN;
+
+        /**
+         * The top or the bottom of a shape the ray has reached. It spans distances t1..t2, and
+         * something standing on it - a crate on a platform - enters somewhere in between and is
+         * nearer than the far part of it. Painted all at once when the ray got there, its far rows
+         * were already taken by the time the crate came along, and the crate lost its lower half.
+         * So it is painted a stretch at a time, with the floors, as the ray moves on (surfaces()).
+         */
+        private static final class Plane {
+            boolean top, inside;
+            boolean masked;                    // a cut-out's: recorded and blended in, never takes a row
+            Shape owner;
+            double z, slope, t1, t2;          // z: its height at the eye, slope: its climb along the ray
+            int base;
+            IntUnaryOperator color;
+            int ev, which;                     // ray view: its shape's event, and 1 top / 2 bottom
+            int[] rows;                        // ray view: that shape's side, top and bottom rows
+            String label;
+        }
+
+        private final ArrayList<Plane> planes = new ArrayList<>();
+        private int planeN;                                 // planes[0, planeN) are still being painted
+
+        /** One horizontal or tilted surface to paint between two distances: a floor, a ceiling or a
+         *  stretch of a Plane. Rows [lo, hi]. */
+        private static final class Cand {
+            double lo, hi, z, slope;
+            int ia, ib, base;
+            IntUnaryOperator color;
+            Plane plane;
+            Region region;
+            EventKind kind;
+        }
+
+        private final ArrayList<Cand> cands = new ArrayList<>();
+        private int nc;
 
         private int x;
         private double px, py, rx, ry, eye, hz;
         private double dk;                                  // depth multiplier: 1 normally, |r| in fisheye mode
+        private Lighting lit;                               // this frame's lightmaps
+        private boolean baked;                              // ...and whether to use them
+        private final float[] L = new float[3];             // one lightmap sample
+        private final double[] T = new double[6];           // RGB texture factor + mip scratch, per thread
 
         // The stack of storeys the ray is currently inside, lowest floor first. Empty means off the
         // map. Everything *not* inside one of these [floor, ceil) ranges is solid: that is the floor
@@ -170,12 +268,16 @@ final class Renderer {
             rx = cam.dirX - cam.dirY * off;                 // plane = [-dir.y, dir.x]
             ry = cam.dirY + cam.dirX * off;                 // deliberately not normalised: t is the perpendicular distance
             dk = cam.fisheye ? Math.hypot(rx, ry) : 1;      // fisheye: turn perpendicular distance into straight-line distance
+            lit = lighting;
+            baked = cam.baked && lit != null;
             int y0 = Math.max(0, cam.y0), y1 = Math.min(H, cam.y1);
             open = y1 > y0 ? 1 : 0;
             o0[0] = y0;
             o1[0] = y1;
             if (++ray == Integer.MAX_VALUE) { Arrays.fill(stamp, 0); ray = 1; }
             pending.clear();
+            maskedN = 0;
+            planeN = 0;
             crossings = 0;
             cells = tests = 0;
             endT = -1;
@@ -196,6 +298,7 @@ final class Renderer {
                         : "left the map, remaining rows are sky";
             }
             fillRest();
+            blendMasked();
 
             rayEnd[x] = endT;
             cellsVisited[x] = cells;
@@ -223,24 +326,37 @@ final class Renderer {
                 cells++;
                 if (tr != null) tr.cells.add(new int[] {cx, cy});
                 for (World.Group gp : g.groups[cy * g.nx + cx]) {
-                    // One test for a whole storey's worth of furniture in this cell. Members are not
-                    // stamped, so the ones reaching into the next cell get the same cheap test there.
-                    if (gp.members.length > 1 && hidden(gp.minX, gp.minY, gp.maxX, gp.maxY, gp.z0, gp.h, gp.maxDist)) {
-                        if (tr != null) { tr.groupsSkipped++; tr.groupMembersSkipped += gp.members.length; }
-                        continue;
-                    }
-                    for (int i : gp.members) {
-                        if (stamp[i] == ray) continue;
-                        stamp[i] = ray;
-                        Shape sh = world.shapes[i];
-                        if (skip(sh)) {
-                            if (tr != null) tr.skipped++;
+                    // Down the group's tree: one test for everything under a node - a storey's
+                    // furniture, or the triangles of a mesh the ray passes nowhere near. Members are
+                    // not stamped by it, so the ones reaching into the next cell are tested there.
+                    int sp = 0;
+                    nodes[sp++] = 0;
+                    while (sp > 0) {
+                        int k = nodes[--sp], a = gp.start[k], b = gp.end[k], o = 7 * k;
+                        if (b - a > 1 && hidden(gp.nb[o], gp.nb[o + 1], gp.nb[o + 2], gp.nb[o + 3],
+                                gp.nb[o + 4], gp.nb[o + 5], gp.nb[o + 6])) {
+                            if (tr != null) { tr.groupsSkipped++; tr.groupMembersSkipped += b - a; }
                             continue;
                         }
-                        tests++;
-                        if (tr != null) tr.tested.add(sh);
-                        Hit h = intersect(sh);
-                        if (h != null) pending.add(h);
+                        if (gp.right[k] >= 0) {
+                            nodes[sp++] = gp.right[k];
+                            nodes[sp++] = k + 1;
+                            continue;
+                        }
+                        for (int m = a; m < b; m++) {
+                            int i = gp.members[m];
+                            if (stamp[i] == ray) continue;
+                            stamp[i] = ray;
+                            Shape sh = world.shapes[i];
+                            if (skip(sh)) {
+                                if (tr != null) tr.skipped++;
+                                continue;
+                            }
+                            tests++;
+                            if (tr != null) tr.tested.add(sh);
+                            Hit h = intersect(sh);
+                            if (h != null) pending.add(h);
+                        }
                     }
                 }
                 double tout = Math.min(tx, ty);
@@ -296,7 +412,7 @@ final class Renderer {
          * through the courtyard, because there the rows really are still open.
          */
         private boolean skip(Shape s) {
-            return hidden(s.minX, s.minY, s.maxX, s.maxY, s.z0, s.h, s.maxDist);
+            return hidden(s.minX, s.minY, s.maxX, s.maxY, s.zLow, s.hTop, s.maxDist);
         }
 
         /** The same test for any box in x, y, z: a shape's bounds, or a whole group's. */
@@ -353,18 +469,20 @@ final class Renderer {
         private Hit intersect(Shape s) {
             return switch (s.kind) {
                 case SEG -> {
+                    if (!(s.len > 1e-9)) yield null;              // a wall with no length has no normal to draw by
                     SegHit h = Geometry.raySeg(px, py, rx, ry, s.ax, s.ay, s.bx, s.by);
                     if (h == null || h.t() <= NEAR || h.t() > s.maxDist) yield null;
                     double nx = -h.ey() / s.len, ny = h.ex() / s.len;    // edge vector rotated 90 degrees
-                    if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }   // make it face the camera
-                    yield new Hit(s, h.t(), h.t(), false, nx, ny, h.u() * s.len);
+                    boolean back = nx * rx + ny * ry > 0;
+                    if (back) { nx = -nx; ny = -ny; }                      // make it face the camera
+                    yield new Hit(s, h.t(), h.t(), false, nx, ny, h.u() * s.len, back ? 1 : 0);
                 }
                 case CIRCLE -> {
                     Span sp = Geometry.rayCircle(px, py, rx, ry, s.cx, s.cy, s.r);
                     if (sp == null || sp.t2() <= NEAR || sp.t1() > s.maxDist) yield null;
                     double nx = (px + rx * sp.t1() - s.cx) / s.r;       // hit point minus centre
                     double ny = (py + ry * sp.t1() - s.cy) / s.r;
-                    yield new Hit(s, sp.t1(), sp.t2(), sp.t1() <= NEAR, nx, ny, (Math.atan2(ny, nx) + Math.PI) * s.r);
+                    yield new Hit(s, sp.t1(), sp.t2(), sp.t1() <= NEAR, nx, ny, (Math.atan2(ny, nx) + Math.PI) * s.r, 0);
                 }
                 case POLY -> {
                     PolyHit ph = Geometry.rayPoly(px, py, rx, ry, s.xs, s.ys);
@@ -373,7 +491,7 @@ final class Renderer {
                     double ex = s.xs[j] - s.xs[i], ey = s.ys[j] - s.ys[i], len = Math.hypot(ex, ey);
                     double nx = -ey / len, ny = ex / len;
                     if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }
-                    yield new Hit(s, ph.t1(), ph.t2(), ph.t1() <= NEAR, nx, ny, ph.enterU() * len);
+                    yield new Hit(s, ph.t1(), ph.t2(), ph.t1() <= NEAR, nx, ny, ph.enterU() * len, i);
                 }
             };
         }
@@ -441,29 +559,85 @@ final class Renderer {
          *  A shape is clipped to the ceiling of the region the ray is in. */
         private void drawHit(Hit h) {
             Shape s = h.s();
-            Region in = storeyAt(s.z0);
-            double z0 = s.z0, top = s.h;
-            if (top <= z0) {
+            Region in = storeyAt(s.zLow);
+            // Where this ray meets the shape, not the middle of it: a tilted top is a different
+            // height at every column, and that is the whole point of it. The same goes for a
+            // tilted bottom.
+            double slope = s.topSlope(rx, ry), atEye = s.topAt(px, py);
+            double bSlope = s.bottomSlope(rx, ry), bEye = s.bottomAt(px, py);
+            double top = atEye + slope * h.t1();
+            double z0 = bEye + bSlope * h.t1();
+            if (s.hTop <= s.zLow) {
                 if (tr != null) note(EventKind.SHAPE, h.t1(), s.label + " (entirely above the ceiling)", 0);
                 return;
             }
             double t1 = h.t1(), yTop = rowZ(top, t1), yBot = rowZ(z0, t1);
             double light = in == null ? 1 : in.light;
-            int side = 0, cap = 0, under = 0;
-            if (!h.inside()) {
-                double k = lambert(h.nx(), h.ny()) * fog(t1) * light;
-                double u = h.u();
-                side = paint(yTop, yBot, y -> shade(s.color,
-                        Materials.side(s.mat, u, eye - (y + 0.5 - hz) * t1 * dk / F,
-                                pixelSize(t1)) * k));
+            if (s.mask >= 0 || (s.amap != null && s.kind == World.Kind.SEG)) {   // leaves and the like: blended later
+                record(s, h, t1, yTop, yBot, in);
+                return;
             }
-            if (eye > top) cap = paint(rowZ(top, h.t2()), h.inside() ? H : yTop, flat(top, s.topMat, s.color, light));
-            if (eye < z0) under = paint(h.inside() ? 0 : yBot, rowZ(z0, h.t2()), flat(z0, s.mat, s.color, 0.45 * light));
+            int side = 0;
+            if (!h.inside() && s.amap == null) {             // a cut-out slab's edge is a few cm of nothing
+                double u = h.u();
+                Lighting.LightMap lm = baked ? lit.side(s, h.face()) : null;
+                double sq = square(h.nx(), h.ny());
+                if (lm != null) {
+                    double f = fog(t1);
+                    side = paint(yTop, yBot, t1, 0, s.albedoColor, y -> {
+                        double z = eye - (y + 0.5 - hz) * t1 * dk / F;
+                        lm.sample(u, z, L);
+                        return sideColor(s, u, z, t1, sq, f, L);
+                    });
+                } else {
+                    double k = lambert(h.nx(), h.ny()) * fog(t1) * light;
+                    side = paint(yTop, yBot, t1, 0, s.albedoColor, y -> sideColor(s,
+                            u, eye - (y + 0.5 - hz) * t1 * dk / F, t1, sq, k, null));
+                }
+            }
+            int ev = -1;
+            int[] rows = null;
+            String label = null;
             if (tr != null) {
-                String where = h.inside() ? " (eye inside its footprint)" : "";
-                note(EventKind.SHAPE, t1,
-                        String.format("%s%s side %d top %d bottom %d", s.label, where, side, cap, under),
-                        side + cap + under);
+                label = s.label + (h.inside() ? " (eye inside its footprint)" : "");
+                rows = new int[] {side, 0, 0};
+                ev = tr.events.size();
+                note(EventKind.SHAPE, t1, String.format("%s side %d top 0 bottom 0", label, side), side);
+            }
+            // A plane is seen from above exactly when the eye is above it where the eye stands - it
+            // is a plane, so every point of it the ray meets is then met from above.
+            if (eye > atEye)
+                addPlane(s, h, true, atEye, slope, ev, rows, label,
+                        flat(atEye, slope, s.topMat, s.color, light, baked ? lit.top(s) : null, s.topTex, s.topTs, s));
+            if (eye < bEye)
+                addPlane(s, h, false, bEye, bSlope, ev, rows, label,
+                        flat(bEye, bSlope, s.mat, s.color, 0.45 * light, baked ? lit.bottom(s) : null, s.tex, s.ts, s));
+        }
+
+        private void addPlane(Shape s, Hit h, boolean top, double z, double slope, int ev, int[] rows, String label,
+                              IntUnaryOperator color) {
+            if (planeN == planes.size()) planes.add(new Plane());
+            Plane p = planes.get(planeN++);
+            p.top = top;
+            p.inside = h.inside();
+            p.masked = s.amap != null;
+            p.owner = s;
+            p.z = z;
+            p.slope = slope;
+            p.t1 = Math.max(h.t1(), NEAR);
+            p.t2 = Math.min(h.t2(), MAX_DIST);
+            p.base = s.albedoColor;
+            p.color = color;
+            p.ev = ev;
+            p.which = top ? 1 : 2;
+            p.rows = rows;
+            p.label = label;
+            // Found after the floors had already been drawn past where it starts (a shape culled in
+            // an earlier cell, tested again in this one): catch up on that stretch now.
+            if (tPrev > p.t1) {
+                nc = 0;
+                addPiece(p, p.t1, tPrev);
+                paintCands(p.t1, tPrev);
             }
         }
 
@@ -482,27 +656,31 @@ final class Renderer {
 
             int rows = 0;
             if (crossEdge >= 0 && toN > 0 && !same(prev, fromN, next, toN)) {
-                Region edgeOf = prev[0];
-                int n = edgeOf.xs.length, i = Math.min(crossEdge, n - 1), j = (i + 1) % n;
-                double ex = edgeOf.xs[j] - edgeOf.xs[i], ey = edgeOf.ys[j] - edgeOf.ys[i];
-                double len = Math.hypot(ex, ey);
-                double nx = -ey / len, ny = ex / len;
-                if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }
-                double u = crossU * len;
-                double lam = lambert(nx, ny) * fog(t);
-
                 int farN = openSpans(next, toN), farNoSky = skySpans;
                 double[] flo = openLo.clone(), fhi = openHi.clone();
                 for (int a = 0; a < fromN; a++) {
-                    double z = prev[a].floor, zEnd = prev[a].ceil;
-                    int spans = prev[a].sky ? farN : farNoSky;   // only open sky sees sky
+                    Region near = prev[a];
+                    // The wall stands on this storey's own boundary, so its normal, the position
+                    // along it and its lightmap come from the edge the ray leaves this storey by.
+                    // A storey that carries on past t is open on both sides: no wall of its own here.
+                    PolyHit ph = Geometry.rayPoly(px, py, rx, ry, near.xs, near.ys);
+                    if (ph == null || Math.abs(ph.t2() - t) > 1e-7 * (1 + t)) continue;
+                    int e = ph.exitEdge(), e2 = (e + 1) % near.xs.length;
+                    double ex = near.xs[e2] - near.xs[e], ey = near.ys[e2] - near.ys[e], len = Math.hypot(ex, ey);
+                    double nx = -ey / len, ny = ex / len;
+                    if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }
+                    double u = ph.exitU() * len, lam = lambert(nx, ny) * fog(t), sq = square(nx, ny);
+                    Lighting.LightMap em = baked ? lit.edge(near, e) : null;
+
+                    double z = near.floor, zEnd = near.ceil;
+                    int spans = near.sky ? farN : farNoSky;      // only open sky sees sky
                     for (int b = 0; b < spans && z < zEnd; b++) {
                         if (fhi[b] <= z) continue;
                         if (flo[b] >= zEnd) break;
-                        if (flo[b] > z) rows += wallBand(z, Math.min(flo[b], zEnd), t, u, lam, nearestFar(toN, z));
+                        if (flo[b] > z) rows += wallBand(z, Math.min(flo[b], zEnd), t, u, lam, sq, nearestFar(toN, z), em);
                         z = Math.max(z, fhi[b]);
                     }
-                    if (z < zEnd) rows += wallBand(z, zEnd, t, u, lam, next[toN - 1]);
+                    if (z < zEnd) rows += wallBand(z, zEnd, t, u, lam, sq, next[toN - 1], em);
                 }
             }
 
@@ -516,13 +694,361 @@ final class Renderer {
         }
 
         /** One solid band of the far side, seen through an opening on the near side. */
-        private int wallBand(double zLo, double zHi, double t, double u, double lam, Region skin) {
+        /** How wide one pixel is, in metres, on a surface square to the eye at distance t. */
+        private double pixelSize(double t) { return t * dk / F; }
+
+        /** How much a surface with this normal is turned away from the ray: 1 face on, towards 0
+         *  edge on. What one pixel covers along such a surface is its square-on size over this. */
+        private double square(double nx, double ny) {
+            return Math.max(0.02, Math.abs(rx * nx + ry * ny) / Math.hypot(rx, ry));
+        }
+
+        /**
+         * Anisotropic filtering.
+         *
+         * One pixel of a surface seen edge-on covers a long thin strip of it - a corridor wall, a
+         * floor running to the horizon - and the two sides of that strip can differ by a hundred
+         * times. Filtering both to the length of the long side, which is all a single texel size can
+         * say, is what smears a distant floor into mush; so sample along the strip instead, as many
+         * times as it is long, each sample filtered to the width of the narrow side. That is what a
+         * graphics card's 16x anisotropic filtering does, and why a corridor in a modern game stays
+         * sharp into the distance. Past ANISO samples the rest goes back to being blurred away.
+         */
+        private static final int ANISO = 8;
+
+        /** A vertical face: the strip runs along the surface, and the whole column shares its u. */
+        private double sideTex(int mat, double u, double z, double t, double square) {
+            double narrow = pixelSize(t), along = narrow / square;
+            int n = (int) Math.min(ANISO, Math.ceil(along / narrow));
+            if (n <= 1) return Materials.sideFaded(mat, narrow) ? Materials.sideMean(mat) : Materials.side(mat, u, z, narrow);
+            double step = along / n, w = Math.max(narrow, step), sum = 0;
+            if (Materials.sideFaded(mat, w)) {
+                // Every detail has faded at this width: each sample would be this same number. Summed
+                // and divided the same way, so the result is the same to the last bit.
+                double c = Materials.sideMean(mat);
+                for (int i = 0; i < n; i++) sum += c;
+                return sum / n;
+            }
+            for (int i = 0; i < n; i++) sum += Materials.side(mat, u + (i + 0.5 - n / 2.0) * step, z, w);
+            return sum / n;
+        }
+
+        /** A floor or a ceiling: the strip runs away from the eye, so walk it in distance. The rows
+         *  near the horizon are the long ones - the strip is F / (y - horizon) times its own width. */
+        private double flatTex(int mat, double t, int y) {
+            double narrow = pixelSize(t), d = Math.abs(y + 0.5 - hz);
+            double along = d < 1e-6 ? Double.MAX_VALUE : t * dk / d;
+            int n = (int) Math.min(ANISO, Math.ceil(along / narrow));
+            double w = Math.max(narrow, along / n);
+            if (Materials.flatFaded(mat, w)) {                  // as sideTex: one number, summed the same way
+                double c = Materials.flatMean(mat);
+                if (n <= 1) return c;
+                double sum = 0;
+                for (int i = 0; i < n; i++) sum += c;
+                return sum / n;
+            }
+            if (n <= 1) return Materials.flat(mat, px + rx * t, py + ry * t, w);
+            double step = t / (d * n), sum = 0;                   // one sample's worth of distance
+            for (int i = 0; i < n; i++) {
+                double tt = t + (i + 0.5 - n / 2.0) * step;
+                sum += Materials.flat(mat, px + rx * tt, py + ry * tt, w);
+            }
+            return sum / n;
+        }
+
+        private int sideColor(Shape s, double u, double z, double t, double square, double k, float[] light) {
+            if (s.img != null) {
+                sideImg(s, u, z, t, square);
+                if (albedo != null) textured(s.color);
+                return shade(s.color, T, k, light);
+            }
+            if (s.tex == null) {
+                double factor = sideTex(s.mat, u, z, t, square) * k;
+                return light == null ? shade(s.color, factor) : shadeL(s.color, factor, light);
+            }
+            sideTex(s.tex, s.ts, u, z, t, square);
+            if (albedo != null) textured(s.color);
+            return shade(s.color, T, k, light);
+        }
+
+        // The albedo pass wants what a surface is - its texture included - with no light on it.
+        // Only the image-textured paths set this; everything else keeps its flat map colour there,
+        // as it always did, so a map without textures writes exactly the albedo it wrote before.
+        private int texAlbedo;
+        private boolean texAlbedoSet;
+
+        private void textured(int c) {
+            texAlbedo = raw(((c >> 16) & 255) * T[0], ((c >> 8) & 255) * T[1], (c & 255) * T[2]);
+            texAlbedoSet = true;
+        }
+
+        /**
+         * The side of a shape carrying its mesh's coordinates. A wall is mapped by (distance along
+         * it, height), so the strip of samples runs along u exactly as sideTex's does. The edge of a
+         * slab cut from a mesh is a few centimetres tall and mapped by where it is on the plan, so it
+         * takes one sample there.
+         */
+        private void sideImg(Shape s, double u, double z, double t, double square) {
+            double narrow = pixelSize(t), along = narrow / square;
+            if (s.kind != World.Kind.SEG) {
+                mappedSample(s,px + rx * t, py + ry * t, along, T);
+                return;
+            }
+            int n = (int) Math.min(ANISO, Math.ceil(along / narrow));
+            if (n <= 1) {
+                mappedSample(s,u, z, narrow, T);
+                return;
+            }
+            double step = along / n, w = Math.max(narrow, step), r = 0, g = 0, b = 0;
+            for (int i = 0; i < n; i++) {
+                mappedSample(s,u + (i + 0.5 - n / 2.0) * step, z, w, T);
+                r += T[0]; g += T[1]; b += T[2];
+            }
+            T[0] = r / n; T[1] = g / n; T[2] = b / n;
+        }
+
+        /** One sample of a shape's own texture at (p, q), into out: its image, or for a blend
+         *  material its two layers mixed by the vertex alpha and height there (Materials.blend). */
+        private void mappedSample(Shape s, double p, double q, double w, double[] out) {
+            Materials.mapped(s.img, s.uv, p, q, w, out);
+            if (s.imgB != null) {
+                double r = out[0], g = out[1], b = out[2];
+                Materials.mapped(s.hmap, s.uv, p, q, w, out);
+                double k = Materials.blend(out[0], s.va[0] * p + s.va[1] * q + s.va[2], s.vb, s.inv);
+                if (k <= 0) {
+                    out[0] = r; out[1] = g; out[2] = b;
+                } else {
+                    Materials.mapped(s.imgB, s.uv, p, q, w, out);
+                    out[0] = r + (out[0] - r) * k;
+                    out[1] = g + (out[1] - g) * k;
+                    out[2] = b + (out[2] - b) * k;
+                }
+            }
+            if (s.vc != null) {
+                // The vertex colour multiplies the albedo in linear light; the image is sRGB.
+                for (int c = 0; c < 3; c++) {
+                    double v = Math.max(0, s.vc[3 * c] * p + s.vc[3 * c + 1] * q + s.vc[3 * c + 2]);
+                    out[c] = Math.pow(Math.pow(out[c], 2.2) * v, 1 / 2.2);
+                }
+            }
+        }
+
+        /** flatTex for a shape carrying its mesh's coordinates: the same strip of samples along the
+         *  ray, each placed in the image by the shape's uv instead of by world position over ts. */
+        private void flatImg(Shape s, double t, int y) {
+            double narrow = pixelSize(t), d = Math.abs(y + 0.5 - hz);
+            double along = d < 1e-6 ? Double.MAX_VALUE : t * dk / d;
+            int n = (int) Math.min(ANISO, Math.ceil(along / narrow));
+            double w = Math.max(narrow, along / n);
+            if (n <= 1) {
+                mappedSample(s,px + rx * t, py + ry * t, w, T);
+                return;
+            }
+            double step = t / (d * n), r = 0, g = 0, b = 0;
+            for (int i = 0; i < n; i++) {
+                double tt = t + (i + 0.5 - n / 2.0) * step;
+                mappedSample(s,px + rx * tt, py + ry * tt, w, T);
+                r += T[0]; g += T[1]; b += T[2];
+            }
+            T[0] = r / n; T[1] = g / n; T[2] = b / n;
+        }
+
+        /** Image samples follow exactly the scalar path's strip, footprint and sample count.
+         *  Average RGB factors before lighting and tone mapping, without per-pixel allocations. */
+        private void sideTex(Materials.Texture tex, double ts, double u, double z, double t, double square) {
+            double narrow = pixelSize(t), along = narrow / square;
+            int n = (int) Math.min(ANISO, Math.ceil(along / narrow));
+            if (n <= 1) {
+                Materials.side(tex, ts, u, z, narrow, T);
+                return;
+            }
+            double step = along / n, w = Math.max(narrow, step), r = 0, g = 0, b = 0;
+            for (int i = 0; i < n; i++) {
+                Materials.side(tex, ts, u + (i + 0.5 - n / 2.0) * step, z, w, T);
+                r += T[0]; g += T[1]; b += T[2];
+            }
+            T[0] = r / n; T[1] = g / n; T[2] = b / n;
+        }
+
+        private void flatTex(Materials.Texture tex, double ts, double t, int y) {
+            double narrow = pixelSize(t), d = Math.abs(y + 0.5 - hz);
+            double along = d < 1e-6 ? Double.MAX_VALUE : t * dk / d;
+            int n = (int) Math.min(ANISO, Math.ceil(along / narrow));
+            double w = Math.max(narrow, along / n);
+            if (n <= 1) {
+                Materials.flat(tex, ts, px + rx * t, py + ry * t, w, T);
+                return;
+            }
+            double step = t / (d * n), r = 0, g = 0, b = 0;
+            for (int i = 0; i < n; i++) {
+                double tt = t + (i + 0.5 - n / 2.0) * step;
+                Materials.flat(tex, ts, px + rx * tt, py + ry * tt, w, T);
+                r += T[0]; g += T[1]; b += T[2];
+            }
+            T[0] = r / n; T[1] = g / n; T[2] = b / n;
+        }
+
+        private int wallBand(double zLo, double zHi, double t, double u, double lam, double sq,
+                             Region skin, Lighting.LightMap em) {
             if (!(zHi > zLo) || skin == null) return 0;
-            double k = lam * skin.light;
-            IntUnaryOperator wall = y ->
-                    shade(skin.wallColor, Materials.side(skin.wallMat, u,
-                            eye - (y + 0.5 - hz) * t * dk / F, pixelSize(t)) * k);
-            return paint(rowZ(zHi, t), rowZ(zLo, t), wall);
+            IntUnaryOperator wall;
+            if (em != null) {
+                double f = fog(t);
+                wall = y -> {
+                    double z = eye - (y + 0.5 - hz) * t * dk / F;
+                    em.sample(u, z, L);
+                    return shadeL(skin.wallColor, sideTex(skin.wallMat, u, z, t, sq) * f, L);
+                };
+            } else {
+                double k = lam * skin.light;
+                wall = y -> shade(skin.wallColor,
+                        sideTex(skin.wallMat, u, eye - (y + 0.5 - hz) * t * dk / F, t, sq) * k);
+            }
+            return paint(rowZ(zHi, t), rowZ(zLo, t), t, 0, skin.wallColor, wall);
+        }
+
+        /** Note the rows a masked surface could cover, clipped to the ones still open. */
+        private void record(Shape s, Hit h, double t, double yTop, double yBot, Region in) {
+            int ia = clampRow(yTop), ib = clampRow(yBot);
+            if (ib <= ia) return;
+            double span = Math.max(s.len, s.h - s.z0);
+            int rows = 0;
+            for (int k = 0; k < open; k++) {
+                int y0 = Math.max(o0[k], ia), y1 = Math.min(o1[k], ib);
+                if (y1 <= y0) continue;
+                if (maskedN == masked.size()) masked.add(new Masked());
+                Masked m = masked.get(maskedN++);
+                m.s = s;
+                m.t = t;
+                m.u = h.u();
+                m.sq = square(h.nx(), h.ny());
+                m.f = fog(t) * (in == null ? 1 : in.light);
+                m.w = pixelSize(t) / span;                    // a pixel, in the mask's own units
+                m.lm = baked ? lit.side(s, h.face()) : null;
+                m.y0 = y0;
+                m.y1 = y1;
+                m.plane = false;
+                rows += y1 - y0;
+            }
+            if (tr != null) note(EventKind.SHAPE, t, s.label + " (masked, " + rows + " rows blended)", 0);
+        }
+
+        /**
+         * Blend the masked surfaces over the finished picture, furthest first - they were recorded
+         * as the ray met them, so that is this list backwards. Each row asks the mask how much of
+         * the surface is really there and mixes that much of it in, which is what lets you see the
+         * sky through a tree.
+         */
+        private void blendMasked() {
+            for (int i = maskedN - 1; i >= 0; i--) {
+                Masked m = masked.get(i);
+                Shape s = m.s;
+                if (m.plane) {
+                    blendPlane(m);
+                    continue;
+                }
+                if (s.amap != null) {
+                    blendCutSide(m);
+                    continue;
+                }
+                double invU = 1 / s.len, invV = 1 / (s.h - s.z0);
+                for (int y = m.y0; y < m.y1; y++) {
+                    double z = eye - (y + 0.5 - hz) * m.t * dk / F;
+                    double a = Materials.mask(s.mask, m.u * invU, (z - s.z0) * invV, m.w);
+                    if (a <= 0.004) continue;
+                    int c;
+                    if (m.lm != null) {
+                        m.lm.sample(m.u, z, L);
+                        c = sideColor(s, m.u, z, m.t, m.sq, m.f, L);
+                    } else {
+                        c = sideColor(s, m.u, z, m.t, m.sq, m.f, null);
+                    }
+                    int p = y * W + x;
+                    pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
+                    // A blended pixel has several surfaces; keep the nearest one that contributes.
+                    if (depth != null) {
+                        depth[p] = (float) m.t;
+                        albedo[p] = s.albedoColor;              // the same nearest surface, without blending its colour
+                    }
+                }
+            }
+        }
+
+        /** Note the rows of cut-out plane candidate i that are open and where it is nearer than every
+         *  solid candidate, as masked entries. */
+        private void recordPlane(int i) {
+            Cand c = cands.get(i);
+            for (int k = 0; k < open; k++) {
+                int y0 = Math.max(o0[k], c.ia), y1 = Math.min(o1[k], c.ib), run = -1;
+                for (int y = y0; y <= y1; y++) {
+                    boolean win = y < y1 && nearest(i, y);
+                    if (win && run < 0) {
+                        run = y;
+                    } else if (!win && run >= 0) {
+                        if (maskedN == masked.size()) masked.add(new Masked());
+                        Masked m = masked.get(maskedN++);
+                        m.s = c.plane.owner;
+                        m.plane = true;
+                        m.z = c.z;
+                        m.slope = c.slope;
+                        m.color = c.color;
+                        m.y0 = run;
+                        m.y1 = y;
+                        run = -1;
+                    }
+                }
+            }
+        }
+
+        /** How much of a cut-out is there at (p, q) in its uv: its alpha image, 0 to 1. */
+        private double alphaAt(Shape s, double p, double q, double w) {
+            Materials.mapped(s.amap, s.uv, p, q, w, A);
+            return A[0];
+        }
+
+        /** Write one blended pixel of a cut-out, and its albedo and depth for a screenshot. */
+        private void blendPixel(int y, int c, double a, double t, Shape s) {
+            int p = y * W + x;
+            pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
+            if (depth != null) {
+                int alb = texAlbedoSet ? texAlbedo : s.albedoColor;
+                albedo[p] = a >= 0.996 ? alb : mix(albedo[p], alb, a);
+                if (a >= 0.5) depth[p] = (float) t;
+            }
+        }
+
+        /** A cut-out's top or bottom over the finished column: per row its distance on the plane,
+         *  its alpha there, and the plane's own colour. */
+        private void blendPlane(Masked m) {
+            Shape s = m.s;
+            double sF = m.slope * F;
+            for (int y = m.y0; y < m.y1; y++) {
+                double t = (eye - m.z) * F / ((y + 0.5 - hz) * dk + sF);
+                if (!(t > 0) || t > MAX_DIST) continue;
+                double a = alphaAt(s, px + rx * t, py + ry * t, pixelSize(t));
+                if (a <= 0.004) continue;
+                texAlbedoSet = false;
+                blendPixel(y, m.color.applyAsInt(y), a, t, s);
+            }
+        }
+
+        /** A cut-out wall over the finished column: its alpha at (distance along it, height). */
+        private void blendCutSide(Masked m) {
+            Shape s = m.s;
+            for (int y = m.y0; y < m.y1; y++) {
+                double z = eye - (y + 0.5 - hz) * m.t * dk / F;
+                double a = alphaAt(s, m.u, z, pixelSize(m.t) / m.sq);
+                if (a <= 0.004) continue;
+                texAlbedoSet = false;
+                int c;
+                if (m.lm != null) {
+                    m.lm.sample(m.u, z, L);
+                    c = sideColor(s, m.u, z, m.t, m.sq, m.f, L);
+                } else {
+                    c = sideColor(s, m.u, z, m.t, m.sq, m.f, null);
+                }
+                blendPixel(y, c, a, m.t, s);
+            }
         }
 
         /** Which far storey's wall finish to use for a solid band starting at z. */
@@ -550,29 +1076,140 @@ final class Renderer {
         }
 
         /**
-         * The floors and ceilings of every storey in the stack, between distances ta and tb.
+         * Every floor and ceiling in the stack, and every shape top and bottom the ray is over,
+         * between distances ta and tb.
          *
-         * Drawing the whole stack needs no depth sorting: for any given row, a higher floor is
-         * always seen at a nearer distance than a lower one, and a lower ceiling nearer than a
-         * higher one (t scales with |z - eye|). Since segments are handled near-to-far and paint()
-         * only fills rows that are still empty, the surface you should see always claims the row
-         * first. Going highest-floor-first and lowest-ceiling-first keeps that true within a single
-         * segment too, where the two bands can overlap.
+         * Segments are handled near-to-far and paint() only fills rows that are still empty, so
+         * anything that starts beyond tb - a shape's side, a region boundary - cannot be hidden by
+         * what is painted here. Within the segment several of these surfaces can want the same row
+         * (two storeys' floors, a platform and the top of the crate on it); that row goes to the one
+         * the ray through it meets first.
          */
         private void surfaces(double ta, double tb) {
             if (tb <= ta) return;
+            nc = 0;
             for (int i = stackN - 1; i >= 0; i--) {
                 Region r = stack[i];
                 if (eye <= r.floor) continue;
-                int f = paint(rowZ(r.floor, tb), rowZ(r.floor, ta), flat(r.floor, r.floorMat, r.floorColor, r.light));
-                if (tr != null && f > 0) noteSurface(EventKind.FLOOR, r, ta, tb, f);
+                cand(rowZ(r.floor, tb), rowZ(r.floor, ta), r.floor, 0, r.floorColor,
+                        flat(r.floor, r.floorMat, r.floorColor, r.light, baked ? lit.floor(r) : null), null, r, EventKind.FLOOR);
             }
             for (int i = 0; i < stackN; i++) {
                 Region r = stack[i];
                 if (r.sky || eye >= r.ceil) continue;
-                int c = paint(rowZ(r.ceil, ta), rowZ(r.ceil, tb), flat(r.ceil, r.ceilMat, r.ceilColor, r.light));
-                if (tr != null && c > 0) noteSurface(EventKind.CEILING, r, ta, tb, c);
+                cand(rowZ(r.ceil, ta), rowZ(r.ceil, tb), r.ceil, 0, r.ceilColor,
+                        flat(r.ceil, r.ceilMat, r.ceilColor, r.light, baked ? lit.ceil(r) : null), null, r, EventKind.CEILING);
             }
+            for (int i = 0; i < planeN; i++) addPiece(planes.get(i), ta, tb);
+            paintCands(ta, tb);
+            for (int i = 0; i < planeN; ) {                      // retire the planes painted to their far end
+                Plane p = planes.get(i);
+                if (p.t2 <= tb) {
+                    planes.set(i, planes.get(--planeN));
+                    planes.set(planeN, p);
+                } else {
+                    i++;
+                }
+            }
+        }
+
+        /** The stretch ta..tb of a plane, as a candidate. Its row is monotonic in distance, so the
+         *  rows of a stretch lie between the rows of its two ends. */
+        private void addPiece(Plane p, double ta, double tb) {
+            double a = Math.max(ta, p.t1), b = Math.min(tb, p.t2);
+            if (!(b > a)) return;
+            double ra = rowZ(p.z + p.slope * a, a), rb = rowZ(p.z + p.slope * b, b);
+            double lo = Math.min(ra, rb), hi = Math.max(ra, rb);
+            if (p.inside && a <= p.t1) {                         // standing over it: it runs off the screen
+                if (p.top) hi = H;
+                else lo = 0;
+            }
+            cand(lo, hi, p.z, p.slope, p.base, p.color, p, null, EventKind.SHAPE);
+        }
+
+        private void cand(double lo, double hi, double z, double slope, int base, IntUnaryOperator color,
+                          Plane plane, Region region, EventKind kind) {
+            if (nc == cands.size()) cands.add(new Cand());
+            Cand c = cands.get(nc++);
+            c.lo = lo;
+            c.hi = hi;
+            c.z = z;
+            c.slope = slope;
+            c.base = base;
+            c.color = color;
+            c.plane = plane;
+            c.region = region;
+            c.kind = kind;
+        }
+
+        private void paintCands(double ta, double tb) {
+            for (int i = 0; i < nc; i++) {
+                Cand c = cands.get(i);
+                c.ia = clampRow(c.lo);
+                c.ib = clampRow(c.hi);
+            }
+            // A cut-out's plane first: the rows where it is nearer than every solid surface in this
+            // stretch are noted, not taken, so what is behind still paints them and the cut-out is
+            // blended over that afterwards. Rows already closed were closed by something nearer.
+            for (int i = 0; i < nc; i++) {
+                Cand c = cands.get(i);
+                if (c.plane != null && c.plane.masked && c.ib > c.ia) recordPlane(i);
+            }
+            for (int i = 0; i < nc; i++) {
+                Cand c = cands.get(i);
+                if (c.ib <= c.ia || (c.plane != null && c.plane.masked)) continue;
+                boolean alone = true;
+                for (int j = 0; j < nc && alone; j++) {
+                    Cand d = cands.get(j);
+                    if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked)) alone = false;
+                }
+                int rows = 0;
+                if (alone) {
+                    rows = paint(c.ia, c.ib, 0, c.z, c.slope, c.base, c.color);
+                } else {
+                    int run = -1;
+                    for (int y = c.ia; y <= c.ib; y++) {
+                        boolean win = y < c.ib && nearest(i, y);
+                        if (win && run < 0) {
+                            run = y;
+                        } else if (!win && run >= 0) {
+                            rows += paint(run, y, 0, c.z, c.slope, c.base, c.color);
+                            run = -1;
+                        }
+                    }
+                }
+                if (tr != null && rows > 0) {
+                    if (c.plane != null) notePlane(c.plane, rows);
+                    else noteSurface(c.kind, c.region, ta, tb, rows);
+                }
+            }
+        }
+
+        /** Whether candidate i is the first thing the ray through row y meets, of those wanting it. */
+        private boolean nearest(int i, int y) {
+            double di = depthAt(cands.get(i), y);
+            for (int j = 0; j < nc; j++) {
+                if (j == i) continue;
+                Cand d = cands.get(j);
+                if (y < d.ia || y >= d.ib || (d.plane != null && d.plane.masked)) continue;   // a cut-out hides nothing
+                double dj = depthAt(d, y);
+                if (dj < di || (dj == di && j < i)) return false;
+            }
+            return true;
+        }
+
+        /** Where the ray through row y meets a candidate's plane - the formula flat() uses. */
+        private double depthAt(Cand c, int y) {
+            double d = (eye - c.z) * F / ((y + 0.5 - hz) * dk + c.slope * F);
+            return d > 0 && Double.isFinite(d) ? d : Double.POSITIVE_INFINITY;
+        }
+
+        private void notePlane(Plane p, int rows) {
+            p.rows[p.which] += rows;
+            TraceEvent e = tr.events.get(p.ev);
+            tr.events.set(p.ev, new TraceEvent(EventKind.SHAPE, e.t(),
+                    String.format("%s side %d top %d bottom %d", p.label, p.rows[0], p.rows[1], p.rows[2]),
+                    p.rows[0] + p.rows[1] + p.rows[2], e.x(), e.y()));
         }
 
         /** Floors are now painted a cell at a time, so merge each run of the same floor (or
@@ -591,17 +1228,58 @@ final class Renderer {
             note(kind, ta, String.format("%s%.2f-%.2f", prefix, ta, Math.min(tb, MAX_DIST)), rows);
         }
 
-        /** How wide one pixel is, in metres, on a surface square to the eye at distance t. */
-        private double pixelSize(double t) { return t * dk / F; }
-
         /** Horizontal surfaces: invert the projection to get the distance for a row,
          *  then look up where that lands on the map. */
-        private IntUnaryOperator flat(double z, int mat, int color, double k0) {
+        private IntUnaryOperator flat(double z, int mat, int color, double k0, Lighting.LightMap lm) {
+            return flat(z, 0, mat, color, k0, lm, null, 1, null);
+        }
+
+        /**
+         * A plane. z is its height where the eye stands and slope how fast it climbs along this
+         * ray, so a floor or a flat top passes slope 0 and nothing about it changes.
+         *
+         * The row a plane fills is where the ray's height meets the plane's. The ray is at
+         * eye - C*t with C = (row - horizon) * dk / F; the plane is at z + slope*t; so
+         * t = (eye - z) / (C + slope), which is the old t = (eye - z) / C with one term added.
+         */
+        private IntUnaryOperator flat(double z, double slope, int mat, int color, double k0,
+                                      Lighting.LightMap lm, Materials.Texture tex, double ts, Shape owner) {
+            boolean mapped = owner != null && owner.img != null;        // the mesh's own texture wins
+            double sF = slope * F;
+            if (lm == null) {
+                return y -> {
+                    double t = (eye - z) * F / ((y + 0.5 - hz) * dk + sF);
+                    if (!(t > 0) || t > MAX_DIST) return shade(color, 0.3 * k0);
+                    if (mapped) {
+                        flatImg(owner, t, y);
+                        if (albedo != null) textured(color);
+                        return shade(color, T, k0 * fog(t), null);
+                    }
+                    if (tex != null) {
+                        flatTex(tex, ts, t, y);
+                        if (albedo != null) textured(color);
+                        return shade(color, T, k0 * fog(t), null);
+                    }
+                    return shade(color, flatTex(mat, t, y) * k0 * fog(t));
+                };
+            }
             return y -> {
-                double t = (eye - z) * F / ((y + 0.5 - hz) * dk);
+                double t = (eye - z) * F / ((y + 0.5 - hz) * dk + sF);
                 if (!(t > 0) || t > MAX_DIST) return shade(color, 0.3 * k0);
-                return shade(color,
-                        Materials.flat(mat, px + rx * t, py + ry * t, pixelSize(t)) * k0 * fog(t));
+                double wx = px + rx * t, wy = py + ry * t, f = fog(t);
+                if (Materials.emissive(mat, wx, wy)) return shade(EMISSIVE, f);   // a light panel is its own light
+                lm.sample(wx, wy, L);
+                if (mapped) {
+                    flatImg(owner, t, y);
+                    if (albedo != null) textured(color);
+                    return shade(color, T, f, L);
+                }
+                if (tex != null) {
+                    flatTex(tex, ts, t, y);
+                    if (albedo != null) textured(color);
+                    return shade(color, T, f, L);
+                }
+                return shadeL(color, flatTex(mat, t, y) * f, L);
             };
         }
 
@@ -609,6 +1287,9 @@ final class Renderer {
         private void fillRest() {
             for (int k = 0; k < open; k++)
                 for (int y = o0[k]; y < o1[k]; y++) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
+            if (albedo != null)
+                for (int k = 0; k < open; k++)
+                    for (int y = o0[k]; y < o1[k]; y++) albedo[y * W + x] = pixels[y * W + x];
             open = 0;
         }
 
@@ -623,15 +1304,39 @@ final class Renderer {
 
         // ---- Interval list: only ever fill rows that are still empty ----
 
-        /** Returns how many rows were actually filled. */
-        private int paint(double a, double b, IntUnaryOperator colorOf) {
+        /** Returns how many rows were actually filled. Depth is constant t on a side; t = 0
+         *  means a horizontal face at z, whose distance comes from the row instead. */
+        private int paint(double a, double b, double t, double z, int baseColor, IntUnaryOperator colorOf) {
+            return paint(a, b, t, z, 0, baseColor, colorOf);
+        }
+
+        /** slope: for a plane (t = 0), how fast it climbs along this ray, z being its height at the
+         *  eye - a tilted top or bottom. Its depth then comes from the same formula flat() uses to
+         *  find it; the horizontal one put every tilted face at the wrong distance. */
+        private int paint(double a, double b, double t, double z, double slope, int baseColor, IntUnaryOperator colorOf) {
             int ia = clampRow(a), ib = clampRow(b);
             if (ib <= ia) return 0;
             int m = 0, filled = 0;
             for (int k = 0; k < open; k++) {
                 int s0 = Math.max(o0[k], ia), s1 = Math.min(o1[k], ib);
                 if (s1 <= s0) { n0[m] = o0[k]; n1[m++] = o1[k]; continue; }
-                for (int y = s0; y < s1; y++) pixels[y * W + x] = colorOf.applyAsInt(y);
+                if (depth == null) {
+                    for (int y = s0; y < s1; y++) pixels[y * W + x] = colorOf.applyAsInt(y);
+                } else {
+                    for (int y = s0; y < s1; y++) {
+                        texAlbedoSet = false;
+                        pixels[y * W + x] = colorOf.applyAsInt(y);
+                        albedo[y * W + x] = texAlbedoSet ? texAlbedo : baseColor;
+                    }
+                    if (t > 0) {
+                        for (int y = s0; y < s1; y++) depth[y * W + x] = (float) t;
+                    } else {
+                        for (int y = s0; y < s1; y++) {
+                            double d = (eye - z) * F / ((y + 0.5 - hz) * dk + slope * F);
+                            depth[y * W + x] = d > 0 && Double.isFinite(d) ? (float) d : 0;
+                        }
+                    }
+                }
                 filled += s1 - s0;
                 if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above
                 if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // leftover below
@@ -656,15 +1361,96 @@ final class Renderer {
         }
     }
 
+    /** Off when the map's lighting says "fog": false. The fade to 30% at 45 m stood in for light
+     *  falling off before there was a bake; with real lightmaps it only darkens whatever is far away,
+     *  lit or not. */
+    static boolean fogOn = true;
+
     private static double fog(double t) {
-        return Math.max(0.3, 1 - t / 45);
+        return fogOn ? Math.max(0.3, 1 - t / 45) : 1;
+    }
+
+    /** src over dst, by a. */
+    private static int mix(int dst, int src, double a) {
+        int k = (int) (a * 256), j = 256 - k;
+        return ((((dst >> 16 & 255) * j + (src >> 16 & 255) * k) >> 8) << 16)
+                | ((((dst >> 8 & 255) * j + (src >> 8 & 255) * k) >> 8) << 8)
+                | (((dst & 255) * j + (src & 255) * k) >> 8);
     }
 
     private static int shade(int c, double k) {
         return rgb(((c >> 16) & 255) * k, ((c >> 8) & 255) * k, (c & 255) * k);
     }
 
+    /** Colour c times k, times a coloured light level from a lightmap. */
+    private static int shadeL(int c, double k, float[] L) {
+        return rgb(((c >> 16) & 255) * k * L[0], ((c >> 8) & 255) * k * L[1], (c & 255) * k * L[2]);
+    }
+
+    /** Image texture factors replace only the procedural scalar; lighting and grading are shared. */
+    private static int shade(int c, double[] texture, double k, float[] light) {
+        double r = ((c >> 16) & 255) * (texture[0] * k);
+        double g = ((c >> 8) & 255) * (texture[1] * k);
+        double b = (c & 255) * (texture[2] * k);
+        return light == null ? rgb(r, g, b) : rgb(r * light[0], g * light[1], b * light[2]);
+    }
+
+    private static final int EMISSIVE = 0xfff4e6;          // what a lit ceiling panel looks like
+
+    /**
+     * Tone mapping. Bounced light pushes lit surfaces well past full brightness, and cutting them
+     * off at 255 turns a sunlit wall into a flat white shape. The curve leaves everything below
+     * KNEE exactly as it was - the direct-lit look this engine was tuned against - and rolls the
+     * rest off towards 255, so the extra light shows as detail instead of a hole. One byte of
+     * table lookup per channel, so it costs nothing per pixel.
+     */
+    private static final int KNEE = 200, TONE_MAX = 2048;
+    private static final int[] TONE = new int[TONE_MAX];
+
+    static {
+        for (int v = 0; v < TONE_MAX; v++)
+            TONE[v] = v <= KNEE ? v
+                    : (int) Math.round(KNEE + (255.0 - KNEE) * (1 - Math.exp(-(v - KNEE) / (255.0 - KNEE))));
+    }
+
+    private static int tone(double v) {
+        int i = (int) v;
+        return TONE[i < 0 ? 0 : Math.min(i, TONE_MAX - 1)];
+    }
+
+    /**
+     * The grade: saturation, and a lift off black. Valorant's own picture is not what its textures
+     * are - measured over ten of Riot's screenshots of Haven it runs at 0.31 saturation with barely
+     * a pixel under 25, while the .blend's own albedo is 0.19 and this engine's is 0.20. The extra
+     * chroma is colour grading in their renderer, not anything a conversion can fetch out of the
+     * file, and the lifted shadows are theirs too. So it is done here, at the end, where they do it.
+     */
+    static double satBoost = 1.0, lift = 0.0;
+
+    static void grade(double saturation, double blackLift) {
+        satBoost = saturation;
+        lift = blackLift;
+    }
+
+    /** An albedo pixel: the colour as it is, clamped - no grade and no tone curve. */
+    private static int raw(double r, double g, double b) {
+        return (int) Math.max(0, Math.min(255, r)) << 16 | (int) Math.max(0, Math.min(255, g)) << 8
+                | (int) Math.max(0, Math.min(255, b));
+    }
+
     private static int rgb(double r, double g, double b) {
-        return (Math.min(255, (int) r) << 16) | (Math.min(255, (int) g) << 8) | Math.min(255, (int) b);
+        if (satBoost != 1.0) {
+            double y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            r = y + (r - y) * satBoost;
+            g = y + (g - y) * satBoost;
+            b = y + (b - y) * satBoost;
+        }
+        if (lift != 0) {
+            double k = 1 - lift, c = lift * 255;
+            r = c + r * k;
+            g = c + g * k;
+            b = c + b * k;
+        }
+        return (tone(r) << 16) | (tone(g) << 8) | tone(b);
     }
 }
