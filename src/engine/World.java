@@ -47,6 +47,33 @@ final class World {
         double x0, y0, cell;
         int nx, ny;
         int[][] shapes, regions;
+        Group[][] groups;             // the same shapes as `shapes`, bundled per storey; see buildGroups
+    }
+
+    /**
+     * The shapes of one cell that stand in the same region - in practice, the furniture of one room
+     * on one storey - with the union of their bounding boxes and height ranges. The renderer tests
+     * the union first: when every row it could reach is already painted (you are upstairs and your
+     * own floor is in the way), none of the members can show, and the whole storey's worth of
+     * furniture in that cell is rejected with one test instead of one per shape.
+     */
+    static final class Group {
+        final int[] members;
+        final double minX, minY, maxX, maxY, z0, h, maxDist;
+
+        Group(int[] members, Shape[] shapes) {
+            this.members = members;
+            double x0 = Double.POSITIVE_INFINITY, y0 = x0, zLo = x0;
+            double x1 = Double.NEGATIVE_INFINITY, y1 = x1, zHi = x1, far = x1;
+            for (int i : members) {
+                Shape s = shapes[i];
+                x0 = Math.min(x0, s.minX); y0 = Math.min(y0, s.minY);
+                x1 = Math.max(x1, s.maxX); y1 = Math.max(y1, s.maxY);
+                zLo = Math.min(zLo, s.z0); zHi = Math.max(zHi, s.h);
+                far = Math.max(far, s.maxDist);
+            }
+            minX = x0; minY = y0; maxX = x1; maxY = y1; z0 = zLo; h = zHi; maxDist = far;
+        }
     }
 
     final String name;
@@ -80,6 +107,7 @@ final class World {
         }
         minX = x0; minY = y0; maxX = x1; maxY = y1;
         grid = buildGrid(cell);
+        buildGroups(grid);
     }
 
     // ---- Queries ----
@@ -186,6 +214,41 @@ final class World {
             g.regions[c] = rg[c].stream().mapToInt(Integer::intValue).toArray();
         }
         return g;
+    }
+
+    /**
+     * Bundle each cell's shapes by the region they stand in: the highest region at the shape's
+     * centre whose [floor, ceil) contains the shape's base. Shapes that rise above that region's
+     * ceiling - outer walls running the full height of the building - belong to no single storey
+     * and are left as groups of one. Grouping only affects speed: a group's bounds contain every
+     * member's, so "the group cannot show" implies "no member can".
+     */
+    private void buildGroups(Grid g) {
+        Map<Region, Integer> index = new java.util.IdentityHashMap<>();
+        for (int i = 0; i < regions.length; i++) index.put(regions[i], i);
+        int[] key = new int[shapes.length];
+        Region[] stack = new Region[16];
+        for (int i = 0; i < shapes.length; i++) {
+            Shape s = shapes[i];
+            int n = regionsAt((s.minX + s.maxX) / 2, (s.minY + s.maxY) / 2, stack);
+            Region home = null;
+            for (int k = 0; k < n; k++)
+                if (stack[k].floor <= s.z0 + 1e-6 && s.z0 < stack[k].ceil && (home == null || stack[k].floor > home.floor))
+                    home = stack[k];
+            key[i] = home != null && s.h <= home.ceil + 1e-6 ? index.get(home) : -1;
+        }
+        g.groups = new Group[g.shapes.length][];
+        for (int c = 0; c < g.shapes.length; c++) {
+            Map<Integer, List<Integer>> byKey = new java.util.LinkedHashMap<>();
+            List<Group> out = new ArrayList<>();
+            for (int i : g.shapes[c]) {
+                if (key[i] < 0) out.add(new Group(new int[] {i}, shapes));
+                else byKey.computeIfAbsent(key[i], k -> new ArrayList<>()).add(i);
+            }
+            for (List<Integer> m : byKey.values())
+                out.add(new Group(m.stream().mapToInt(Integer::intValue).toArray(), shapes));
+            g.groups[c] = out.toArray(Group[]::new);
+        }
     }
 
     // ---- JSON loading ----
