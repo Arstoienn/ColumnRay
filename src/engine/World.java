@@ -38,6 +38,7 @@ final class World {
         double z0, h;                 // 底和頂的高度
         int mat, topMat, color;
         double maxDist;               // 超過這個距離就不畫
+        String label;                 // 除錯顯示用，例如「箱子·wood」
         double minX, minY, maxX, maxY;
     }
 
@@ -212,6 +213,13 @@ final class World {
         s.topMat = Materials.id(str(m, "topMat", mat));
         s.color = color(m, "color", "#c8c8c8");
         s.maxDist = num(m, "maxDist", Double.POSITIVE_INFINITY);
+        s.label = switch (type) {
+            case "wall" -> "牆";
+            case "circle" -> "圓柱";
+            case "box" -> "箱子";
+            case "ngon" -> "多角柱";
+            default -> "多邊形";
+        } + "·" + mat;
 
         switch (type) {
             case "wall" -> {
