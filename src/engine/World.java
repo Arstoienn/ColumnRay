@@ -11,34 +11,35 @@ import java.util.Set;
 import java.util.function.IntConsumer;
 
 /**
- * 地圖資料：區域（地板 / 天花板）加上形狀清單。
- * 格子只當加速：每格存「碰到這格的形狀和區域」，載入時自動建立。
+ * Map data: a list of regions (floor / ceiling) plus a list of shapes.
+ * The grid is a pure acceleration structure - each cell stores the shapes and regions whose
+ * bounding boxes touch it, and it is rebuilt automatically on load.
  */
 final class World {
     enum Kind { SEG, CIRCLE, POLY }
 
-    /** 凸多邊形區域。ceil = +∞ 代表露天。 */
+    /** A convex polygon region. ceil = +infinity means open to the sky. */
     static final class Region {
         String name;
         double[] xs, ys;
         double floor, ceil;
-        double top;          // 從露天看進來時，開口上方那段牆的頂
+        double top;          // top of the wall above the opening, seen from an open-air region
         boolean sky;
         int floorMat, ceilMat, wallMat;
         int floorColor, ceilColor, wallColor;
-        double light;        // 環境亮度（室內較暗）
+        double light;        // ambient brightness (indoor regions are dimmer)
         double minX, minY, maxX, maxY;
     }
 
     static final class Shape {
         Kind kind;
-        double ax, ay, bx, by, len;   // 線段牆
-        double cx, cy, r;             // 圓柱
-        double[] xs, ys;              // 凸多邊形
-        double z0, h;                 // 底和頂的高度
+        double ax, ay, bx, by, len;   // segment wall
+        double cx, cy, r;             // cylinder
+        double[] xs, ys;              // convex polygon
+        double z0, h;                 // bottom and top height
         int mat, topMat, color;
-        double maxDist;               // 超過這個距離就不畫
-        String label;                 // 除錯顯示用，例如「箱子·wood」
+        double maxDist;               // not drawn beyond this distance
+        String label;                 // shown in the ray view, e.g. "box/wood"
         double minX, minY, maxX, maxY;
     }
 
@@ -81,7 +82,7 @@ final class World {
         grid = buildGrid(cell);
     }
 
-    // ---- 查詢 ----
+    // ---- Queries ----
 
     Region regionAt(double x, double y) {
         int cx = (int) Math.floor((x - grid.x0) / grid.cell);
@@ -153,7 +154,7 @@ final class World {
         return g;
     }
 
-    // ---- 載入 JSON ----
+    // ---- JSON loading ----
 
     static World load(Path path) throws IOException {
         Map<String, Object> root = obj(Json.parse(Files.readString(path)));
@@ -176,7 +177,7 @@ final class World {
         double[][] p = poly(m.get("poly"), 0, 0);
         r.xs = p[0];
         r.ys = p[1];
-        if (!Geometry.isConvex(r.xs, r.ys)) throw new IllegalArgumentException("區域不是凸多邊形：" + r.name);
+        if (!Geometry.isConvex(r.xs, r.ys)) throw new IllegalArgumentException("region polygon is not convex: " + r.name);
         r.floor = num(m, "floor", 0);
         Object c = m.get("ceil");
         r.sky = c == null;
@@ -193,7 +194,7 @@ final class World {
         return r;
     }
 
-    /** type: wall / circle / box / poly / ngon / array（array 會把 items 平移複製成格狀）。 */
+    /** type: wall / circle / box / poly / ngon / array (array tiles its items into a grid of copies). */
     private static void parseShape(Map<String, Object> m, double ox, double oy, List<Shape> out) {
         String type = str(m, "type", "box");
         if (type.equals("array")) {
@@ -214,12 +215,12 @@ final class World {
         s.color = color(m, "color", "#c8c8c8");
         s.maxDist = num(m, "maxDist", Double.POSITIVE_INFINITY);
         s.label = switch (type) {
-            case "wall" -> "牆";
-            case "circle" -> "圓柱";
-            case "box" -> "箱子";
-            case "ngon" -> "多角柱";
-            default -> "多邊形";
-        } + "·" + mat;
+            case "wall" -> "wall";
+            case "circle" -> "cylinder";
+            case "box" -> "box";
+            case "ngon" -> "ngon";
+            default -> "poly";
+        } + "/" + mat;
 
         switch (type) {
             case "wall" -> {
@@ -260,15 +261,15 @@ final class World {
                 }
                 s.xs = p[0];
                 s.ys = p[1];
-                if (!Geometry.isConvex(s.xs, s.ys)) throw new IllegalArgumentException("形狀不是凸多邊形：" + m);
+                if (!Geometry.isConvex(s.xs, s.ys)) throw new IllegalArgumentException("shape polygon is not convex: " + m);
                 bounds(s.xs, s.ys, b -> { s.minX = b[0]; s.minY = b[1]; s.maxX = b[2]; s.maxY = b[3]; });
             }
-            default -> throw new IllegalArgumentException("未知形狀類型：" + type);
+            default -> throw new IllegalArgumentException("unknown shape type: " + type);
         }
         out.add(s);
     }
 
-    // ---- JSON 小工具 ----
+    // ---- JSON helpers ----
 
     @SuppressWarnings("unchecked")
     private static Map<String, Object> obj(Object o) { return (Map<String, Object>) o; }

@@ -35,13 +35,13 @@ import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
 
 /**
- * 視窗、輸入、玩家物理、小地圖。另外開一個「光線視圖」視窗，見 RayView。
- * 用法：java -cp out engine.Main [地圖.json] [--shot 輸出.png [x y 角度 仰角]] [--bench]
+ * Window, input, player physics and minimap. A second "ray view" window lives in RayView.
+ * Usage: java -cp out engine.Main [map.json] [--shot out.png [x y angle pitch [column]]] [--bench]
  */
 public final class Main {
     static final int W = 640, H = 360;
 
-    // 玩家尺寸（公尺）
+    // Player dimensions (metres)
     static final double RADIUS = 0.3, EYE_STAND = 1.6, EYE_CROUCH = 1.0, HEAD_ABOVE_EYE = 0.15;
     static final double STEP = 0.35, GRAVITY = 18, JUMP_SPEED = 5.2, WALK = 3.2, RUN = 5.5;
     static final double MAX_PITCH = Math.toRadians(30);
@@ -53,17 +53,17 @@ public final class Main {
     private final Renderer.Camera cam = new Renderer.Camera();
     private final Shape[] mapOrder;
 
-    // 玩家
+    // Player state
     private double x, y, angle, pitch, feet, vz, eyeH = EYE_STAND, viewFeet;
     private boolean grounded;
 
-    // 輸入（EDT 寫、主迴圈讀）
+    // Input (written on the EDT, read by the main loop)
     private final Set<Integer> keys = ConcurrentHashMap.newKeySet();
     private double mouseDX, mouseDY;
     private volatile boolean showMap = true, fisheye = false;
     private volatile double fovDeg = Renderer.DEFAULT_FOV;
-    private volatile int hoverColumn = -1;                       // 滑鼠停在主畫面的哪一欄
-    private volatile int viewX, viewY, viewW = W, viewH = H;     // 主畫面在視窗裡的位置
+    private volatile int hoverColumn = -1;                       // which column of the main view the mouse is over
+    private volatile int viewX, viewY, viewW = W, viewH = H;     // where the main view sits inside the window
     private double fps;
 
     Main(World world) {
@@ -94,12 +94,16 @@ public final class Main {
             if (args[i].equals("--bench")) {
                 bench = true;
             } else if (args[i].equals("--shot")) {
+                if (i + 1 >= args.length) { usage("--shot needs an output file"); return; }
                 shot = args[++i];
-                // 後面可以接 x y 角度 仰角 [欄]
+                // optionally followed by: x y angle pitch [column]
                 double[] nums = new double[5];
                 int n = 0;
                 while (n < 5 && i + 1 < args.length && args[i + 1].matches("-?[0-9.]+")) nums[n++] = Double.parseDouble(args[++i]);
                 if (n >= 4) at = Arrays.copyOf(nums, n);
+            } else if (args[i].startsWith("--")) {
+                usage("unknown option " + args[i]);
+                return;
             } else {
                 mapPath = args[i];
             }
@@ -112,26 +116,26 @@ public final class Main {
         else game.run();
     }
 
-    /** 原地轉一圈，量每張畫面的渲染時間（不開視窗）。 */
+    /** Spin on the spot and time each frame (headless, no window). */
     private void bench() {
         int frames = 720;
-        for (int i = 0; i < 120; i++) { angle += 0.05; renderer.render(camera()); }   // 暖機
+        for (int i = 0; i < 120; i++) { angle += 0.05; renderer.render(camera()); }   // warm-up
         long t0 = System.nanoTime();
         for (int i = 0; i < frames; i++) { angle += 2 * Math.PI / frames; renderer.render(camera()); }
         double ms = (System.nanoTime() - t0) / 1e6 / frames;
-        System.out.printf("%d×%d：平均 %.2f ms / 張（約 %.0f fps）%n", W, H, ms, 1000 / ms);
+        System.out.printf("%dx%d: %.2f ms per frame on average (about %.0f fps)%n", W, H, ms, 1000 / ms);
     }
 
-    // ---- 主迴圈 ----
+    // ---- Main loop ----
 
     private void run() throws Exception {
         Canvas canvas = new Canvas();
         SwingUtilities.invokeAndWait(() -> {
-            // 主畫面在左、光線視圖在右，一起塞進螢幕
+            // Main view on the left, ray view on the right, both fitted onto the screen
             Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
             int rayW = (int) Math.min(640, screen.width * 0.36);
             int mainW = Math.max(W, Math.min(W * 2, screen.width - rayW - 30));
-            JFrame frame = new JFrame("ColumnRay — " + world.name);
+            JFrame frame = new JFrame("ColumnRay - " + world.name);
             canvas.setPreferredSize(new Dimension(mainW, mainW * H / W));
             canvas.setIgnoreRepaint(true);
             canvas.setFocusTraversalKeysEnabled(false);
@@ -166,7 +170,7 @@ public final class Main {
             @Override public void keyPressed(KeyEvent e) {
                 int code = e.getKeyCode();
                 if (code == KeyEvent.VK_ESCAPE) System.exit(0);
-                if (!keys.add(code)) return;                     // 按住時的自動重複
+                if (!keys.add(code)) return;                     // ignore auto-repeat while a key is held
                 switch (code) {
                     case KeyEvent.VK_M -> showMap = !showMap;
                     case KeyEvent.VK_F -> fisheye = !fisheye;
@@ -195,19 +199,19 @@ public final class Main {
 
     private boolean down(int key) { return keys.contains(key); }
 
-    /** 視窗座標 → 主畫面的第幾欄；不在畫面上回傳 -1。 */
+    /** Window coordinate -> column of the main view; -1 when the point is outside it. */
     private int columnAt(int mx) {
         int c = (int) Math.floor((mx - viewX) * (double) W / viewW);
         return c >= 0 && c < W ? c : -1;
     }
 
-    // ---- 玩家物理 ----
+    // ---- Player physics ----
 
     private void update(double dt) {
         double fov = fovDeg;
         if (Math.abs(renderer.fov() - fov) > 1e-6) renderer.setFov(fov);
         int hover = hoverColumn;
-        renderer.traceColumn = hover >= 0 ? hover : W / 2;       // 光線視圖要詳細記錄的那一欄
+        renderer.traceColumn = hover >= 0 ? hover : W / 2;       // the column the ray view records in detail
 
         double mdx, mdy;
         synchronized (this) { mdx = mouseDX; mdy = mouseDY; mouseDX = mouseDY = 0; }
@@ -223,7 +227,7 @@ public final class Main {
         if (f != 0 || s != 0) {
             double speed = (down(KeyEvent.VK_SHIFT) ? RUN : WALK) * (crouch ? 0.5 : 1) / Math.hypot(f, s);
             double dx = (dirX * f - dirY * s) * speed * dt, dy = (dirY * f + dirX * s) * speed * dt;
-            int n = Math.max(1, (int) Math.ceil(Math.hypot(dx, dy) / 0.1));   // 分段移動，避免穿過薄牆
+            int n = Math.max(1, (int) Math.ceil(Math.hypot(dx, dy) / 0.1));   // substep so we cannot tunnel through thin walls
             for (int i = 0; i < n; i++) {
                 if (!blocked(x + dx / n, y, feet)) x += dx / n;
                 if (!blocked(x, y + dy / n, feet)) y += dy / n;
@@ -232,7 +236,7 @@ public final class Main {
 
         double[] sup = support(x, y, feet);
         double ground = sup[0], ceil = sup[1];
-        if (grounded && feet > ground && feet - ground <= STEP) feet = ground;   // 下台階時貼地
+        if (grounded && feet > ground && feet - ground <= STEP) feet = ground;   // stick to the floor when stepping down
         if (grounded && down(KeyEvent.VK_SPACE)) vz = JUMP_SPEED;
         vz -= GRAVITY * dt;
         feet += vz * dt;
@@ -243,7 +247,7 @@ public final class Main {
         }
 
         double target = crouch ? EYE_CROUCH : EYE_STAND;
-        if (!crouch && feet + EYE_STAND + HEAD_ABOVE_EYE > ceil) target = eyeH;  // 頭上有東西，站不起來
+        if (!crouch && feet + EYE_STAND + HEAD_ABOVE_EYE > ceil) target = eyeH;  // something overhead: cannot stand back up
         eyeH += (target - eyeH) * Math.min(1, dt * 10);
         if (grounded && Math.abs(feet - viewFeet) < 1) viewFeet += (feet - viewFeet) * Math.min(1, dt * 14);
         else viewFeet = feet;
@@ -251,7 +255,8 @@ public final class Main {
 
     private double head(double feet) { return feet + eyeH + HEAD_ABOVE_EYE; }
 
-    /** 地板比腳高一個台階以上、天花板比頭低、或碰到擋路的形狀，就不能走。 */
+    /** Blocked when the floor is more than one step up, the ceiling is below head height,
+     *  or a solid shape is in the way. */
     private boolean blocked(double px, double py, double feet) {
         if (world.regionAt(px, py) == null) return true;
         for (Region r : world.regionsNear(px, py, RADIUS)) {
@@ -263,7 +268,7 @@ public final class Main {
         return false;
     }
 
-    /** { 腳下能站的最高面, 頭上最低的東西 } */
+    /** { highest surface we can stand on, lowest thing above our head } */
     private double[] support(double px, double py, double feet) {
         double ground = Double.NEGATIVE_INFINITY, ceil = Double.POSITIVE_INFINITY;
         for (Region r : world.regionsNear(px, py, RADIUS)) {
@@ -290,7 +295,7 @@ public final class Main {
         return cam;
     }
 
-    // ---- 輸出 ----
+    // ---- Output ----
 
     private void present(Canvas canvas) {
         BufferStrategy bs = canvas.getBufferStrategy();
@@ -329,16 +334,16 @@ public final class Main {
         drawFrame(g, 0, 0, W * 2, H * 2, true);
         g.dispose();
         ImageIO.write(img, "png", out);
-        System.out.println("寫入 " + out);
+        System.out.println("wrote " + out);
 
-        // 同一個畫面的光線視圖
+        // Ray view of the same frame
         File raysOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-rays.png"));
         BufferedImage rays = new BufferedImage(640, 720, BufferedImage.TYPE_INT_RGB);
         Graphics2D rg = rays.createGraphics();
         rayView.draw(rg, rays.getWidth(), rays.getHeight(), new RayView.View(x, y, angle, fisheye));
         rg.dispose();
         ImageIO.write(rays, "png", raysOut);
-        System.out.println("寫入 " + raysOut);
+        System.out.println("wrote " + raysOut);
     }
 
     private void drawFrame(Graphics2D g, int ox, int oy, int dw, int dh, boolean markColumn) {
@@ -347,7 +352,7 @@ public final class Main {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
         int col = renderer.traceColumn;
-        if (markColumn && col >= 0) {                        // 光線視圖裡紅線對應的那一欄
+        if (markColumn && col >= 0) {                        // the column shown in red in the ray view
             double cx = ox + (col + 0.5) * dw / W;
             g.setColor(new Color(255, 70, 50, 140));
             g.draw(new Line2D.Double(cx, oy, cx, oy + dh));
@@ -359,11 +364,11 @@ public final class Main {
     private void drawHud(Graphics2D g, int left, int top) {
         Region r = world.regionAt(x, y);
         String[] lines = {
-            String.format("%s   %.0f fps   %d×%d   FOV %.0f°   %s", world.name, fps, W, H, renderer.fov(),
-                    fisheye ? "魚眼對照（直線距離，錯的）" : "垂直距離"),
-            String.format("%s   (%.1f, %.1f)   腳 %.2f m", r == null ? "—" : r.name, x, y, feet),
-            "WASD 移動  拖曳滑鼠 / 方向鍵 看  Space 跳  C 蹲  Shift 跑",
-            "[ ] 視野  F 魚眼對照  R 光線視圖  M 小地圖  Esc 離開　滑鼠停在畫面上 = 選那一欄",
+            String.format("%s   %.0f fps   %dx%d   FOV %.0f deg   %s", world.name, fps, W, H, renderer.fov(),
+                    fisheye ? "fisheye demo (straight-line distance, wrong)" : "perpendicular distance"),
+            String.format("%s   (%.1f, %.1f)   feet %.2f m", r == null ? "-" : r.name, x, y, feet),
+            "WASD move   drag mouse / arrows look   Space jump   C crouch   Shift run",
+            "[ ] FOV   F fisheye demo   R ray view   M minimap   Esc quit   hover the view to pick a column",
         };
         g.setFont(new Font(Font.DIALOG, Font.PLAIN, 13));
         for (int i = 0; i < lines.length; i++) {
@@ -423,5 +428,11 @@ public final class Main {
 
     private static Color withAlpha(int rgb, int a) {
         return new Color((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, a);
+    }
+
+    private static void usage(String problem) {
+        System.err.println(problem);
+        System.err.println("usage: java -cp out engine.Main [map.json] [--bench]");
+        System.err.println("       java -cp out engine.Main [map.json] --shot out.png [x y angle pitch [column]]");
     }
 }

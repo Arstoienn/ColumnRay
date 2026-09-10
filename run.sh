@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 編譯並執行。參數會原樣傳給 engine.Main，例如：
-#   ./run.sh                                  開視窗，載入 maps/school.json
-#   ./run.sh maps/school.json --shot a.png    不開視窗，輸出一張截圖
+# Compile and run. Arguments are passed straight through to engine.Main, for example:
+#   ./run.sh                                  open the windows, load maps/school.json
+#   ./run.sh maps/school.json --shot a.png    headless, write a single screenshot
 set -euo pipefail
 cd "$(dirname "$0")"
 rm -rf out

@@ -2,29 +2,29 @@ package engine;
 
 import engine.World.Shape;
 
-/** 光線交點與碰撞用的 2D 幾何。光線是 p + r·t，r 不必是單位向量。 */
+/** 2D geometry for ray intersection and collision. A ray is p + r*t; r need not be a unit vector. */
 final class Geometry {
     private Geometry() {}
 
     static final double EPS = 1e-9;
 
-    /** t：光線上的距離；u：線段上的位置 0..1；(ex, ey)：邊向量。 */
+    /** t: distance along the ray; u: position along the segment, 0..1; (ex, ey): the edge vector. */
     record SegHit(double t, double u, double ex, double ey) {}
 
-    /** 進入與離開的 t。 */
+    /** Entry and exit t. */
     record Span(double t1, double t2) {}
 
-    /** 凸多邊形：進入 / 離開的 t，以及對應的邊和邊上位置。 */
+    /** Convex polygon: entry/exit t, plus which edge was crossed and where along it. */
     record PolyHit(double t1, double t2, int enterEdge, double enterU, int exitEdge, double exitU) {}
 
     static SegHit raySeg(double px, double py, double rx, double ry,
                          double ax, double ay, double bx, double by) {
         double ex = bx - ax, ey = by - ay;
         double den = rx * ey - ry * ex;
-        if (Math.abs(den) < EPS) return null;                 // 平行
+        if (Math.abs(den) < EPS) return null;                 // parallel
         double apx = ax - px, apy = ay - py;
-        double t = (apx * ey - apy * ex) / den;               // 光線上的距離
-        double u = (apx * ry - apy * rx) / den;               // 線段上的位置 0..1
+        double t = (apx * ey - apy * ex) / den;               // distance along the ray
+        double u = (apx * ry - apy * rx) / den;               // position along the segment, 0..1
         return (u >= 0 && u <= 1) ? new SegHit(t, u, ex, ey) : null;
     }
 
@@ -36,10 +36,11 @@ final class Geometry {
         double D = B * B - 4 * A * C;
         if (D <= 0) return null;
         double q = Math.sqrt(D);
-        return new Span((-B - q) / (2 * A), (-B + q) / (2 * A));   // 進入、離開
+        return new Span((-B - q) / (2 * A), (-B + q) / (2 * A));   // enter, exit
     }
 
-    /** 對每條邊跑 raySeg：最小的 t 是進入、最大的是離開。進入為負代表站在範圍內。 */
+    /** raySeg against every edge: the smallest t is the entry, the largest the exit.
+     *  A negative entry means the ray origin is inside the polygon. */
     static PolyHit rayPoly(double px, double py, double rx, double ry, double[] xs, double[] ys) {
         double t1 = Double.POSITIVE_INFINITY, t2 = Double.NEGATIVE_INFINITY, u1 = 0, u2 = 0;
         int e1 = -1, e2 = -1;
@@ -61,7 +62,7 @@ final class Geometry {
         return Math.hypot(x - ax - ex * u, y - ay - ey * u);
     }
 
-    /** 凸多邊形，順逆時針都可以。邊上的點算在裡面。 */
+    /** Convex polygon, either winding. Points exactly on an edge count as inside. */
     static boolean pointInPoly(double x, double y, double[] xs, double[] ys) {
         int sign = 0;
         for (int i = 0, n = xs.length; i < n; i++) {
@@ -98,7 +99,7 @@ final class Geometry {
         return false;
     }
 
-    /** 圓盤（玩家）和形狀的俯視投影是否重疊。 */
+    /** Do the top-down footprints of the player disc and a shape overlap? */
     static boolean overlaps(double x, double y, double rad, Shape s) {
         return switch (s.kind) {
             case SEG -> distPointSeg(x, y, s.ax, s.ay, s.bx, s.by) < rad;

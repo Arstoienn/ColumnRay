@@ -1,63 +1,63 @@
-// 學校示範場景（F1 局部）：教室、走廊、中庭、水池、樓梯。
-// 座標單位：公尺。x 向右、y 向下（俯視），z 向上。角度：0 = 東，90 = 南。
-// 區域：凸多邊形 + floor / ceil。ceil 省略或 null = 露天。
-//   top：從露天看進這一區時，開口上方那段牆（門楣）的頂。
-// 形狀：wall（線段）/ circle / box / poly / ngon，都帶 z0（底）和 h（頂）。
-//   array 會把 items 依 step 平移複製 count 次。maxDist：超過這個距離不畫。
+// School demo scene (part of floor F1): classroom, corridors, courtyard, pool, stairs.
+// Units are metres. x runs right, y runs down (top-down view), z runs up. Angles: 0 = east, 90 = south.
+// Regions: a convex polygon plus floor / ceil. Omitting ceil (or null) means open to the sky.
+//   top: the top of the wall above the opening (the lintel) when looking in from an open-air region.
+// Shapes: wall (segment) / circle / box / poly / ngon, each with z0 (bottom) and h (top).
+//   array tiles its items count times with the given step. maxDist: not drawn beyond that distance.
 {
-  "name": "學校 F1",
+  "name": "School F1",
   "cell": 1.0,
   "sun": [0.55, 0.83],
   "spawn": { "pos": [12, 10.2], "angle": 90 },
 
   "regions": [
-    { "name": "教室", "poly": [[9,1],[17,1],[17,8],[9,8]], "floor": 0, "ceil": 3.2, "light": 0.9,
+    { "name": "classroom", "poly": [[9,1],[17,1],[17,8],[9,8]], "floor": 0, "ceil": 3.2, "light": 0.9,
       "floorMat": "wood", "floorColor": "#b08a5a", "ceilMat": "panel", "ceilColor": "#e8e6e0" },
-    { "name": "講台", "poly": [[7,1],[9,1],[9,8],[7,8]], "floor": 0.3, "ceil": 3.2, "light": 0.9,
+    { "name": "podium", "poly": [[7,1],[9,1],[9,8],[7,8]], "floor": 0.3, "ceil": 3.2, "light": 0.9,
       "floorMat": "wood", "floorColor": "#8a6440", "ceilMat": "panel", "ceilColor": "#e8e6e0",
       "wallMat": "wood", "wallColor": "#6e4e30" },
-    { "name": "教室門", "poly": [[11,8],[12.2,8],[12.2,8.3],[11,8.3]], "floor": 0, "ceil": 2.2, "light": 0.8,
+    { "name": "classroom door", "poly": [[11,8],[12.2,8],[12.2,8.3],[11,8.3]], "floor": 0, "ceil": 2.2, "light": 0.8,
       "floorMat": "concrete", "floorColor": "#9a9a96", "ceilMat": "concrete", "ceilColor": "#d8d4cc",
       "wallColor": "#e4dccb" },
 
-    { "name": "北走廊", "poly": [[7,8.3],[25,8.3],[25,11.3],[7,11.3]], "floor": 0, "ceil": 3.2, "top": 3.7, "light": 0.8,
+    { "name": "north corridor", "poly": [[7,8.3],[25,8.3],[25,11.3],[7,11.3]], "floor": 0, "ceil": 3.2, "top": 3.7, "light": 0.8,
       "floorMat": "tile", "floorColor": "#c9c2b4", "ceilMat": "panel", "ceilColor": "#dedbd4", "wallColor": "#e4dccb" },
-    { "name": "南走廊", "poly": [[7,23],[25,23],[25,26],[7,26]], "floor": 0, "ceil": 3.2, "top": 3.7, "light": 0.8,
+    { "name": "south corridor", "poly": [[7,23],[25,23],[25,26],[7,26]], "floor": 0, "ceil": 3.2, "top": 3.7, "light": 0.8,
       "floorMat": "tile", "floorColor": "#c9c2b4", "ceilMat": "panel", "ceilColor": "#dedbd4", "wallColor": "#e4dccb" },
-    { "name": "西走廊", "poly": [[7,11.3],[10,11.3],[10,23],[7,23]], "floor": 0, "ceil": 3.2, "top": 3.7, "light": 0.8,
+    { "name": "west corridor", "poly": [[7,11.3],[10,11.3],[10,23],[7,23]], "floor": 0, "ceil": 3.2, "top": 3.7, "light": 0.8,
       "floorMat": "tile", "floorColor": "#c9c2b4", "ceilMat": "panel", "ceilColor": "#dedbd4", "wallColor": "#e4dccb" },
-    { "name": "東走廊", "poly": [[22,11.3],[25,11.3],[25,23],[22,23]], "floor": 0, "ceil": 3.2, "top": 3.7, "light": 0.8,
+    { "name": "east corridor", "poly": [[22,11.3],[25,11.3],[25,23],[22,23]], "floor": 0, "ceil": 3.2, "top": 3.7, "light": 0.8,
       "floorMat": "tile", "floorColor": "#c9c2b4", "ceilMat": "panel", "ceilColor": "#dedbd4", "wallColor": "#e4dccb" },
 
-    { "name": "中庭", "poly": [[10,11.3],[22,11.3],[22,14],[10,14]], "floor": 0,
+    { "name": "courtyard", "poly": [[10,11.3],[22,11.3],[22,14],[10,14]], "floor": 0,
       "floorMat": "stone", "floorColor": "#bdb5a6" },
-    { "name": "中庭", "poly": [[10,20],[22,20],[22,23],[10,23]], "floor": 0,
+    { "name": "courtyard", "poly": [[10,20],[22,20],[22,23],[10,23]], "floor": 0,
       "floorMat": "stone", "floorColor": "#bdb5a6" },
-    { "name": "中庭草地", "poly": [[10,14],[13,14],[13,20],[10,20]], "floor": 0,
+    { "name": "courtyard lawn", "poly": [[10,14],[13,14],[13,20],[10,20]], "floor": 0,
       "floorMat": "grass", "floorColor": "#6f9a4a" },
-    { "name": "中庭草地", "poly": [[19,14],[22,14],[22,20],[19,20]], "floor": 0,
+    { "name": "courtyard lawn", "poly": [[19,14],[22,14],[22,20],[19,20]], "floor": 0,
       "floorMat": "grass", "floorColor": "#6f9a4a" },
-    { "name": "水池", "poly": [[13,14],[19,14],[19,20],[13,20]], "floor": -0.5,
+    { "name": "pool", "poly": [[13,14],[19,14],[19,20],[13,20]], "floor": -0.5,
       "floorMat": "water", "floorColor": "#4f93b8", "wallMat": "stone", "wallColor": "#9aa3a8" },
 
-    { "name": "樓梯 1", "poly": [[25,12],[25.5,12],[25.5,16],[25,16]], "floor": 0.3, "ceil": 5, "light": 0.75,
+    { "name": "stair step 1", "poly": [[25,12],[25.5,12],[25.5,16],[25,16]], "floor": 0.3, "ceil": 5, "light": 0.75,
       "floorMat": "concrete", "floorColor": "#a8a49c", "ceilColor": "#cfcac0", "wallMat": "concrete", "wallColor": "#bdb8ae" },
-    { "name": "樓梯 2", "poly": [[25.5,12],[26,12],[26,16],[25.5,16]], "floor": 0.6, "ceil": 5, "light": 0.75,
+    { "name": "stair step 2", "poly": [[25.5,12],[26,12],[26,16],[25.5,16]], "floor": 0.6, "ceil": 5, "light": 0.75,
       "floorMat": "concrete", "floorColor": "#a8a49c", "ceilColor": "#cfcac0", "wallMat": "concrete", "wallColor": "#bdb8ae" },
-    { "name": "樓梯 3", "poly": [[26,12],[26.5,12],[26.5,16],[26,16]], "floor": 0.9, "ceil": 5, "light": 0.75,
+    { "name": "stair step 3", "poly": [[26,12],[26.5,12],[26.5,16],[26,16]], "floor": 0.9, "ceil": 5, "light": 0.75,
       "floorMat": "concrete", "floorColor": "#a8a49c", "ceilColor": "#cfcac0", "wallMat": "concrete", "wallColor": "#bdb8ae" },
-    { "name": "樓梯 4", "poly": [[26.5,12],[27,12],[27,16],[26.5,16]], "floor": 1.2, "ceil": 5, "light": 0.75,
+    { "name": "stair step 4", "poly": [[26.5,12],[27,12],[27,16],[26.5,16]], "floor": 1.2, "ceil": 5, "light": 0.75,
       "floorMat": "concrete", "floorColor": "#a8a49c", "ceilColor": "#cfcac0", "wallMat": "concrete", "wallColor": "#bdb8ae" },
-    { "name": "樓梯 5", "poly": [[27,12],[27.5,12],[27.5,16],[27,16]], "floor": 1.5, "ceil": 5, "light": 0.75,
+    { "name": "stair step 5", "poly": [[27,12],[27.5,12],[27.5,16],[27,16]], "floor": 1.5, "ceil": 5, "light": 0.75,
       "floorMat": "concrete", "floorColor": "#a8a49c", "ceilColor": "#cfcac0", "wallMat": "concrete", "wallColor": "#bdb8ae" },
-    { "name": "樓梯 6", "poly": [[27.5,12],[28,12],[28,16],[27.5,16]], "floor": 1.8, "ceil": 5, "light": 0.75,
+    { "name": "stair step 6", "poly": [[27.5,12],[28,12],[28,16],[27.5,16]], "floor": 1.8, "ceil": 5, "light": 0.75,
       "floorMat": "concrete", "floorColor": "#a8a49c", "ceilColor": "#cfcac0", "wallMat": "concrete", "wallColor": "#bdb8ae" },
-    { "name": "樓梯平台", "poly": [[28,12],[31,12],[31,16],[28,16]], "floor": 1.8, "ceil": 5, "light": 0.75,
+    { "name": "stair landing", "poly": [[28,12],[31,12],[31,16],[28,16]], "floor": 1.8, "ceil": 5, "light": 0.75,
       "floorMat": "concrete", "floorColor": "#a8a49c", "ceilColor": "#cfcac0", "wallMat": "concrete", "wallColor": "#bdb8ae" }
   ],
 
   "shapes": [
-    // ---- 牆 ----
+    // ---- Walls ----
     { "type": "wall", "a": [7,1], "b": [17,1], "h": 3.7, "mat": "plaster", "color": "#ebe4d4" },
     { "type": "wall", "a": [7,1], "b": [7,8], "h": 3.7, "mat": "plaster", "color": "#ebe4d4" },
     { "type": "wall", "a": [17,1], "b": [17,8], "h": 3.7, "mat": "plaster", "color": "#ebe4d4" },
@@ -72,7 +72,7 @@
     { "type": "wall", "a": [25,16], "b": [31,16], "h": 5.2, "mat": "concrete", "color": "#bdb8ae" },
     { "type": "wall", "a": [31,12], "b": [31,16], "h": 5.2, "mat": "concrete", "color": "#bdb8ae" },
 
-    // ---- 中庭四周的柱子 ----
+    // ---- Columns around the courtyard ----
     { "type": "array", "origin": [10,11.3], "count": [5,1], "step": [3,0], "items": [
       { "type": "circle", "c": [0,0], "r": 0.22, "h": 3.2, "mat": "stone", "color": "#d8d2c6" } ] },
     { "type": "array", "origin": [10,23], "count": [5,1], "step": [3,0], "items": [
@@ -82,7 +82,7 @@
     { "type": "array", "origin": [22,14.3], "count": [1,3], "step": [0,3], "items": [
       { "type": "circle", "c": [0,0], "r": 0.22, "h": 3.2, "mat": "stone", "color": "#d8d2c6" } ] },
 
-    // ---- 中庭：樹、長椅、斜放的公布欄 ----
+    // ---- Courtyard: trees, benches, an angled notice board ----
     { "type": "circle", "c": [11.5,17], "r": 0.18, "h": 2.6, "mat": "wood", "color": "#6b4a2e" },
     { "type": "ngon", "c": [11.5,17], "r": 1.3, "n": 8, "z0": 2.2, "h": 3.6, "mat": "leaf", "color": "#4d7d36" },
     { "type": "circle", "c": [20.5,17], "r": 0.18, "h": 2.6, "mat": "wood", "color": "#6b4a2e" },
@@ -97,14 +97,14 @@
     { "type": "circle", "c": [20.3,22.4], "r": 0.05, "h": 2.1, "mat": "metal", "color": "#777777" },
     { "type": "circle", "c": [21.6,21.2], "r": 0.05, "h": 2.1, "mat": "metal", "color": "#777777" },
 
-    // ---- 走廊：盆栽、置物櫃 ----
+    // ---- Corridors: planters and lockers ----
     { "type": "array", "origin": [8.5,9.8], "count": [2,2], "step": [15,14.7], "items": [
       { "type": "circle", "c": [0,0], "r": 0.28, "h": 0.5, "mat": "terracotta", "color": "#b0603c" },
       { "type": "ngon", "c": [0,0], "r": 0.45, "n": 7, "z0": 0.5, "h": 1.5, "mat": "leaf", "color": "#4f7f3a", "maxDist": 25 } ] },
     { "type": "array", "origin": [17.2,8.3], "count": [7,1], "step": [1,0], "items": [
       { "type": "box", "x": 0, "y": 0, "w": 0.95, "d": 0.45, "h": 1.9, "mat": "metal", "color": "#6d86a0" } ] },
 
-    // ---- 教室：講桌、黑板、3×3 桌椅（學生面向西邊的黑板） ----
+    // ---- Classroom: teacher desk, blackboard, 3x3 desks and chairs (students face the blackboard to the west) ----
     { "type": "box", "x": 7.6, "y": 3.6, "w": 0.8, "d": 1.6, "z0": 0.3, "h": 1.4, "mat": "wood", "color": "#7a5534" },
     { "type": "box", "x": 7.0, "y": 2.3, "w": 0.06, "d": 3.4, "z0": 1.0, "h": 2.3, "mat": "board", "color": "#2e4a3c" },
     { "type": "array", "origin": [10.5,1.8], "count": [3,3], "step": [2.2,2.0], "items": [

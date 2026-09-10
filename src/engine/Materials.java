@@ -1,8 +1,8 @@
 package engine;
 
 /**
- * 程序貼圖：回傳亮度倍率（約 0.5–1.35），乘上形狀的底色。
- * 之後換成圖片貼圖和 normal map 時，只要改這裡。
+ * Procedural textures: each returns a brightness multiplier (roughly 0.5-1.35) that is applied
+ * to the shape's base colour. Swapping in image textures and normal maps only touches this file.
  */
 final class Materials {
     private Materials() {}
@@ -17,10 +17,10 @@ final class Materials {
 
     static int id(String name) {
         for (int i = 0; i < NAMES.length; i++) if (NAMES[i].equals(name)) return i;
-        throw new IllegalArgumentException("未知材質：" + name);
+        throw new IllegalArgumentException("unknown material: " + name);
     }
 
-    /** 側面：u 沿著表面（公尺），v 是高度 z。 */
+    /** Vertical faces: u runs along the surface (metres), v is the height z. */
     static double side(int m, double u, double v) {
         switch (m) {
             case CONCRETE -> {
@@ -28,7 +28,7 @@ final class Materials {
                 return 0.88 + 0.1 * hash(fl(u * 3), fl(v * 3));
             }
             case PLASTER -> {
-                if (v < 0.12) return 0.6;                                   // 踢腳板
+                if (v < 0.12) return 0.6;                                   // skirting board
                 return 0.93 + 0.05 * hash(fl(u * 6), fl(v * 6));
             }
             case BRICK -> {
@@ -49,7 +49,7 @@ final class Materials {
                 return 0.8 + 0.2 * hash(fl(bu), row);
             }
             case METAL -> {
-                if (frac(v * 8) < 0.06 && v > 1.4 && v < 1.8) return 0.5;   // 通風孔
+                if (frac(v * 8) < 0.06 && v > 1.4 && v < 1.8) return 0.5;   // vent slots
                 return 0.8 + 0.15 * Math.abs(Math.sin(u * 9));
             }
             case LEAF -> { return 0.55 + 0.45 * hash(fl(u * 9), fl(v * 9)); }
@@ -66,7 +66,7 @@ final class Materials {
         }
     }
 
-    /** 水平面（地板、天花板、頂面、底面）：用世界座標。 */
+    /** Horizontal faces (floors, ceilings, box tops and bottoms): indexed by world coordinates. */
     static double flat(int m, double x, double y) {
         switch (m) {
             case TILE -> {
@@ -81,7 +81,7 @@ final class Materials {
             case PANEL -> {
                 int ix = fl(x / 0.6), iy = fl(y / 0.6);
                 if (frac(x / 0.6) < 0.04 || frac(y / 0.6) < 0.04) return 0.7;
-                if (Math.floorMod(ix, 4) == 1 && Math.floorMod(iy, 3) == 1) return 1.35;  // 燈板
+                if (Math.floorMod(ix, 4) == 1 && Math.floorMod(iy, 3) == 1) return 1.35;  // light panel
                 return 0.95;
             }
             case STONE -> {

@@ -5,7 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** 最小的 JSON 解析器（允許 // 註解）。物件 → Map，陣列 → List，數字 → Double。 */
+/** Minimal JSON parser (// comments allowed). Object -> Map, array -> List, number -> Double. */
 final class Json {
     private final String s;
     private int i;
@@ -16,13 +16,13 @@ final class Json {
         Json j = new Json(text);
         Object v = j.value();
         j.ws();
-        if (j.i != j.s.length()) throw j.err("多餘的內容");
+        if (j.i != j.s.length()) throw j.err("trailing content");
         return v;
     }
 
     private Object value() {
         ws();
-        if (i >= s.length()) throw err("非預期的結尾");
+        if (i >= s.length()) throw err("unexpected end of input");
         return switch (s.charAt(i)) {
             case '{' -> object();
             case '[' -> array();
@@ -41,7 +41,7 @@ final class Json {
         if (peek() == '}') { i++; return m; }
         while (true) {
             ws();
-            if (peek() != '"') throw err("需要字串鍵");
+            if (peek() != '"') throw err("expected a string key");
             String key = string();
             ws();
             expect(':');
@@ -71,7 +71,7 @@ final class Json {
         StringBuilder b = new StringBuilder();
         i++;
         while (true) {
-            if (i >= s.length()) throw err("字串沒有結束");
+            if (i >= s.length()) throw err("unterminated string");
             char c = s.charAt(i++);
             if (c == '"') return b.toString();
             if (c != '\\') { b.append(c); continue; }
@@ -91,12 +91,12 @@ final class Json {
     private Double number() {
         int start = i;
         while (i < s.length() && "+-0123456789.eE".indexOf(s.charAt(i)) >= 0) i++;
-        if (start == i) throw err("無法解析的字元 '" + s.charAt(i) + "'");
+        if (start == i) throw err("unexpected character '" + s.charAt(i) + "'");
         return Double.parseDouble(s.substring(start, i));
     }
 
     private Object literal(String word, Object v) {
-        if (!s.startsWith(word, i)) throw err("需要 " + word);
+        if (!s.startsWith(word, i)) throw err("expected " + word);
         i += word.length();
         return v;
     }
@@ -114,13 +114,13 @@ final class Json {
     private char peek() { return i < s.length() ? s.charAt(i) : '\0'; }
 
     private void expect(char c) {
-        if (peek() != c) throw err("需要 '" + c + "'");
+        if (peek() != c) throw err("expected '" + c + "'");
         i++;
     }
 
     private IllegalArgumentException err(String msg) {
         int line = 1;
         for (int k = 0; k < Math.min(i, s.length()); k++) if (s.charAt(k) == '\n') line++;
-        return new IllegalArgumentException("JSON 第 " + line + " 行：" + msg);
+        return new IllegalArgumentException("JSON line " + line + ": " + msg);
     }
 }

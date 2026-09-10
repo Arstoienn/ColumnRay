@@ -1,5 +1,6 @@
 package engine;
 
+import engine.Renderer.EventKind;
 import engine.Renderer.Trace;
 import engine.Renderer.TraceEvent;
 import engine.World.Grid;
@@ -17,6 +18,8 @@ import java.awt.RenderingHints;
 import java.awt.Window;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Line2D;
@@ -28,11 +31,11 @@ import java.util.ArrayList;
 import java.util.List;
 import javax.swing.JFrame;
 
-/** 第二個視窗：從上往下看，每一欄的光線怎麼走、在哪裡停下來。 */
+/** Second window: a top-down view of where every column's ray goes and where it stops. */
 final class RayView {
     record View(double x, double y, double angle, boolean fisheye) {}
 
-    /** left：文字放在點的左邊（靠右對齊）。 */
+    /** left: draw the text to the left of the point (right-aligned against it). */
     private record Label(double x, double y, String text, Color color, boolean left) {
         Label(double x, double y, String text, Color color) { this(x, y, text, color, false); }
     }
@@ -56,8 +59,8 @@ final class RayView {
     private final java.awt.Shape[] outlines;
     private JFrame frame;
     private Canvas canvas;
-    private volatile double zoom = 30;               // 像素 / 公尺
-    private volatile boolean followTurn = true;      // 玩家永遠朝上（畫面左右 = 主畫面左右）
+    private volatile double zoom = 30;               // pixels per metre
+    private volatile boolean followTurn = true;      // keep the player pointing up, so left/right match the main view
 
     RayView(World world, Renderer renderer) {
         this.world = world;
@@ -73,9 +76,9 @@ final class RayView {
         }
     }
 
-    /** 在 EDT 上呼叫：開在主視窗右邊，高度一樣。 */
+    /** Call on the EDT: opens to the right of the main window, at the same height. */
     void open(Window owner, int width) {
-        frame = new JFrame("光線視圖");
+        frame = new JFrame("Ray view");
         canvas = new Canvas();
         int h = owner.getHeight() - owner.getInsets().top - owner.getInsets().bottom;
         canvas.setPreferredSize(new Dimension(width, h));
@@ -88,11 +91,15 @@ final class RayView {
         canvas.createBufferStrategy(2);
         canvas.addMouseWheelListener(e ->
                 zoom = Math.max(4, Math.min(240, zoom * Math.pow(1.15, -e.getPreciseWheelRotation()))));
+        canvas.addMouseListener(new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent e) { canvas.requestFocus(); }   // so N reaches the key listener
+        });
         canvas.addKeyListener(new KeyAdapter() {
             @Override public void keyPressed(KeyEvent e) {
                 if (e.getKeyCode() == KeyEvent.VK_N) followTurn = !followTurn;
             }
         });
+        canvas.requestFocus();
     }
 
     boolean visible() {
@@ -117,7 +124,7 @@ final class RayView {
                 bs.show();
             } while (bs.contentsLost());
         } catch (IllegalStateException e) {
-            // 視窗正在關閉或重新顯示，下一張再畫
+            // the window is being hidden or re-shown; just skip this frame
         }
     }
 
@@ -133,7 +140,7 @@ final class RayView {
         Trace tr = renderer.trace;
         float px = (float) (1 / z);
 
-        // 世界 → 畫面：玩家在下方中間，朝上時畫面左右就是主畫面左右
+        // World -> screen: the player sits low and centred, facing up, so left/right match the main view
         AffineTransform m = new AffineTransform();
         m.translate(w / 2.0, h * 0.62);
         m.scale(z, z);
@@ -142,7 +149,7 @@ final class RayView {
         AffineTransform screen = g.getTransform();
         g.transform(m);
 
-        // 加速格子，和紅色光線 DDA 走過的格子
+        // The acceleration grid, and the cells the traced ray's DDA walked
         Grid gr = world.grid;
         g.setStroke(new BasicStroke(px));
         g.setColor(GRID);
@@ -155,7 +162,7 @@ final class RayView {
                 g.fill(new Rectangle2D.Double(gr.x0 + c[0] * gr.cell, gr.y0 + c[1] * gr.cell, gr.cell, gr.cell));
         }
 
-        // 區域和形狀
+        // Regions and shapes
         for (Region r : world.regions) {
             Path2D p = path(r.xs, r.ys);
             g.setColor(alpha(r.floorColor, r.sky ? 45 : 75));
@@ -172,13 +179,13 @@ final class RayView {
                 continue;
             }
             g.setStroke(new BasicStroke(px));
-            g.setColor(alpha(s.color, s.z0 > 0.3 ? 35 : 120));   // 懸空的（桌面、樹冠）比較淡
+            g.setColor(alpha(s.color, s.z0 > 0.3 ? 35 : 120));   // things up in the air (desktops, tree canopies) are fainter
             g.fill(outlines[i]);
             g.setColor(alpha(s.color, 230));
             g.draw(outlines[i]);
         }
 
-        // 所有光線：從玩家畫到那一欄被填滿為止
+        // Every ray, drawn from the player to the point where its column became full
         int W = renderer.W;
         g.setStroke(new BasicStroke(px));
         g.setColor(RAY);
@@ -187,25 +194,25 @@ final class RayView {
             g.draw(new Line2D.Double(v.x(), v.y(), v.x() + rx * t, v.y() + ry * t));
         }
 
-        // 相機：方向向量和相機平面
+        // Camera: direction vector and camera plane
         List<Label> labels = new ArrayList<>();
         g.setColor(CAMERA);
         g.setStroke(new BasicStroke(px * 2));
         g.draw(new Line2D.Double(v.x() + dx - plX, v.y() + dy - plY, v.x() + dx + plX, v.y() + dy + plY));
         g.draw(new Line2D.Double(v.x(), v.y(), v.x() + dx, v.y() + dy));
-        labels.add(new Label(v.x() + dx + plX, v.y() + dy + plY, "相機平面", CAMERA));
+        labels.add(new Label(v.x() + dx + plX, v.y() + dy + plY, "camera plane", CAMERA));
 
-        // 選中的那一欄
+        // The traced column
         if (tr != null) {
             double rx = tr.rx, ry = tr.ry;
             g.setColor(PICK);
             g.setStroke(new BasicStroke(px * 2.5f));
             g.draw(new Line2D.Double(v.x(), v.y(), v.x() + rx * tr.endT, v.y() + ry * tr.endT));
 
-            // 垂直距離：第一個真的畫出來的東西，投影到視線方向上
+            // Perpendicular distance: the first thing actually drawn, projected onto the view direction
             TraceEvent first = null;
             for (TraceEvent e : tr.events)
-                if ((e.kind().equals("物件") || e.kind().equals("跨區")) && e.rows() > 0) { first = e; break; }
+                if (e.kind().numbered() && e.rows() > 0) { first = e; break; }
             if (first != null && first.t() > 0) {
                 double fx = v.x() + dx * first.t(), fy = v.y() + dy * first.t();
                 g.setColor(CAMERA);
@@ -215,22 +222,22 @@ final class RayView {
                 g.draw(new Line2D.Double(v.x(), v.y(), fx, fy));
                 double straight = first.t() * Math.hypot(rx, ry);
                 if (straight - first.t() < 0.01) {
-                    labels.add(new Label(fx, fy, String.format("t = %.2f（正中間：垂直距離 = 直線距離）", first.t()), CAMERA, true));
+                    labels.add(new Label(fx, fy, String.format("t = %.2f (dead centre: perpendicular = straight-line)", first.t()), CAMERA, true));
                 } else {
-                    labels.add(new Label(fx, fy, String.format("t = %.2f 垂直距離（拿來投影）", first.t()), CAMERA, true));
-                    labels.add(new Label(first.x(), first.y(), String.format("直線距離 %.2f（用它會魚眼）", straight), HIDDEN));
+                    labels.add(new Label(fx, fy, String.format("t = %.2f perpendicular (used for projection)", first.t()), CAMERA, true));
+                    labels.add(new Label(first.x(), first.y(), String.format("straight-line %.2f (using this gives fisheye)", straight), HIDDEN));
                 }
             }
 
             int n = 0;
             double r = 4.5 / z;
             for (TraceEvent e : tr.events) {
-                boolean cross = e.kind().equals("跨區");
-                if (!cross && !e.kind().equals("物件")) continue;
+                if (!e.kind().numbered()) continue;
+                boolean portal = e.kind() == EventKind.PORTAL;
                 n++;
-                Color c = cross ? CROSS : e.rows() > 0 ? HIT : HIDDEN;
+                Color c = portal ? CROSS : e.rows() > 0 ? HIT : HIDDEN;
                 g.setColor(c);
-                if (cross) g.fill(new Rectangle2D.Double(e.x() - r, e.y() - r, 2 * r, 2 * r));
+                if (portal) g.fill(new Rectangle2D.Double(e.x() - r, e.y() - r, 2 * r, 2 * r));
                 else g.fill(new Ellipse2D.Double(e.x() - r, e.y() - r, 2 * r, 2 * r));
                 labels.add(new Label(e.x(), e.y(), String.valueOf(n), c));
             }
@@ -240,7 +247,7 @@ final class RayView {
         g.fill(new Ellipse2D.Double(v.x() - 0.3, v.y() - 0.3, 0.6, 0.6));
         g.setTransform(screen);
 
-        // 標籤：同一個位置有好幾個時往下排開
+        // Labels: when several land on the same spot, stack them downwards
         g.setFont(FONT);
         FontMetrics fm = g.getFontMetrics();
         List<Rectangle2D> placed = new ArrayList<>();
@@ -270,27 +277,27 @@ final class RayView {
         for (int x = 0; x < W; x++) { cells += renderer.cellsVisited[x]; tests += renderer.shapesTested[x]; }
 
         List<String> head = new ArrayList<>();
-        head.add("光線視圖　滾輪縮放　N 切換跟著轉 / 北朝上　（主視窗按 R 開關）");
-        head.add(String.format("黃線：%d 欄的光線，畫到那一欄填滿為止　平均每條走 %.1f 格、測 %.1f 個形狀",
+        head.add("Ray view    wheel = zoom    N = follow turn / north up    (R in the main window toggles this)");
+        head.add(String.format("Yellow: %d rays, each drawn until its column is full    avg %.1f cells walked, %.1f shapes tested per ray",
                 W, cells / W, tests / W));
-        head.add(String.format("FOV %.0f°　%s", renderer.fov(),
-                v.fisheye() ? "魚眼對照中：用直線距離投影（錯的）" : "用垂直距離投影（沒有魚眼）"));
+        head.add(String.format("FOV %.0f deg    %s", renderer.fov(),
+                v.fisheye() ? "fisheye demo: projecting by straight-line distance (wrong)"
+                            : "projecting by perpendicular distance (no fisheye)"));
         panel(g, head, 8, 8, TEXT);
 
         if (tr == null) return;
         List<String> list = new ArrayList<>();
         double camX = 2 * (tr.column + 0.5) / W - 1;
-        list.add(String.format("紅線：第 %d 欄（camX %+.2f）停在 t = %.2f，%s，走過 %d 格",
+        list.add(String.format("Red: column %d (camX %+.2f) stopped at t = %.2f, %s, after %d cells",
                 tr.column, camX, tr.endT, tr.endReason, tr.cells.size()));
         int maxLines = Math.max(4, (int) (h * 0.34 / LINE));
         int n = 0;
         for (TraceEvent e : tr.events) {
-            boolean numbered = e.kind().equals("物件") || e.kind().equals("跨區");
-            if (numbered) n++;
-            if (list.size() >= maxLines) { list.add("　…還有 " + (tr.events.size() - list.size() + 1) + " 筆"); break; }
-            String no = numbered ? String.format("%2d.", n) : "   ·";
-            String hidden = e.kind().equals("物件") && e.rows() == 0 ? "（被擋住）" : "";
-            list.add(String.format("%s t=%6.2f  %s  %s  → %d 行%s", no, e.t(), e.kind(), e.label(), e.rows(), hidden));
+            if (e.kind().numbered()) n++;
+            if (list.size() >= maxLines) { list.add("   ... " + (tr.events.size() - list.size() + 1) + " more"); break; }
+            String no = e.kind().numbered() ? String.format("%2d.", n) : "   .";
+            String hidden = e.kind() == EventKind.SHAPE && e.rows() == 0 ? "  (hidden)" : "";
+            list.add(String.format("%s t=%6.2f  %-8s %s  -> %d rows%s", no, e.t(), e.kind().text, e.label(), e.rows(), hidden));
         }
         panel(g, list, 8, h - 8 - list.size() * LINE - 8, TEXT);
     }

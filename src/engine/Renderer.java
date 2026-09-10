@@ -14,19 +14,20 @@ import java.util.function.IntUnaryOperator;
 import java.util.stream.IntStream;
 
 /**
- * 每一欄一條光線。沿著光線用 DDA 走格子，把「物件」和「區域邊界」依距離由近到遠處理，
- * 每樣東西只畫在這一欄還空著的行（interval），填滿就停。
+ * One ray per screen column. The ray walks the acceleration grid with a DDA and handles "shapes"
+ * and "region boundaries" strictly nearest-first; each of them only paints into the rows of that
+ * column that are still empty (the interval list), and the column stops once every row is filled.
  */
 final class Renderer {
-    static final double DEFAULT_FOV = Math.toDegrees(2 * Math.atan(0.66));   // PL = 0.66，約 67°
+    static final double DEFAULT_FOV = Math.toDegrees(2 * Math.atan(0.66));   // PL = 0.66, about 67 degrees
     static final double NEAR = 1e-3;
     static final double MAX_DIST = 80;
-    private static final double TIE = 1e-6;   // 牆剛好在區域邊界上時，讓牆先畫
+    private static final double TIE = 1e-6;   // when a wall sits exactly on a region boundary, draw the wall first
 
-    /** 地圖外：露天、沒有地板，只繼續畫還碰得到的物件。 */
+    /** Outside the map: open air, no floor; only shapes that are still reachable keep being drawn. */
     private static final Region OUTSIDE = new Region();
     static {
-        OUTSIDE.name = "地圖外";
+        OUTSIDE.name = "outside map";
         OUTSIDE.sky = true;
         OUTSIDE.floor = Double.NaN;
         OUTSIDE.ceil = OUTSIDE.top = Double.POSITIVE_INFINITY;
@@ -34,15 +35,26 @@ final class Renderer {
     }
 
     static final class Camera {
-        double x, y;          // 位置
-        double dirX, dirY;    // 單位方向
-        double eye;           // 眼睛高度（世界 z）
-        double pitch;         // 地平線位移（像素），抬頭為正
-        boolean fisheye;      // 對照用的錯誤示範：用直線距離投影
+        double x, y;          // position
+        double dirX, dirY;    // unit direction
+        double eye;           // eye height (world z)
+        double pitch;         // horizon offset in pixels, positive when looking up
+        boolean fisheye;      // deliberately wrong comparison mode: project by straight-line distance
     }
 
-    /** 光線視圖用：選中那一欄沿路發生的事。(x, y) 是事件在地圖上的位置。 */
-    record TraceEvent(String kind, double t, String label, int rows, double x, double y) {}
+    /** What kind of thing the ray ran into. Only SHAPE and PORTAL events get a number in the ray view. */
+    enum EventKind {
+        SHAPE("shape"), PORTAL("portal"), FLOOR("floor"), CEILING("ceiling");
+
+        final String text;
+
+        EventKind(String text) { this.text = text; }
+
+        boolean numbered() { return this == SHAPE || this == PORTAL; }
+    }
+
+    /** For the ray view: one thing that happened along the traced column. (x, y) is where it happened. */
+    record TraceEvent(EventKind kind, double t, String label, int rows, double x, double y) {}
 
     static final class Trace {
         int column;
@@ -53,17 +65,17 @@ final class Renderer {
     }
 
     final int W, H;
-    private double pl;                       // 相機平面半寬 = tan(FOV/2)
-    private double F;                        // 焦距（像素）
+    private double pl;                       // half-width of the camera plane = tan(FOV/2)
+    private double F;                        // focal length in pixels
     private final int[] pixels;
     private final World world;
     private final ThreadLocal<Column> columns;
 
-    // 光線視圖用的資料：每欄停下來的距離、走過幾格、測了幾個形狀
+    // Ray-view statistics: where each column's ray stopped, how many cells it walked, how many shapes it tested
     final double[] rayEnd;
     final int[] cellsVisited, shapesTested;
-    volatile int traceColumn = -1;           // 要詳細記錄的那一欄
-    volatile Trace trace;                    // 最近一次的記錄
+    volatile int traceColumn = -1;           // the column to record in detail
+    volatile Trace trace;                    // the most recent recording
 
     Renderer(World world, int w, int h, int[] pixels) {
         this.world = world;
@@ -77,7 +89,8 @@ final class Renderer {
         setFov(DEFAULT_FOV);
     }
 
-    /** 水平視野（度）。垂直方向用同一個焦距，所以像素永遠是正方形，不會拉長。 */
+    /** Horizontal field of view in degrees. The vertical axis uses the same focal length,
+     *  so pixels stay square and nothing is stretched. */
     void setFov(double deg) {
         pl = Math.tan(Math.toRadians(deg) / 2);
         F = (W / 2.0) / pl;
@@ -101,23 +114,23 @@ final class Renderer {
 
     private static final Comparator<Hit> BY_T1 = Comparator.comparingDouble(Hit::t1);
 
-    /** 單欄的暫存；每個執行緒一份。 */
+    /** Scratch state for a single column; one instance per thread. */
     private final class Column {
         private int[] o0 = new int[H + 2], o1 = new int[H + 2], n0 = new int[H + 2], n1 = new int[H + 2];
-        private int open;                                   // 還空著的行區間數
+        private int open;                                   // number of row intervals still empty
         private final int[] stamp = new int[world.shapes.length];
         private int ray;
         private final ArrayList<Hit> pending = new ArrayList<>();
 
         private int x;
         private double px, py, rx, ry, eye, hz;
-        private double dk;                                  // 深度倍率：正常是 1，魚眼對照時是 |r|
-        private Region cur;                                 // 光線目前所在的區域
-        private double tPrev;                               // 地板 / 天花板已經畫到的距離
-        private double crossT, crossU;                      // 下一個區域邊界
+        private double dk;                                  // depth multiplier: 1 normally, |r| in fisheye mode
+        private Region cur;                                 // region the ray is currently inside
+        private double tPrev;                               // how far the floor / ceiling has been drawn
+        private double crossT, crossU;                      // the next region boundary
         private int crossEdge, crossings;
 
-        // 統計和記錄
+        // Statistics and recording
         private Trace tr;
         private double endT, lastT;
         private String endReason;
@@ -128,11 +141,11 @@ final class Renderer {
             px = cam.x;
             py = cam.y;
             eye = cam.eye;
-            hz = H / 2.0 + cam.pitch;                       // 地平線（抬頭低頭只改這個）
-            double camX = 2 * (x + 0.5) / W - 1;            // -1 左 … +1 右
-            rx = cam.dirX - cam.dirY * pl * camX;           // plane = [-dir.y·PL, dir.x·PL]
-            ry = cam.dirY + cam.dirX * pl * camX;           // 刻意不 normalize：t 就是垂直距離
-            dk = cam.fisheye ? Math.hypot(rx, ry) : 1;      // 魚眼：把垂直距離換成直線距離
+            hz = H / 2.0 + cam.pitch;                       // horizon row (looking up/down only moves this)
+            double camX = 2 * (x + 0.5) / W - 1;            // -1 left ... +1 right
+            rx = cam.dirX - cam.dirY * pl * camX;           // plane = [-dir.y*PL, dir.x*PL]
+            ry = cam.dirY + cam.dirX * pl * camX;           // deliberately not normalised: t is the perpendicular distance
+            dk = cam.fisheye ? Math.hypot(rx, ry) : 1;      // fisheye: turn perpendicular distance into straight-line distance
             open = 1;
             o0[0] = 0;
             o1[0] = H;
@@ -154,7 +167,9 @@ final class Renderer {
             surfaces(tPrev, MAX_DIST);
             if (endT < 0) {
                 endT = Math.min(lastT, MAX_DIST);
-                endReason = open == 0 ? "整欄填滿" : lastT >= MAX_DIST ? "到最大距離" : "走出地圖，剩下的行畫天空";
+                endReason = open == 0 ? "column full"
+                        : lastT >= MAX_DIST ? "reached max distance"
+                        : "left the map, remaining rows are sky";
             }
             fillRest();
 
@@ -168,7 +183,7 @@ final class Renderer {
             }
         }
 
-        // ---- DDA：只測光線經過的格子 ----
+        // ---- DDA: only test the cells the ray actually passes through ----
 
         private void walkGrid() {
             Grid g = world.grid;
@@ -191,7 +206,8 @@ final class Renderer {
                     if (h != null) pending.add(h);
                 }
                 double tout = Math.min(tx, ty);
-                // 形狀若在更遠的格子才被發現，它的進入點一定在那格之後，所以到 tout 為止的順序已經確定
+                // A shape first seen in a later cell must enter beyond that cell, so the ordering
+                // of everything up to tout is already final.
                 flush(tout);
                 lastT = tout;
                 if (tout > MAX_DIST) return;
@@ -199,12 +215,13 @@ final class Renderer {
             }
         }
 
-        /** 依距離處理所有 t ≤ tout 的事件：物件，或跨進下一個區域。 */
+        /** Handle every event with t <= tout in distance order: a shape, or a crossing into the next region. */
         private void flush(double tout) {
             pending.sort(BY_T1);
             int k = 0;
             while (open > 0) {
-                boolean hitFirst = k < pending.size() && pending.get(k).t1() <= crossT + TIE;   // 同距離時物件優先（牆在邊界上）
+                // on a tie the shape wins, so a wall sitting on a region boundary is drawn first
+                boolean hitFirst = k < pending.size() && pending.get(k).t1() <= crossT + TIE;
                 double tn = hitFirst ? pending.get(k).t1() : crossT;
                 if (tn > tout || tn == Double.POSITIVE_INFINITY) break;
                 if (hitFirst) {
@@ -220,27 +237,27 @@ final class Renderer {
                 }
                 if (open == 0 && endT < 0) {
                     endT = Math.max(tn, 0);
-                    endReason = "整欄填滿";
+                    endReason = "column full";
                 }
             }
             pending.subList(0, k).clear();
         }
 
-        // ---- 交點 ----
+        // ---- Intersection ----
 
         private Hit intersect(Shape s) {
             return switch (s.kind) {
                 case SEG -> {
                     SegHit h = Geometry.raySeg(px, py, rx, ry, s.ax, s.ay, s.bx, s.by);
                     if (h == null || h.t() <= NEAR || h.t() > s.maxDist) yield null;
-                    double nx = -h.ey() / s.len, ny = h.ex() / s.len;   // 邊向量轉 90°
-                    if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }   // 朝向相機
+                    double nx = -h.ey() / s.len, ny = h.ex() / s.len;    // edge vector rotated 90 degrees
+                    if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }   // make it face the camera
                     yield new Hit(s, h.t(), h.t(), false, nx, ny, h.u() * s.len);
                 }
                 case CIRCLE -> {
                     Span sp = Geometry.rayCircle(px, py, rx, ry, s.cx, s.cy, s.r);
                     if (sp == null || sp.t2() <= NEAR || sp.t1() > s.maxDist) yield null;
-                    double nx = (px + rx * sp.t1() - s.cx) / s.r;       // 交點減圓心
+                    double nx = (px + rx * sp.t1() - s.cx) / s.r;       // hit point minus centre
                     double ny = (py + ry * sp.t1() - s.cy) / s.r;
                     yield new Hit(s, sp.t1(), sp.t2(), sp.t1() <= NEAR, nx, ny, (Math.atan2(ny, nx) + Math.PI) * s.r);
                 }
@@ -257,14 +274,17 @@ final class Renderer {
         }
 
         private void exitOf(Region r, double tMin) {
-            if (r == OUTSIDE) {                           // 目前不會從地圖外再走回來
+            if (r == OUTSIDE) {                           // rays currently never come back in from outside
                 crossT = Double.POSITIVE_INFINITY;
+                crossEdge = -1;
+                crossU = 0;
                 return;
             }
             PolyHit ph = Geometry.rayPoly(px, py, rx, ry, r.xs, r.ys);
-            if (ph == null || ph.t2() <= tMin) {        // 擦邊：往前推一點再找
+            if (ph == null || ph.t2() <= tMin) {          // grazing the corner: nudge forward and look again
                 crossT = tMin + 1e-3;
                 crossEdge = -1;
+                crossU = 0;
             } else {
                 crossT = ph.t2();
                 crossEdge = ph.exitEdge();
@@ -272,14 +292,15 @@ final class Renderer {
             }
         }
 
-        // ---- 畫：物件、區域邊界、地板天花板 ----
+        // ---- Drawing: shapes, region boundaries, floors and ceilings ----
 
-        /** 側面、頂面、底面。天花板會裁切比它高的物件。 */
+        /** Side face, top face (when the eye is above it) and bottom face (when the eye is below it).
+         *  A shape is clipped to the ceiling of the region the ray is in. */
         private void drawHit(Hit h) {
             Shape s = h.s();
             double z0 = s.z0, top = Math.min(s.h, cur.ceil);
             if (top <= z0) {
-                if (tr != null) note("物件", h.t1(), s.label + "（整個在天花板上面）", 0);
+                if (tr != null) note(EventKind.SHAPE, h.t1(), s.label + " (entirely above the ceiling)", 0);
                 return;
             }
             double t1 = h.t1(), yTop = rowZ(top, t1), yBot = rowZ(z0, t1);
@@ -293,12 +314,15 @@ final class Renderer {
             if (eye > top) cap = paint(rowZ(top, h.t2()), h.inside() ? H : yTop, flat(top, s.topMat, s.color, light));
             if (eye < z0) under = paint(h.inside() ? 0 : yBot, rowZ(z0, h.t2()), flat(z0, s.mat, s.color, 0.45 * light));
             if (tr != null) {
-                String where = h.inside() ? "（站在範圍內）" : "";
-                note("物件", t1, String.format("%s%s 側%d 頂%d 底%d", s.label, where, side, cap, under), side + cap + under);
+                String where = h.inside() ? " (eye inside its footprint)" : "";
+                note(EventKind.SHAPE, t1,
+                        String.format("%s%s side %d top %d bottom %d", s.label, where, side, cap, under),
+                        side + cap + under);
             }
         }
 
-        /** 跨過區域邊界：下一區天花板較低就畫門楣，地板較高就畫台階立面。 */
+        /** Cross a region boundary: a lower ceiling on the far side becomes a lintel,
+         *  a higher floor becomes a step riser. */
         private void cross() {
             double t = crossT;
             Region from = cur;
@@ -313,18 +337,18 @@ final class Renderer {
                 double k = lambert(nx, ny) * fog(t) * to.light, u = crossU * len;
                 IntUnaryOperator wall = y -> shade(to.wallColor, Materials.side(to.wallMat, u, eye - (y + 0.5 - hz) * t * dk / F) * k);
                 double upper = from.sky ? to.top : from.ceil;
-                if (to.ceil < upper) lintel = paint(rowZ(upper, t), rowZ(to.ceil, t), wall);             // 門楣
-                if (to.floor > from.floor) riser = paint(rowZ(to.floor, t), rowZ(from.floor, t), wall); // 台階立面
+                if (to.ceil < upper) lintel = paint(rowZ(upper, t), rowZ(to.ceil, t), wall);
+                if (to.floor > from.floor) riser = paint(rowZ(to.floor, t), rowZ(from.floor, t), wall);
             }
             if (tr != null && to != from) {
-                String detail = (lintel > 0 ? " 門楣" + lintel : "") + (riser > 0 ? " 台階" + riser : "");
-                note("跨區", t, from.name + " → " + to.name + detail, lintel + riser);
+                String detail = (lintel > 0 ? " lintel " + lintel : "") + (riser > 0 ? " riser " + riser : "");
+                note(EventKind.PORTAL, t, from.name + " -> " + to.name + detail, lintel + riser);
             }
             cur = to;
             exitOf(to, t);
         }
 
-        /** 目前區域在距離 [ta, tb] 之間的地板和天花板。 */
+        /** The floor and ceiling of the current region between distances ta and tb. */
         private void surfaces(double ta, double tb) {
             if (tb <= ta) return;
             Region r = cur;
@@ -332,13 +356,14 @@ final class Renderer {
             if (eye > r.floor) f = paint(rowZ(r.floor, tb), rowZ(r.floor, ta), flat(r.floor, r.floorMat, r.floorColor, r.light));
             if (!r.sky && eye < r.ceil) c = paint(rowZ(r.ceil, ta), rowZ(r.ceil, tb), flat(r.ceil, r.ceilMat, r.ceilColor, r.light));
             if (tr != null) {
-                String range = String.format("%s  t %.2f–%.2f", r.name, ta, Math.min(tb, MAX_DIST));
-                if (f > 0) note("地板", ta, range, f);
-                if (c > 0) note("天花板", ta, range, c);
+                String range = String.format("%s  t %.2f-%.2f", r.name, ta, Math.min(tb, MAX_DIST));
+                if (f > 0) note(EventKind.FLOOR, ta, range, f);
+                if (c > 0) note(EventKind.CEILING, ta, range, c);
             }
         }
 
-        /** 水平面：從行反推距離，找到它在地圖上的哪裡。 */
+        /** Horizontal surfaces: invert the projection to get the distance for a row,
+         *  then look up where that lands on the map. */
         private IntUnaryOperator flat(double z, int mat, int color, double k0) {
             return y -> {
                 double t = (eye - z) * F / ((y + 0.5 - hz) * dk);
@@ -347,7 +372,7 @@ final class Renderer {
             };
         }
 
-        /** 剩下的行：地平線以上是天空，以下是遠方的霧。 */
+        /** Whatever rows are left: sky above the horizon, distant haze below it. */
         private void fillRest() {
             for (int k = 0; k < open; k++)
                 for (int y = o0[k]; y < o1[k]; y++) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
@@ -359,13 +384,13 @@ final class Renderer {
             return rgb(205 - 125 * s, 222 - 87 * s, 238 - 28 * s);
         }
 
-        private void note(String kind, double t, String label, int rows) {
+        private void note(EventKind kind, double t, String label, int rows) {
             tr.events.add(new TraceEvent(kind, t, label, rows, px + rx * t, py + ry * t));
         }
 
-        // ---- interval：只填還空著的行 ----
+        // ---- Interval list: only ever fill rows that are still empty ----
 
-        /** 回傳實際填了幾行。 */
+        /** Returns how many rows were actually filled. */
         private int paint(double a, double b, IntUnaryOperator colorOf) {
             int ia = clampRow(a), ib = clampRow(b);
             if (ib <= ia) return 0;
@@ -375,8 +400,8 @@ final class Renderer {
                 if (s1 <= s0) { n0[m] = o0[k]; n1[m++] = o1[k]; continue; }
                 for (int y = s0; y < s1; y++) pixels[y * W + x] = colorOf.applyAsInt(y);
                 filled += s1 - s0;
-                if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // 上方剩下的
-                if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // 下方剩下的
+                if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above
+                if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // leftover below
             }
             int[] t0 = o0, t1 = o1;
             o0 = n0; o1 = n1; n0 = t0; n1 = t1;
@@ -388,7 +413,7 @@ final class Renderer {
             return (int) Math.round(Math.max(0, Math.min(H, v)));
         }
 
-        /** 投影公式：整個引擎只有這一條。 */
+        /** The projection. This one line is the whole of it. */
         private double rowZ(double z, double t) {
             return hz - (z - eye) * F / (t * dk);
         }

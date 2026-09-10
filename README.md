@@ -1,81 +1,110 @@
 # ColumnRay
 
-一個 2.5D raycasting 引擎的起點，用純 Java（Swing）寫，不需要任何外部套件。地圖是 2D 俯視圖，每一欄射一條光線。所有高度都用同一條投影公式算出來。示範場景是學校 F1 的一部分：教室、走廊、中庭、水池、樓梯。
+A 2.5D raycasting engine in plain Java (Swing), no external libraries. The map is a 2D top-down
+plan and one ray is cast per screen column; every height on screen comes out of the same projection
+formula. The demo scene is part of floor F1 of a school: a classroom, corridors, a courtyard with a
+pool, and a staircase.
 
-## 執行
+## Running
 
-需要 JDK 21 以上（開發時用 JDK 26）。
+Needs JDK 21 or newer (developed on JDK 26).
 
 ```bash
-./run.sh                                   # 開視窗，載入 maps/school.json
-./run.sh maps/school.json --shot a.png     # 不開視窗，輸出一張截圖（出生點）
-./run.sh --shot a.png 16 21.6 -100 5       # 指定位置 x y、方向角、仰角（度）
-./run.sh --shot a.png 16 21.6 -100 5 100   # 再加一個數字：光線視圖要詳細記錄第幾欄
-./run.sh --bench                           # 原地轉一圈，量渲染時間
+./run.sh                                   # open the windows, load maps/school.json
+./run.sh maps/school.json --shot a.png     # headless, write one screenshot (from the spawn point)
+./run.sh --shot a.png 16 21.6 -100 5       # pick the position x y, heading and pitch (degrees)
+./run.sh --shot a.png 16 21.6 -100 5 100   # one more number: which column the ray view traces
+./run.sh --bench                           # spin on the spot and time the renderer
 ```
 
-`--shot` 會同時輸出 `a-rays.png`（光線視圖）。
+`--shot` also writes `a-rays.png`, the matching ray view.
 
-操作：WASD 移動、拖曳滑鼠或方向鍵轉頭／抬頭（±30°）、Q / E 轉向、Space 跳、C 蹲、Shift 跑、M 開關小地圖、Esc 離開。
+Controls: WASD to move, drag the mouse or use the arrow keys to look (pitch is clamped to +/-30 deg),
+Q / E to turn, Space to jump, C to crouch, Shift to run, M to toggle the minimap, Esc to quit.
 
-- `[` `]`（或 `-` `=`）：調整視野（FOV）
-- `F`：魚眼對照，改用直線距離投影（錯誤示範）
-- `R`：開關光線視圖
+- `[` `]` (or `-` `=`): change the field of view
+- `F`: fisheye comparison - project by straight-line distance instead (the wrong way, on purpose)
+- `R`: show / hide the ray view
 
-## 光線視圖
+## The ray view
 
-右邊的第二個視窗是從上往下看的地圖，玩家永遠朝上，所以左右跟主畫面一樣。
+The second window is a top-down map. The player always points up, so left and right there match
+left and right in the main view.
 
-- **黃色扇形**：每一欄的光線，畫到那一欄被填滿為止。從這裡看得出來光線在哪裡停下。
-- **淡黃色格子**：紅色光線 DDA 走過的格子，只有這些格子裡的形狀會拿來測試。
-- **青色**：相機方向和相機平面，還有紅色光線第一個碰到的東西的**垂直距離** t。
-- **紅線**：滑鼠停在主畫面的哪一欄，就是那一欄的光線，主畫面上也會畫一條細紅線對應。沿路的事件都有編號：橘點是有畫出來的物件，灰點是被前面擋住的物件，藍方塊是跨進下一個區域。下方的列表依距離列出每個事件實際填了幾行。
+- **Yellow fan**: one line per column, drawn out to the point where that column became full. This is
+  where you can see each ray stop.
+- **Pale yellow cells**: the grid cells the red ray's DDA walked. Only shapes registered in those
+  cells are ever tested.
+- **Cyan**: the camera direction and the camera plane, plus the **perpendicular distance** t to the
+  first thing the red ray actually draws.
+- **Red line**: the column the mouse is hovering in the main view (the main view marks the same
+  column with a thin red line). Everything the ray runs into along the way is numbered: an orange dot
+  is a shape that got drawn, a grey dot a shape that was already hidden, a blue square a crossing
+  into another region. The list at the bottom gives every event in distance order and how many rows
+  it actually filled.
 
-操作：滾輪縮放，`N` 切換「跟著轉」和「北朝上」。
+Controls: mouse wheel to zoom, `N` to switch between "follow the player's turn" and "north up".
 
-### 魚眼
+## Fisheye
 
-投影一律用垂直距離 t，也就是交點投影到視線方向上的長度，所以不會有魚眼。按 `F` 可以切換成直線距離，比較兩者的差別。畫面邊緣的東西看起來比較寬，這是一般透視投影本來就有的現象，FOV 越大越明顯，可以用 `[` `]` 調小。
+Projection always uses the perpendicular distance t - the length of the hit point projected onto the
+view direction - so there is no fisheye distortion. Press `F` to switch to straight-line distance and
+compare. Things near the edge of the screen do look wider, which is what an ordinary perspective
+projection does; the wider the FOV the more obvious it gets, so try turning it down with `[`.
 
-## 檔案
+## Files
 
-| 檔案 | 內容 |
+| File | Contents |
 |---|---|
-| `src/engine/Renderer.java` | 相機、投影、DDA 走格子、interval 填充、區域邊界、打光 |
-| `src/engine/Geometry.java` | 射線對線段、圓、凸多邊形的交點；碰撞用的距離函式 |
-| `src/engine/World.java` | 區域和形狀資料、JSON 載入、加速格子、位置查詢 |
-| `src/engine/Materials.java` | 程序貼圖（之後換成圖片貼圖和 normal map） |
-| `src/engine/Main.java` | 視窗、輸入、玩家物理（台階、跳、蹲）、HUD、小地圖 |
-| `src/engine/Json.java` | 最小的 JSON 解析器（允許 `//` 註解） |
-| `maps/school.json` | 示範地圖 |
+| `src/engine/Renderer.java` | camera, projection, DDA grid walk, interval filling, region boundaries, shading |
+| `src/engine/Geometry.java` | ray vs segment / circle / convex polygon; distance helpers for collision |
+| `src/engine/World.java` | region and shape data, JSON loading, acceleration grid, point queries |
+| `src/engine/Materials.java` | procedural textures (to be replaced by image textures and normal maps) |
+| `src/engine/Main.java` | window, input, player physics (steps, jumping, crouching), HUD, minimap |
+| `src/engine/RayView.java` | the top-down ray view window |
+| `src/engine/Json.java` | minimal JSON parser (`//` comments allowed) |
+| `maps/school.json` | the demo map |
 
-## 演算法對照
+## How it works
 
-1. **相機**：`r = dir + plane * camX`，`PL = 0.66`，`F = (W/2)/PL`。r 刻意不 normalize，所以交點參數 t 就是垂直距離，不會有魚眼。→ `Renderer.Column.render`
-2. **投影**：`rowZ(z, t) = hz - (z - eye) * F / t`，`hz = H/2 + pitch`（y-shearing）。→ `rowZ`
-3. **交點**：線段、圓（進入 t1、離開 t2）、凸多邊形（所有邊交點取最小和最大的 t）。t1 是負的就代表站在形狀範圍內。→ `Geometry`
-4. **Interval 填充**：每一欄記錄還空著的行，東西由近到遠畫，只填空的地方，填滿就停。→ `paint`
-5. **每個物件畫三部分**：側面、頂面（眼睛比頂高時）、底面（眼睛比底低時）。→ `drawHit`
-6. **地板和天花板**：從行反推距離 `t = (eye - z) * F / (y - hz)`，再用 `pos + r * t` 找出世界座標來貼圖。天花板會裁切比它高的物件（`min(h, ceil)`）。→ `surfaces`、`flat`
-7. **區域邊界（portal）**：光線跨進下一區時比較兩邊高度。下一區天花板比較低就畫門楣，地板比較高就畫台階立面。露天區域（中庭）沒有天花板，看出去就是天空。→ `cross`
-8. **打光**：線段的法線是邊向量轉 90°，圓柱的法線是（交點 − 圓心）/ 半徑，再乘上距離霧。→ `lambert`、`fog`
+1. **Camera**: `r = dir + plane * camX`, `PL = 0.66`, `F = (W/2)/PL`. r is deliberately not
+   normalised, so the intersection parameter t *is* the perpendicular distance and there is no
+   fisheye. -> `Renderer.Column.render`
+2. **Projection**: `rowZ(z, t) = hz - (z - eye) * F / t`, with `hz = H/2 + pitch` (y-shearing).
+   -> `rowZ`
+3. **Intersection**: segments, circles (enter t1, exit t2), convex polygons (test every edge, take
+   the smallest and largest t). A negative t1 means the eye is inside the shape's footprint.
+   -> `Geometry`
+4. **Interval filling**: each column tracks which rows are still empty; things are drawn near to far
+   and only paint into empty rows, and the column stops as soon as it is full. -> `paint`
+5. **Three parts per shape**: the side, the top face (when the eye is above it) and the bottom face
+   (when the eye is below it). -> `drawHit`
+6. **Floors and ceilings**: invert the projection to get a distance from a row,
+   `t = (eye - z) * F / (y - hz)`, then use `pos + r * t` for the world position to texture with.
+   Ceilings clip anything taller than them (`min(h, ceil)`). -> `surfaces`, `flat`
+7. **Region boundaries (portals)**: when the ray crosses into the next region, compare the heights on
+   both sides. A lower ceiling on the far side becomes a lintel, a higher floor becomes a step riser.
+   Open-air regions (the courtyard) have no ceiling, so you see sky. -> `cross`
+8. **Shading**: a segment's normal is its edge vector rotated 90 degrees, a cylinder's is
+   (hit point - centre) / radius; both are then multiplied by distance fog. -> `lambert`, `fog`
 
-### 物件和區域怎麼排順序
+### How shapes and regions get ordered
 
-DDA 一格一格往前走，把這格裡的形狀加進待處理清單。處理到這格的出口距離 `tout` 時，所有 `t1 ≤ tout` 的物件順序都已經確定，因為之後的格子才發現的形狀，進入點一定更遠。這些物件和「跨進下一個區域」依距離交錯處理。兩次事件之間，畫目前區域那一段地板和天花板。所以物件前面的地板會先畫，後面的地板會被物件擋住。
+The DDA steps one cell at a time and adds that cell's shapes to a pending list. By the time the ray
+reaches the cell's exit distance `tout`, the order of everything with `t1 <= tout` is final: a shape
+that is only discovered in a later cell must enter beyond that point. Those shapes and the
+"cross into the next region" events are then interleaved by distance, and the floor and ceiling of
+the current region are drawn for the stretch between each pair of events. That is why the floor in
+front of an object is drawn first and the floor behind it is hidden by the object.
 
-## 地圖格式
+## Map format
 
-請看 `maps/school.json` 開頭的註解。重點：
+See the comments at the top of `maps/school.json`. In short:
 
-- **區域**是凸多邊形，帶 `floor` 和 `ceil`。`ceil` 省略或寫 `null` 就是露天。`top` 是從露天看進來時，開口上方那段牆的頂。
-- **形狀**有 `wall`（線段）、`circle`、`box`、`poly`、`ngon`，每個都帶 `z0`（底）和 `h`（頂）。`maxDist` 設定超過多遠就不畫。
-- **array** 會把 `items` 依 `step` 平移複製 `count` 次（桌椅、柱列）。
-- 多邊形必須是凸的，載入時會檢查。L 形要切成好幾塊。
-
-## 還沒做的
-
-- **樓層**：還是只有一層。要加上層的篩選：只測畫面開口看得到的樓層，F2–F5 共用標準層，樓板有厚度，中庭和樓梯井是樓板上的洞。
-- **現代光影**：CPU 逐像素上色要改成輸出 G-buffer（深度、法線、材質、UV），交給 GPU 做光照、陰影、反射、bloom、tone mapping。
-- **水面倒影**：把眼睛高度鏡像到水面下，再走一次同一條光線，加上漣漪 normal map 和 Fresnel。
-- **地圖外**：光線走出地圖後，目前不會再走回來。
+- **Regions** are convex polygons with a `floor` and a `ceil`. Omitting `ceil` (or writing `null`)
+  makes the region open to the sky. `top` is the top of the wall above the opening, as seen from an
+  open-air region looking in.
+- **Shapes** are `wall` (a segment), `circle`, `box`, `poly` or `ngon`, each with `z0` (bottom) and
+  `h` (top). `maxDist` stops a shape being drawn beyond a given distance.
+- **array** repeats its `items` `count` times, translated by `step` (desks and chairs, colonnades).
+- Polygons must be convex; this is checked on load. An L shape has to be split into several pieces.
