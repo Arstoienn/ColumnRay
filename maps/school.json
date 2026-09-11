@@ -10,6 +10,23 @@
   "sun": [0.55, 0.83],
   "spawn": { "pos": [12, 10.2], "angle": 90 },
 
+  // Baked once at load (Lighting.java). Light levels are relative: 1.0 shows a texture at its own
+  // colour. The sun's compass direction is "sun" above; the lit cells of every "panel" ceiling
+  // become lights automatically; "lights" adds any others.
+  "lighting": {
+    "texel": 0.2,
+    "sun": { "elevation": 40, "color": "#fff2de", "intensity": 1.0 },
+    "sky": { "color": "#a9c6ee", "intensity": 0.5 },
+    "ambient": "#121418",
+    "panelLights": { "color": "#fff1de", "intensity": 0.7, "drop": 0.3, "range": 7, "soft": 2 },
+    "indirect": { "bounces": 2, "samples": 32, "reflectance": 0.6 },
+    "lights": [
+      { "pos": [26.5, 13.0], "z": 4.6, "color": "#fff1de", "intensity": 0.8, "range": 7 },
+      { "pos": [29.5, 14.0], "z": 6.4, "color": "#fff1de", "intensity": 0.9, "range": 8 },
+      { "pos": [26.5, 15.0], "z": 1.9, "color": "#ffe2bc", "intensity": 0.4, "range": 4 }
+    ]
+  },
+
   "regions": [
     { "name": "classroom", "poly": [[9,1],[17,1],[17,8],[9,8]], "floor": 0, "ceil": 3.2, "light": 0.9,
       "floorMat": "wood", "floorColor": "#b08a5a", "ceilMat": "panel", "ceilColor": "#e8e6e0" },
@@ -113,9 +130,13 @@
 
     // ---- Courtyard: trees, benches, an angled notice board ----
     { "type": "circle", "c": [11.5,17], "r": 0.18, "h": 2.6, "mat": "wood", "color": "#6b4a2e" },
-    { "type": "ngon", "c": [11.5,17], "r": 1.3, "n": 8, "z0": 2.2, "h": 3.6, "mat": "leaf", "color": "#4d7d36" },
+    // A crown is two crossed quads with a leaf mask cut out of them, not a drum: you see sky
+    // through it, and it throws dappled light rather than a disc of shadow.
+    { "type": "canopy", "c": [11.5,17], "r": 2.0, "z0": 1.7, "h": 5.0, "cards": 18, "seed": 3,
+      "mat": "leaf", "color": "#4d7d36" },
     { "type": "circle", "c": [20.5,17], "r": 0.18, "h": 2.6, "mat": "wood", "color": "#6b4a2e" },
-    { "type": "ngon", "c": [20.5,17], "r": 1.3, "n": 8, "rot": 22.5, "z0": 2.2, "h": 3.6, "mat": "leaf", "color": "#4d7d36" },
+    { "type": "canopy", "c": [20.5,17], "r": 1.8, "z0": 1.9, "h": 4.7, "cards": 18, "seed": 11,
+      "mat": "leaf", "color": "#4f8138" },
 
     { "type": "array", "origin": [14.5,12.3], "count": [1,2], "step": [0,9], "items": [
       { "type": "box", "x": 0, "y": 0, "w": 3, "d": 0.45, "z0": 0.4, "h": 0.46, "mat": "wood", "color": "#9c7448" },
