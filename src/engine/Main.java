@@ -12,24 +12,28 @@ import java.awt.GraphicsEnvironment;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.Toolkit;
-import java.awt.event.KeyAdapter;
-import java.awt.event.KeyEvent;
+import java.awt.Window;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Line2D;
-import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferStrategy;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
+import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.Comparator;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.IntStream;
 import javax.imageio.ImageIO;
 import javax.swing.JFrame;
@@ -40,41 +44,60 @@ import javax.swing.SwingUtilities;
  * Usage: java -cp out engine.Main [map.json] [--shot out.png [x y angle pitch [column]]] [--bench]
  */
 public final class Main {
-    static final int DEFAULT_W = 640, DEFAULT_H = 360;
+    // What is rendered and what is shown are separate: 1280x720 rays by default, scaled up into a
+    // window of its own size. Tying the ray count to the window made fullscreen slow for no detail
+    // anyone asked for; the frame-time controller (see steer) moves the render size, not the window.
+    static final int DEFAULT_W = 1280, DEFAULT_H = 720;
+    static final int DEFAULT_WINDOW_W = 1920, DEFAULT_WINDOW_H = 1080;
 
     // Player dimensions (metres)
     static final double RADIUS = 0.3, EYE_STAND = 1.6, EYE_CROUCH = 1.0, HEAD_ABOVE_EYE = 0.15;
     static final double STEP = 0.35, GRAVITY = 18, JUMP_SPEED = 5.2, WALK = 3.2, RUN = 5.5;
     static final double MAX_PITCH = Math.toRadians(30);
 
-    /** Output resolution: the size of the image that reaches the window. */
-    private final int W, H;
+    // The render size is a step on DynamicResolution.LADDER, a share of the window: the frame-time
+    // controller moves along it, and , and . step along it by hand (which turns the controller off;
+    // V turns it back on).
+
+    /** Output resolution: the size of the image that reaches the window. Changes with the render
+     *  scale, so it is not final; the window does not change, the picture in it just gets coarser
+     *  or finer. */
+    private int W, H;
     /** Supersampling factor. The engine renders at (W*SS) x (H*SS) and the result is box-filtered
      *  down to W x H, so SS is also the number of rays per output column. SS = 1 disables it. */
     private final int SS;
     /** Render resolution = the ray count. Equals W when SS is 1. */
-    private final int RW, RH;
+    private int RW, RH;
 
     private final World world;
-    private final BufferedImage image;
-    private final int[] out;      // the W x H pixels the window sees
-    private final int[] hi;       // the RW x RH tilted view after the pitch warp; same array as `out` when SS = 1
+    private BufferedImage image;
+    private int[] out;            // the W x H pixels the window sees
+    private int[] hi;             // the RW x RH tilted view after the pitch warp; same array as `out` when SS = 1
+    private float[] depth, hiDepth; // shot only: output depth and the same pitch warp before downsampling
+    private int[] albedo, hiAlbedo; // shot only: unshaded map colours, following the depth samples
     private int[] src;            // what the renderer writes: the upright (y-sheared) view plus overscan
     private int srcW, srcH;
     private final Renderer renderer;
     private final RayView rayView;
     private final Renderer.Camera cam = new Renderer.Camera();
-    private final Shape[] mapOrder;
+    private Minimap minimap;                                     // built on the first frame that shows it
 
     // Player state
     private double x, y, angle, pitch, feet, vz, eyeH = EYE_STAND, viewFeet;
     private boolean grounded;
+    // G: fly. Gravity off, Space and crouch go up and down, and nothing is solid - the quickest way
+    // to see whether a roof, a cliff or a stray block came out of the conversion right.
+    private boolean flying;
 
-    // Input (written on the EDT, read by the main loop)
-    private final Set<Integer> keys = ConcurrentHashMap.newKeySet();
+    // Input (the mouse is written on the EDT and read by the main loop; the keys are read straight
+    // from the machine by Keys, once a frame)
+    private final Set<Integer> heldLastFrame = new HashSet<>();  // so a tap fires once, not every frame
+    private boolean listening;                                   // is a window of ours in front?
     private double mouseDX, mouseDY;
     private volatile boolean showMap = true, fisheye = false;
     private volatile boolean shear = false;                      // P: the old y-shearing pitch, for comparison
+    private volatile boolean baked = true;                       // L: baked lighting, or the old flat model
+    private Lighting lighting;                                   // null with --flat
     private volatile double fovDeg = Renderer.DEFAULT_FOV;
     private volatile int hoverColumn = -1, hoverRow = -1;        // which pixel of the main view the mouse is over
     private int traceI = -1, traceJ = -1;                        // the output pixel whose ray the ray view traces
@@ -84,13 +107,27 @@ public final class Main {
     private double warpSin, warpCos, warpTan, warpHz, warpCx;
     private int warpX0, warpX1, warpY1;
     private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
+    private final int baseW, baseH;                              // the resolution --size asked for
+    private int winW = DEFAULT_WINDOW_W, winH = DEFAULT_WINDOW_H; // --window: the output, which the picture is scaled to
+    private int scaleIx;                                         // where on DynamicResolution.LADDER we are now
+    private int targetFps = 60;                                  // --fps: the controller's budget; 0 = off
+    private volatile boolean autoRes = true;                     // V: is the controller steering?
+    private DynamicResolution steer;
+    private volatile int wantScale = -1;                         // set by a key, applied between frames
     private double startFeet = Double.NaN;                       // --feet: which storey to start on
+    // --shots: stand at exactly the height asked for instead of on whatever the map has here.
+    // Snapping to our own floor moved the eye up to 25 cm away from where the reference camera
+    // stands, which tilts the whole frame out of line; unsnapped, a floor that came out at the
+    // wrong height shows up as what it is - that floor being at the wrong distance.
+    private double exactFeet = Double.NaN;
     private double fps;
 
     Main(World world, int w, int h, int ss) {
         this.world = world;
         this.W = w;
         this.H = h;
+        this.baseW = w;
+        this.baseH = h;
         this.SS = ss;
         this.RW = w * ss;
         this.RH = h * ss;
@@ -104,8 +141,6 @@ public final class Main {
         this.src = new int[RW * RH];                  // grows on demand, see preparePitch()
         renderer = new Renderer(world, RW, RH, src);
         rayView = new RayView(world, renderer);
-        mapOrder = world.shapes.clone();
-        Arrays.sort(mapOrder, Comparator.comparingDouble(s -> s.h));
         x = world.spawnX;
         y = world.spawnY;
         angle = world.spawnAngle;
@@ -128,16 +163,24 @@ public final class Main {
     }
 
     public static void main(String[] args) throws Exception {
-        String mapPath = "maps/school.json", shot = null;
+        // Before AWT starts, and only when a window is going to open - see Keys. A headless run
+        // has no HUD to name, and on a machine with no window service to ask, the question hangs.
+        if (Arrays.stream(args).noneMatch(a ->
+                a.equals("--shot") || a.equals("--shots") || a.equals("--bench"))) {
+            Keys.readLabels();
+        }
+        String mapPath = "maps/school.json", shot = null, shots = null;
         double[] at = null;
-        boolean bench = false, shear = false;
-        int w = DEFAULT_W, h = DEFAULT_H, ss = 1;
+        boolean bench = false, shear = false, flatLight = false;
+        int w = DEFAULT_W, h = DEFAULT_H, ss = 1, winW = DEFAULT_WINDOW_W, winH = DEFAULT_WINDOW_H, targetFps = 60;
         double startFeet = Double.NaN;
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("--bench")) {
                 bench = true;
             } else if (args[i].equals("--shear")) {
                 shear = true;
+            } else if (args[i].equals("--flat")) {
+                flatLight = true;
             } else if (args[i].equals("--size")) {
                 if (i + 1 >= args.length) { usage("--size needs a WxH value, e.g. 1280x720"); return; }
                 String[] wh = args[++i].toLowerCase().split("x");
@@ -150,6 +193,26 @@ public final class Main {
                     return;
                 }
                 if (w < 16 || h < 16 || w > 16384 || h > 16384) { usage("--size must be between 16x16 and 16384x16384"); return; }
+            } else if (args[i].equals("--fps")) {
+                if (i + 1 >= args.length) { usage("--fps needs a frame rate, e.g. 60 (0 keeps the render size fixed)"); return; }
+                try {
+                    targetFps = Integer.parseInt(args[++i].trim());
+                } catch (NumberFormatException e) {
+                    usage("--fps wants a whole number, e.g. 60, not " + args[i]);
+                    return;
+                }
+                if (targetFps < 0 || targetFps > 1000) { usage("--fps must be between 0 and 1000"); return; }
+            } else if (args[i].equals("--window")) {
+                if (i + 1 >= args.length) { usage("--window needs a WxH value, e.g. 1920x1080"); return; }
+                String[] wh = args[++i].toLowerCase().split("x");
+                try {
+                    winW = Integer.parseInt(wh[0].trim());
+                    winH = Integer.parseInt(wh[1].trim());
+                } catch (RuntimeException e) {
+                    usage("--window wants two whole numbers, e.g. 1920x1080, not " + args[i]);
+                    return;
+                }
+                if (winW < 160 || winH < 90 || winW > 16384 || winH > 16384) { usage("--window must be between 160x90 and 16384x16384"); return; }
             } else if (args[i].equals("--ss")) {
                 if (i + 1 >= args.length) { usage("--ss needs a factor, e.g. 2"); return; }
                 try {
@@ -167,6 +230,9 @@ public final class Main {
                     usage("--feet wants a number, e.g. 3.6, not " + args[i]);
                     return;
                 }
+            } else if (args[i].equals("--shots")) {
+                if (i + 1 >= args.length) { usage("--shots needs a file of views"); return; }
+                shots = args[++i];
             } else if (args[i].equals("--shot")) {
                 if (i + 1 >= args.length) { usage("--shot needs an output file"); return; }
                 shot = args[++i];
@@ -182,33 +248,68 @@ public final class Main {
                 mapPath = args[i];
             }
         }
-        if (shot != null || bench) System.setProperty("java.awt.headless", "true");
+        if (shot != null || shots != null || bench) System.setProperty("java.awt.headless", "true");
 
         if ((long) w * ss > 16384 || (long) h * ss > 16384) {
             usage("--size times --ss must stay within 16384x16384 (that would be " + w * ss + "x" + h * ss + ")");
             return;
         }
         Main game = new Main(World.load(Path.of(mapPath)), w, h, ss);
+        game.winW = winW;
+        game.winH = winH;
+        game.targetFps = targetFps;
+        // The map may ask for a grade on the way out; -Dgrade.sat / -Dgrade.lift override it while
+        // one is being found. See Renderer.grade.
+        Map<String, Object> lg = game.world.lighting == null ? Map.of() : game.world.lighting;
+        Object gr = lg.get("grade");
+        Map<String, Object> g = gr instanceof Map ? World.obj(gr) : Map.of();
+        Renderer.grade(Double.parseDouble(System.getProperty("grade.sat",
+                        String.valueOf(World.num(g, "saturation", 1.0)))),
+                Double.parseDouble(System.getProperty("grade.lift",
+                        String.valueOf(World.num(g, "lift", 0.0)))));
+        Renderer.fogOn = !Boolean.FALSE.equals(lg.get("fog"));
         game.shear = shear;
+        if (!flatLight) {
+            game.lighting = Lighting.bake(game.world);
+            game.renderer.setLighting(game.lighting);
+        }
         if (!Double.isNaN(startFeet)) game.standOn(startFeet);
         if (bench) game.bench();
+        else if (shots != null) game.screenshots(Path.of(shots));
         else if (shot != null) game.screenshot(new File(shot), at);
         else game.run();
     }
 
-    /** Spin on the spot and time each frame (headless, no window). */
+    /**
+     * Spin on the spot and time every frame (headless, no window): level, then tilted all the way.
+     *
+     * The JIT gets -Dbench.warmup untimed frames first (400): 120 were not enough, and the first
+     * timed frames were still being compiled. Then each of -Dbench.frames frames (720, one full turn)
+     * is timed on its own, and the median and 99th percentile are reported next to the mean - a
+     * mean hides both a slow start and a stall. bench.sh runs this several times and says how far
+     * apart the runs were.
+     */
     private void bench() {
-        int frames = 720;
+        int warmup = Integer.getInteger("bench.warmup", 400), frames = Integer.getInteger("bench.frames", 720);
         double saved = pitch;
         for (double p : new double[] {0, MAX_PITCH}) {          // level, and fully tilted (the most overscan)
             pitch = p;
-            for (int i = 0; i < 120; i++) { angle += 0.05; frame(); }                     // warm-up
-            long t0 = System.nanoTime();
-            for (int i = 0; i < frames; i++) { angle += 2 * Math.PI / frames; frame(); }
-            double ms = (System.nanoTime() - t0) / 1e6 / frames;
-            System.out.printf("%dx%d out, %dx%d rendered (ss %d), pitch %2.0f deg %s: %d rays, %.2f ms per frame (about %.0f fps)%n",
+            for (int i = 0; i < warmup; i++) { angle += 2 * Math.PI / frames; frame(); }
+            long[] ns = new long[frames];
+            for (int i = 0; i < frames; i++) {
+                long t0 = System.nanoTime();
+                angle += 2 * Math.PI / frames;
+                frame();
+                ns[i] = System.nanoTime() - t0;
+            }
+            long[] sorted = ns.clone();
+            Arrays.sort(sorted);
+            double median = sorted[frames / 2] / 1e6;
+            double p99 = sorted[Math.min(frames - 1, (int) Math.ceil(frames * 0.99) - 1)] / 1e6;
+            double mean = Arrays.stream(ns).average().orElse(0) / 1e6;
+            System.out.printf("BENCH %dx%d rendered %dx%d ss %d pitch %.0f %s rays %d median %.3f p99 %.3f mean %.3f ms  (median %.0f fps)%n",
                     W, H, RW, RH, SS, Math.toDegrees(p), shear ? "shear" : "true",
-                    renderer.drawnX1 - renderer.drawnX0, ms, 1000 / ms);
+                    renderer.drawnX1 - renderer.drawnX0, median, p99, mean, 1000 / median);
         }
         pitch = saved;
     }
@@ -217,13 +318,16 @@ public final class Main {
 
     private void run() throws Exception {
         Canvas canvas = new Canvas();
+        canvas.enableInputMethods(false);                        // an IME (Bopomofo, Pinyin) must not eat the keys
         SwingUtilities.invokeAndWait(() -> {
-            // Main view on the left, ray view on the right, both fitted onto the screen
+            // The window is the output: --window, fitted onto the screen, whatever is being rendered.
+            // present() scales the picture up into it, so a bigger window costs no rays. The ray
+            // view opens beside it, hidden until R.
             Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
             int rayW = (int) Math.min(640, screen.width * 0.36);
-            int mainW = Math.max(W, Math.min(W * 2, screen.width - rayW - 30));
+            double fit = Math.min(1, Math.min((screen.width - 16) / (double) winW, (screen.height - 48) / (double) winH));
             JFrame frame = new JFrame("ColumnRay - " + world.name);
-            canvas.setPreferredSize(new Dimension(mainW, mainW * H / W));
+            canvas.setPreferredSize(new Dimension((int) (winW * fit), (int) (winH * fit)));
             canvas.setIgnoreRepaint(true);
             canvas.setFocusTraversalKeysEnabled(false);
             frame.add(canvas);
@@ -235,9 +339,18 @@ public final class Main {
             installInput(canvas);
             rayView.open(frame, rayW);
             frame.toFront();
+            // toFront() only orders our windows; on macOS it does not make us the active app, so a
+            // game started from a shell that is not in front (an IDE, a script) opens behind it and
+            // every key goes to whatever is. Ask the OS to bring the app itself forward.
+            if (java.awt.Desktop.isDesktopSupported()
+                    && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.APP_REQUEST_FOREGROUND))
+                java.awt.Desktop.getDesktop().requestForeground(true);
             canvas.requestFocus();
         });
 
+        scaleIx = DynamicResolution.nearest(W / (double) winW);
+        autoRes = targetFps > 0;
+        steer = new DynamicResolution(1000.0 / Math.max(1, targetFps), scaleIx);
         long last = System.nanoTime();
         while (true) {
             long now = System.nanoTime();
@@ -247,29 +360,19 @@ public final class Main {
             frame();
             present(canvas);
             rayView.present(view());
+            // What this frame cost, before the loop sleeps: the controller asks for a step at most,
+            // and frame() applies it between frames.
+            if (autoRes) {
+                int level = steer.frame((System.nanoTime() - now) / 1e6);
+                if (level != scaleIx) wantScale = level;
+            }
             fps = fps == 0 ? 1 / Math.max(dt, 1e-6) : fps * 0.95 + 0.05 / Math.max(dt, 1e-6);
             if (System.nanoTime() - now < 4_000_000) Thread.sleep(2);
         }
     }
 
     private void installInput(Canvas canvas) {
-        canvas.addKeyListener(new KeyAdapter() {
-            @Override public void keyPressed(KeyEvent e) {
-                int code = e.getKeyCode();
-                if (code == KeyEvent.VK_ESCAPE) System.exit(0);
-                if (!keys.add(code)) return;                     // ignore auto-repeat while a key is held
-                switch (code) {
-                    case KeyEvent.VK_M -> showMap = !showMap;
-                    case KeyEvent.VK_F -> fisheye = !fisheye;
-                    case KeyEvent.VK_P -> shear = !shear;
-                    case KeyEvent.VK_R -> rayView.toggle();
-                    case KeyEvent.VK_OPEN_BRACKET, KeyEvent.VK_MINUS -> fovDeg = Math.max(30, fovDeg - 5);
-                    case KeyEvent.VK_CLOSE_BRACKET, KeyEvent.VK_EQUALS -> fovDeg = Math.min(120, fovDeg + 5);
-                    default -> { }
-                }
-            }
-            @Override public void keyReleased(KeyEvent e) { keys.remove(e.getKeyCode()); }
-        });
+        canvas.addKeyListener(Keys.listener());
         MouseAdapter drag = new MouseAdapter() {
             int lx, ly;
             @Override public void mousePressed(MouseEvent e) { lx = e.getX(); ly = e.getY(); canvas.requestFocus(); }
@@ -285,7 +388,47 @@ public final class Main {
         canvas.addMouseMotionListener(drag);
     }
 
-    private boolean down(int key) { return keys.contains(key); }
+    /** Is the key in this position held? Only while a window of ours is in front - see {@link Keys}. */
+    private boolean down(int key) { return listening && Keys.down(key); }
+
+    /**
+     * The key state comes from the whole machine, not from our windows, so ignore it unless one of
+     * ours is the active window. AWT events came with that for free.
+     */
+    private static boolean inFront() {
+        for (Window w : Window.getWindows()) if (w.isActive()) return true;
+        return false;
+    }
+
+    private static final int[] TAPS = {Keys.ESCAPE, Keys.M, Keys.G, Keys.F, Keys.P, Keys.L, Keys.R,
+            Keys.N, Keys.LEFT_BRACKET, Keys.MINUS, Keys.RIGHT_BRACKET, Keys.EQUALS, Keys.COMMA, Keys.PERIOD, Keys.V};
+
+    /** The keys that do their work once, on the way down, rather than for as long as they are held. */
+    private void taps() {
+        for (int key : TAPS) {
+            if (!down(key)) { heldLastFrame.remove(key); continue; }
+            if (!heldLastFrame.add(key)) continue;               // still held from last frame
+            switch (key) {
+                case Keys.ESCAPE -> System.exit(0);
+                case Keys.M -> showMap = !showMap;
+                case Keys.G -> { flying = !flying; vz = 0; grounded = false; }
+                case Keys.F -> fisheye = !fisheye;
+                case Keys.P -> shear = !shear;
+                case Keys.L -> baked = !baked;
+                case Keys.R -> rayView.toggle();
+                case Keys.N -> rayView.toggleFollow();
+                case Keys.LEFT_BRACKET, Keys.MINUS -> fovDeg = Math.max(30, fovDeg - 5);
+                case Keys.RIGHT_BRACKET, Keys.EQUALS -> fovDeg = Math.min(120, fovDeg + 5);
+                case Keys.COMMA -> { autoRes = false; wantScale = Math.max(0, scaleIx - 1); }
+                case Keys.PERIOD -> { autoRes = false; wantScale = Math.min(DynamicResolution.LADDER.length - 1, scaleIx + 1); }
+                case Keys.V -> {
+                    autoRes = targetFps > 0 && !autoRes;
+                    if (autoRes) steer = new DynamicResolution(1000.0 / targetFps, scaleIx);
+                }
+                default -> { }
+            }
+        }
+    }
 
     /** Window coordinate -> column of the main view; -1 when the point is outside it. */
     private int columnAt(int mx) {
@@ -302,6 +445,8 @@ public final class Main {
     // ---- Player physics ----
 
     private void update(double dt) {
+        listening = !Keys.physical() || inFront();
+        taps();
         double fov = fovDeg;
         if (Math.abs(renderer.fov() - fov) > 1e-6) renderer.setFov(fov);
         int hc = hoverColumn, hr = hoverRow;
@@ -310,29 +455,45 @@ public final class Main {
 
         double mdx, mdy;
         synchronized (this) { mdx = mouseDX; mdy = mouseDY; mouseDX = mouseDY = 0; }
-        double turn = (down(KeyEvent.VK_RIGHT) || down(KeyEvent.VK_E) ? 1 : 0) - (down(KeyEvent.VK_LEFT) || down(KeyEvent.VK_Q) ? 1 : 0);
-        double look = (down(KeyEvent.VK_UP) ? 1 : 0) - (down(KeyEvent.VK_DOWN) ? 1 : 0);
+        double turn = (down(Keys.RIGHT) || down(Keys.E) ? 1 : 0) - (down(Keys.LEFT) || down(Keys.Q) ? 1 : 0);
+        double look = (down(Keys.UP) ? 1 : 0) - (down(Keys.DOWN) ? 1 : 0);
         angle += turn * 2.2 * dt + mdx * 0.004;
         pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, pitch + look * 1.2 * dt - mdy * 0.003));
 
-        boolean crouch = down(KeyEvent.VK_C) || down(KeyEvent.VK_CONTROL);
+        boolean crouch = down(Keys.C) || down(Keys.CONTROL) || down(Keys.RIGHT_CONTROL);
+        boolean running = down(Keys.SHIFT) || down(Keys.RIGHT_SHIFT);
         double dirX = Math.cos(angle), dirY = Math.sin(angle);
-        double f = (down(KeyEvent.VK_W) ? 1 : 0) - (down(KeyEvent.VK_S) ? 1 : 0);
-        double s = (down(KeyEvent.VK_D) ? 1 : 0) - (down(KeyEvent.VK_A) ? 1 : 0);
+        double f = (down(Keys.W) ? 1 : 0) - (down(Keys.S) ? 1 : 0);
+        double s = (down(Keys.D) ? 1 : 0) - (down(Keys.A) ? 1 : 0);
         if (f != 0 || s != 0) {
-            double speed = (down(KeyEvent.VK_SHIFT) ? RUN : WALK) * (crouch ? 0.5 : 1) / Math.hypot(f, s);
+            double speed = (running ? RUN : WALK) * (crouch ? 0.5 : 1) / Math.hypot(f, s);
             double dx = (dirX * f - dirY * s) * speed * dt, dy = (dirY * f + dirX * s) * speed * dt;
-            int n = Math.max(1, (int) Math.ceil(Math.hypot(dx, dy) / 0.1));   // substep so we cannot tunnel through thin walls
-            for (int i = 0; i < n; i++) {
-                if (!blocked(x + dx / n, y, feet)) x += dx / n;
-                if (!blocked(x, y + dy / n, feet)) y += dy / n;
+            if (flying) {
+                x += dx;
+                y += dy;
+            } else {
+                int n = Math.max(1, (int) Math.ceil(Math.hypot(dx, dy) / 0.1));   // substep so we cannot tunnel through thin walls
+                for (int i = 0; i < n; i++) {
+                    if (!blocked(x + dx / n, y, feet)) x += dx / n;
+                    if (!blocked(x, y + dy / n, feet)) y += dy / n;
+                }
             }
+        }
+
+        if (flying) {
+            double up = (down(Keys.SPACE) ? 1 : 0) - (crouch ? 1 : 0);
+            feet += up * (running ? RUN : WALK) * dt;
+            vz = 0;
+            grounded = false;
+            eyeH += (EYE_STAND - eyeH) * Math.min(1, dt * 10);
+            viewFeet = feet;
+            return;
         }
 
         double[] sup = support(x, y, feet);
         double ground = sup[0], ceil = sup[1];
         if (grounded && feet > ground && feet - ground <= STEP) feet = ground;   // stick to the floor when stepping down
-        if (grounded && down(KeyEvent.VK_SPACE)) vz = JUMP_SPEED;
+        if (grounded && down(Keys.SPACE)) vz = JUMP_SPEED;
         vz -= GRAVITY * dt;
         feet += vz * dt;
         if (feet <= ground) { feet = ground; vz = 0; grounded = true; } else grounded = false;
@@ -367,7 +528,8 @@ public final class Main {
             if (r.floor > stand + STEP || r.ceil < head(stand)) return true;
         }
         for (Shape s : world.shapesNear(px, py, RADIUS))
-            if (s.z0 < head(stand) && s.h > stand + STEP && Geometry.overlaps(px, py, RADIUS, s)) return true;
+            if (s.bottomAt(px, py) < head(stand) && s.topAt(px, py) > stand + STEP
+                    && Geometry.overlaps(px, py, RADIUS, s)) return true;
         return false;
     }
 
@@ -378,8 +540,11 @@ public final class Main {
             if (!Geometry.discTouchesPoly(px, py, RADIUS, r.xs, r.ys)) continue;
             if (r.floor <= feet + STEP) ground = Math.max(ground, r.floor);
         }
-        for (Shape s : world.shapesNear(px, py, RADIUS))
-            if (Geometry.overlaps(px, py, RADIUS, s) && s.h <= feet + STEP) ground = Math.max(ground, s.h);
+        for (Shape s : world.shapesNear(px, py, RADIUS)) {
+            if (!Geometry.overlaps(px, py, RADIUS, s)) continue;
+            double top = s.topAt(px, py);        // a tilted top is a different height under each foot
+            if (top <= feet + STEP) ground = Math.max(ground, top);
+        }
         if (ground == Double.NEGATIVE_INFINITY) ground = feet;
 
         // The ceiling is whatever is above the surface we would stand on, so the underside of a
@@ -390,7 +555,8 @@ public final class Main {
             if (r.ceil > ground) ceil = Math.min(ceil, r.ceil);
         }
         for (Shape s : world.shapesNear(px, py, RADIUS))
-            if (Geometry.overlaps(px, py, RADIUS, s) && s.z0 >= ground + STEP) ceil = Math.min(ceil, s.z0);
+            if (Geometry.overlaps(px, py, RADIUS, s) && s.bottomAt(px, py) >= ground + STEP)
+                ceil = Math.min(ceil, s.bottomAt(px, py));
         return new double[] {ground, ceil};
     }
 
@@ -401,6 +567,7 @@ public final class Main {
         cam.dirY = Math.sin(angle);
         cam.eye = viewFeet + eyeH;
         cam.fisheye = fisheye;                              // pitch and the render window: preparePitch()
+        cam.baked = baked && lighting != null;
         return cam;
     }
 
@@ -410,14 +577,60 @@ public final class Main {
 
     // ---- Rendering ----
 
+    /**
+     * Change the render resolution, which is the ray count: every buffer from the renderer's own
+     * pixels to the image the window blits is sized from it, so they are all made again. The window
+     * keeps its size and its HUD - only the picture inside it gets coarser or finer. Called from the
+     * render loop, never from the key handler, because the loop is reading these arrays.
+     */
+    private void setScale(int ix) {
+        scaleIx = Math.max(0, Math.min(DynamicResolution.LADDER.length - 1, ix));
+        int w = Math.max(16, (int) Math.round(winW * DynamicResolution.LADDER[scaleIx]));
+        int h = Math.max(16, (int) Math.round(w * (double) baseH / baseW));   // --size's shape, the window's scale
+        if (w == W && h == H) return;
+        W = w;
+        H = h;
+        RW = w * SS;
+        RH = h * SS;
+        image = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
+        out = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
+        hi = SS == 1 ? out : new int[RW * RH];
+        srcW = RW;
+        srcH = RH;
+        src = new int[RW * RH];
+        renderer.setView(RW, RH);
+        renderer.resize(srcW, srcH, src);
+        renderer.setFov(fovDeg);
+        traceI = Math.min(traceI, RW - 1);
+        traceJ = Math.min(traceJ, RH - 1);
+        hoverColumn = hoverRow = -1;
+    }
+
     /** Render one frame, tilt it, and when supersampling box-filter it down to the output image. */
     private void frame() {
+        int want = wantScale;
+        if (want >= 0) {
+            wantScale = -1;
+            setScale(want);
+        }
         Renderer.Camera c = camera();
         preparePitch(c);
-        renderer.traceColumn = sourceColumn(traceI >= 0 ? traceI : RW / 2, traceJ >= 0 ? traceJ : RH / 2);
+        // Recording one column's ray costs allocations every frame; only the ray view and a
+        // screenshot's -rays.png read it.
+        renderer.traceColumn = rayView.visible() || c.captureDepth
+                ? sourceColumn(traceI >= 0 ? traceI : RW / 2, traceJ >= 0 ? traceJ : RH / 2) : -1;
         renderer.render(c);
+        if (c.captureDepth) {
+            depth = new float[W * H];
+            hiDepth = SS == 1 ? depth : new float[RW * RH];
+            albedo = new int[W * H];
+            hiAlbedo = SS == 1 ? albedo : new int[RW * RH];
+        }
         warp();
-        if (SS > 1) downsample();
+        if (SS > 1) {
+            downsample();
+            if (c.captureDepth) downsampleDepth();
+        }
     }
 
     /**
@@ -491,8 +704,17 @@ public final class Main {
             int ys = Math.max(0, Math.min(yHi, (int) Math.floor(warpHz - rowSource(v))));
             int srow = ys * sw, orow = j * RW;
             double sx = warpCx + (0.5 - w2) * k;               // source x of output column 0's centre
-            for (int i = 0; i < RW; i++, sx += k)
-                hi[orow + i] = s[srow + Math.max(xLo, Math.min(xHi, (int) Math.floor(sx)))];
+            if (cam.captureDepth) {
+                for (int i = 0; i < RW; i++, sx += k) {
+                    int p = srow + Math.max(xLo, Math.min(xHi, (int) Math.floor(sx)));
+                    hi[orow + i] = s[p];
+                    hiDepth[orow + i] = renderer.depth[p];
+                    hiAlbedo[orow + i] = renderer.albedo[p];
+                }
+            } else {
+                for (int i = 0; i < RW; i++, sx += k)
+                    hi[orow + i] = s[srow + Math.max(xLo, Math.min(xHi, (int) Math.floor(sx)))];
+            }
         });
     }
 
@@ -529,6 +751,30 @@ public final class Main {
         });
     }
 
+    /** An antialiased pixel can show several surfaces. Keep the nearest hit in the same SS x SS
+     *  block the colour averages, leaving zero only when the whole block is sky. Albedo keeps
+     *  that hit's map colour too: averaging different surfaces would invent a colour. */
+    private void downsampleDepth() {
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                float nearest = 0;
+                int sample = (y * SS + SS / 2) * RW + x * SS + SS / 2;
+                for (int sy = 0; sy < SS; sy++) {
+                    int base = (y * SS + sy) * RW + x * SS;
+                    for (int sx = 0; sx < SS; sx++) {
+                        float d = hiDepth[base + sx];
+                        if (d > 0 && (nearest == 0 || d < nearest)) {
+                            nearest = d;
+                            sample = base + sx;
+                        }
+                    }
+                }
+                depth[y * W + x] = nearest;
+                albedo[y * W + x] = nearest > 0 ? hiAlbedo[sample] : out[y * W + x];
+            }
+        }
+    }
+
     // ---- Output ----
 
     private void present(Canvas canvas) {
@@ -553,19 +799,59 @@ public final class Main {
         Toolkit.getDefaultToolkit().sync();
     }
 
+    /** Every view in a file, one per line: "out.png x y feet heading". Baking the lightmaps for
+     *  a map the size of Haven takes a minute and a half, and it is the same bake for every camera,
+     *  so a set of comparison shots belongs in one run rather than one run each. */
+    private void screenshots(Path list) throws Exception {
+        for (String line : Files.readAllLines(list)) {
+            String t = line.trim();
+            if (t.isEmpty() || t.startsWith("#")) continue;
+            String[] f = t.split("\\s+");
+            if (f.length < 5) { System.err.println("skipping: " + t); continue; }
+            exactFeet = Double.parseDouble(f[3]);
+            screenshot(new File(f[0]), new double[]{Double.parseDouble(f[1]), Double.parseDouble(f[2]),
+                                                    Double.parseDouble(f[4]), 0});
+        }
+    }
+
     private void screenshot(File out, double[] at) throws Exception {
         if (at != null) {
             x = at[0];
             y = at[1];
             angle = Math.toRadians(at[2]);
             pitch = Math.toRadians(at[3]);
-            placeOnGround();
+            if (Double.isNaN(exactFeet)) {
+                placeOnGround();
+            } else {
+                feet = viewFeet = exactFeet;
+                vz = 0;
+                grounded = true;
+            }
         }
         // the column argument is an output column, so it means the same place whatever --ss is
         int col = at != null && at.length > 4 ? Math.max(0, Math.min(W - 1, (int) at[4])) : W / 2;
         traceI = col * SS + SS / 2;
         traceJ = -1;
-        frame();
+        cam.captureDepth = true;
+        try {
+            frame();
+        } finally {
+            cam.captureDepth = false;
+        }
+        File plainOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-plain.png"));
+        ImageIO.write(image, "png", plainOut);                  // the warped view, before any overlays or scaling
+        System.out.println("wrote " + plainOut);
+        File depthOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-depth.pfm"));
+        writeDepth(depthOut);
+        System.out.println("wrote " + depthOut);
+        File albedoOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-albedo.png"));
+        BufferedImage alb = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
+        alb.setRGB(0, 0, W, H, albedo, 0, W);
+        ImageIO.write(alb, "png", albedoOut);
+        System.out.println("wrote " + albedoOut);
+        depth = hiDepth = renderer.depth = null;
+        albedo = hiAlbedo = renderer.albedo = null;
+
         int scale = W < 1000 ? 2 : 1;          // upscale small renders so the HUD text stays readable
         BufferedImage img = new BufferedImage(W * scale, H * scale, BufferedImage.TYPE_INT_RGB);
         Graphics2D g = img.createGraphics();
@@ -584,6 +870,19 @@ public final class Main {
         System.out.println("wrote " + raysOut);
     }
 
+    /** Greyscale PFM: negative scale selects little endian; rows run from the bottom upwards. */
+    private void writeDepth(File file) throws Exception {
+        try (BufferedOutputStream stream = new BufferedOutputStream(new FileOutputStream(file))) {
+            stream.write(("Pf\n" + W + " " + H + "\n-1.0\n").getBytes(StandardCharsets.US_ASCII));
+            ByteBuffer row = ByteBuffer.allocate(W * Float.BYTES).order(ByteOrder.LITTLE_ENDIAN);
+            for (int y = H - 1; y >= 0; y--) {
+                row.clear();
+                for (int x = 0; x < W; x++) row.putFloat(depth[y * W + x]);
+                stream.write(row.array());
+            }
+        }
+    }
+
     private void drawFrame(Graphics2D g, int ox, int oy, int dw, int dh, boolean markColumn) {
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
         g.drawImage(image, ox, oy, dw, dh, null);
@@ -599,7 +898,7 @@ public final class Main {
                                      ox + outputX(col, RH - 1) * sx, oy + (RH - 0.5) * sy));
         }
         drawHud(g, ox + 12, oy + 20);
-        if (showMap) drawMinimap(g, ox + dw - 12, oy + 12);
+        if (showMap) drawMinimap(g, ox + dw - 12, oy + 12, (int) Math.max(160, Math.min(dw, dh) * 0.42));
     }
 
     /** The storey the player is actually standing on, rather than just the lowest one here. */
@@ -613,16 +912,26 @@ public final class Main {
         return best != null ? best : world.regionAt(x, y);
     }
 
+    /** A key hint, spelled the way this player's keyboard labels the keys in those positions. */
+    private static String key(int... positions) { return Keys.labels(positions); }
+
     private void drawHud(Graphics2D g, int left, int top) {
         Region r = here();
         String[] lines = {
-            String.format("%s   %.0f fps   %dx%d%s   FOV %.0f deg   %s", world.name, fps, W, H,
-                    SS > 1 ? " x" + SS + " AA" : "", renderer.fov(),
-                    fisheye ? "fisheye demo (straight-line distance, wrong)" : "perpendicular distance"),
+            String.format("%s   %.0f fps   %dx%d%s   %,d rays   FOV %.0f deg   %s", world.name, fps, W, H,
+                    SS > 1 ? " x" + SS + " AA" : "", RW, renderer.fov(),
+                    fisheye ? "fisheye demo (straight-line distance, wrong)" : "perpendicular distance")
+                    + (lighting == null ? "   flat lighting (--flat)" : baked ? "   baked lighting" : "   flat lighting (L)"),
             String.format("%s   (%.1f, %.1f)   feet %.2f m   pitch %+.0f deg %s", r == null ? "-" : r.name, x, y, feet,
                     Math.toDegrees(pitch), shear ? "y-shearing (old)" : "true perspective"),
-            "WASD move   drag mouse / arrows look   Space jump   C crouch   Shift run",
-            "[ ] FOV   F fisheye demo   P pitch: true / shear   R ray view   M minimap   Esc quit   hover to pick a column",
+            // The controls go by where a key sits, so name each one the way this keyboard labels it.
+            key(Keys.W, Keys.A, Keys.S, Keys.D) + " move   drag mouse / arrows look   Space jump   "
+                    + key(Keys.C) + " crouch   Shift run   " + key(Keys.G) + " fly",
+            key(Keys.LEFT_BRACKET) + " " + key(Keys.RIGHT_BRACKET) + " FOV   " + key(Keys.COMMA) + " "
+                    + key(Keys.PERIOD) + " rays   " + key(Keys.V) + (autoRes ? " auto res on   " : " auto res off   ")
+                    + key(Keys.F) + " fisheye   " + key(Keys.P) + " pitch   "
+                    + key(Keys.L) + " lighting   " + key(Keys.R) + " ray view   " + key(Keys.M)
+                    + " minimap   Esc quit   hover to pick a column",
         };
         g.setFont(new Font(Font.DIALOG, Font.PLAIN, 13));
         for (int i = 0; i < lines.length; i++) {
@@ -633,38 +942,34 @@ public final class Main {
         }
     }
 
-    private void drawMinimap(Graphics2D g, int right, int top) {
-        double mw = world.maxX - world.minX, mh = world.maxY - world.minY;
-        double s = Math.min(240 / mw, 220 / mh);
-        double ox = right - mw * s, oy = top;
+    /** The minimap (see Minimap): one prebuilt image, plus the player on top of it. */
+    private void drawMinimap(Graphics2D g, int right, int top, int size) {
+        if (minimap == null) minimap = new Minimap(world, x, y, feet);
+        double mw = minimap.image.getWidth() * Minimap.CELL, mh = minimap.image.getHeight() * Minimap.CELL;
+        // The map may turn its minimap by quarter turns, the way Valorant shows each map the same
+        // way round every time; a quarter turn swaps which side of the panel is the long one.
+        int quarter = Math.floorMod((int) Math.round(world.minimapRotate / 90), 4);
+        double pw = quarter % 2 == 0 ? mw : mh, ph = quarter % 2 == 0 ? mh : mw;
+        double s = Math.min(size / pw, size / ph);
+        double ox = right - pw * s, oy = top;
         AffineTransform saved = g.getTransform();
-        g.setColor(new Color(0, 0, 0, 150));
-        g.fill(new Rectangle2D.Double(ox - 6, oy - 6, mw * s + 12, mh * s + 12));
-        g.translate(ox, oy);
+        g.setColor(new Color(255, 255, 255, 200));
+        g.fill(new Rectangle2D.Double(ox - 6, oy - 6, pw * s + 12, ph * s + 12));
+        g.translate(ox + pw * s / 2, oy + ph * s / 2);
+        g.rotate(quarter * Math.PI / 2);                              // clockwise on screen
         g.scale(s, s);
-        g.translate(-world.minX, -world.minY);
+        g.translate(-minimap.ix0 - mw / 2, -minimap.iy0 - mh / 2);
         g.setStroke(new BasicStroke((float) (1.5 / s)));
 
-        for (Region r : world.regions) {
-            g.setColor(withAlpha(r.floorColor, r.sky ? 120 : 190));
-            g.fill(path(r.xs, r.ys));
-        }
-        for (Shape sh : mapOrder) {
-            Color c = withAlpha(sh.color, 230);
-            g.setColor(c);
-            boolean floating = sh.z0 > 0.3;
-            switch (sh.kind) {
-                case SEG -> g.draw(new Line2D.Double(sh.ax, sh.ay, sh.bx, sh.by));
-                case CIRCLE -> {
-                    Ellipse2D e = new Ellipse2D.Double(sh.cx - sh.r, sh.cy - sh.r, sh.r * 2, sh.r * 2);
-                    if (floating) g.draw(e); else g.fill(e);
-                }
-                case POLY -> { if (floating) g.draw(path(sh.xs, sh.ys)); else g.fill(path(sh.xs, sh.ys)); }
-            }
-        }
+        Object smoothing = g.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        AffineTransform px = AffineTransform.getTranslateInstance(minimap.ix0, minimap.iy0);
+        px.scale(Minimap.CELL, Minimap.CELL);
+        g.drawImage(minimap.image, px, null);
+        if (smoothing != null) g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, smoothing);
 
         double dx = Math.cos(angle), dy = Math.sin(angle), pl = renderer.planeHalfWidth(), len = 4;
-        g.setColor(new Color(255, 230, 120, 200));
+        g.setColor(new Color(235, 150, 20, 220));
         g.draw(new Line2D.Double(x, y, x + (dx + dy * pl) * len, y + (dy - dx * pl) * len));
         g.draw(new Line2D.Double(x, y, x + (dx - dy * pl) * len, y + (dy + dx * pl) * len));
         g.setColor(new Color(255, 80, 60));
@@ -672,25 +977,16 @@ public final class Main {
         g.setTransform(saved);
     }
 
-    private static Path2D path(double[] xs, double[] ys) {
-        Path2D p = new Path2D.Double();
-        p.moveTo(xs[0], ys[0]);
-        for (int i = 1; i < xs.length; i++) p.lineTo(xs[i], ys[i]);
-        p.closePath();
-        return p;
-    }
-
-    private static Color withAlpha(int rgb, int a) {
-        return new Color((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, a);
-    }
-
     private static void usage(String problem) {
         System.err.println(problem);
         System.err.println("usage: java -cp out engine.Main [map.json] [--size WxH] [--ss N] [--bench]");
         System.err.println("       java -cp out engine.Main [map.json] [--size WxH] [--ss N] --shot out.png [x y angle pitch [column]]");
-        System.err.println("  --size  output resolution (default " + DEFAULT_W + "x" + DEFAULT_H + ")");
+        System.err.println("       java -cp out engine.Main [map.json] [--size WxH] --shots views.txt   (one \"out.png x y feet heading\" per line)");
+        System.err.println("  --size  render resolution, the ray count (default " + DEFAULT_W + "x" + DEFAULT_H + ")");
+        System.err.println("  --window  window size; the render is scaled up to it (default " + DEFAULT_WINDOW_W + "x" + DEFAULT_WINDOW_H + ", fitted to the screen)");
         System.err.println("  --feet  starting floor height in metres, to begin on an upper storey (e.g. 3.6)");
         System.err.println("  --shear look up / down the old way (y-shearing) instead of true perspective");
+        System.err.println("  --flat  skip baking the lightmaps and use the old flat lighting");
         System.err.println("  --ss    supersampling factor 1-8: renders at size*N and averages down (default 1).");
         System.err.println("          Rays cast per frame = width * N.");
     }
