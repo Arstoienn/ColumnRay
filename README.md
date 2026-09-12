@@ -130,6 +130,11 @@ Maps are JSON files; `maps/school.json` documents the format in comments at the 
 | `maps/school.json` | Demo map |
 | `docs/ENGINEERING.md` | Design notes, measurements and the reasoning behind each subsystem |
 
+## License
+
+The source code is released under the MIT License; see [LICENSE](LICENSE). The license does not
+cover any third-party assets.
+
 ## Disclaimer
 
 Some measurements in `docs/ENGINEERING.md` were taken on a map converted from Haven, a map from
