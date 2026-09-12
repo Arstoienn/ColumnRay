@@ -4,6 +4,8 @@
 #   ./run.sh maps/school.json --shot a.png    headless, write a single screenshot
 set -euo pipefail
 cd "$(dirname "$0")"
-rm -rf out
-javac -d out $(find src -name '*.java')
-exec java -cp out engine.Main "$@"
+./build.sh                     # compiles only when a source changed
+# JAVA_OPTS reaches the JVM, which is where the bake is tuned from:
+#   JAVA_OPTS=-Dlight.texel=1.2 ./run.sh maps/haven.json --feet 3     a quarter of the texels
+# --enable-native-access: Keys reads the physical key state from macOS through the FFM API.
+exec java --enable-native-access=ALL-UNNAMED ${JAVA_OPTS:-} -cp out engine.Main "$@"
