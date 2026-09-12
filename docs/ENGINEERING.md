@@ -14,10 +14,8 @@ Needs JDK 21 or newer (developed on JDK 26).
 ./run.sh maps/school.json --shot a.png     # headless, write one screenshot (from the spawn point)
 ./run.sh --shot a.png 16 21.6 -100 5       # pick the position x y, heading and pitch (degrees)
 ./run.sh --shot a.png 16 21.6 -100 5 100   # one more number: which column the ray view traces
-./run.sh --bench                           # spin on the spot and time the renderer (see ./bench.sh)
-./run.sh --size 1920x1080                  # render resolution to start at (default 1280x720)
-./run.sh --window 2560x1440                # window size (default 1920x1080); independent of --size
-./run.sh --fps 30                          # frame-time target for dynamic resolution; --fps 0 turns it off
+./run.sh --bench                           # spin on the spot and time the renderer
+./run.sh --size 1280x720                   # output resolution
 ./run.sh --ss 2                            # 2x supersampling (anti-aliasing)
 ./run.sh --feet 3.6                        # start on the upper storey instead of the ground one
 ./run.sh --shear                           # look up / down the old way (y-shearing), for comparison
@@ -27,9 +25,8 @@ Needs JDK 21 or newer (developed on JDK 26).
 ## Controls
 
 `WASD` move, drag the mouse or the arrow keys to look, `Space` jump, `C` crouch, `Shift` run,
-`Q`/`E` turn. `R` ray view (closed at start), `M` minimap, `L` baked lighting on and off, `F` fisheye,
-`P` pitch model, `[` `]` field of view, `,` `.` render resolution by hand, `V` dynamic resolution on
-and off, `Esc` quit.
+`Q`/`E` turn. `R` ray view, `M` minimap, `L` baked lighting on and off, `F` fisheye, `P` pitch
+model, `[` `]` field of view, `,` `.` ray count, `Esc` quit.
 
 **Those are places on the keyboard, not letters.** AWT will not say which key was pressed: on macOS
 it works out the key code for a letter key from the character that key produces under the current
@@ -50,82 +47,33 @@ Naming them is the one place the layout still matters, and it goes the other way
 That is asked once, before AWT starts, because Text Services belongs to the process's first thread
 and answers the game loop with a trap rather than an answer.
 
-Asking it that early has a trap of its own. The first call checks the process in with the system,
-and a process with no window yet checks in as background-only, a type AWT does not undo when the
-window opens. A background-only app can never be the active one: the window came up, clicking it did
-nothing, and every key went to whatever app was in front (`lsappinfo` showed `type="BackgroundOnly"`;
-with the call skipped, `Foreground`). So `Keys` first declares the process an ordinary app with
-`TransformProcessType`, which is what AWT would have done, and only then asks for the key caps.
-
 Reading the machine's key state means reading it whichever of the two windows is focused - but also
 whatever else is in front, so the keys are ignored unless one of our windows is the active one. Off
 macOS, or on a JVM that will not let us call out, the AWT events come back as a fallback, read as a
 plain US QWERTY board.
 
-On macOS the fallback is also what runs when the app that started the game has no Input Monitoring
-permission (started from a desktop app rather than a Terminal that has it): the key state then
-says "not held" for every key, forever. AWT on macOS names a letter key by what the layout prints on
-it and carries no position (a `KeyEvent`'s raw code is only filled in on X11), so on Colemak the S
-position arrives as `VK_R`. The key caps read at startup turn that round: `VK_R` is the position that
-prints R, which is S, so WASD stays WARS. A letter no tracked position prints (`VK_G` comes from the
-T position on Colemak) is ignored rather than filed under its QWERTY place.
-
 One ray is cast per rendered column, so **the rendered width is literally the ray count**:
 `--size` sets the output resolution and `--ss N` renders at N times that and averages back down,
 which means `rays per frame = width x N`. Both combine with `--bench` and `--shot`.
 
-**The render resolution and the window are two different sizes.** The window is the output -
-1920x1080 by default, or `--window` - and the picture is rendered at `--size` (1280x720 by default)
-and scaled into it. Making the window bigger does not add a single ray.
+`,` and `.` change it while the game is running, from an eighth of `--size` to four times it -
+80 rays to 2560 by default. The window does not change size: the render resolution does, and the
+window scales the result, so fewer rays means a coarser picture in the same window. Everything sized
+from the ray count is rebuilt between frames. The HUD and the minimap are drawn on the window rather
+than into the picture, so they stay sharp and the ray count in the HUD stays readable at 80 rays.
 
-### Dynamic resolution
+Measured on an Apple Silicon Mac, whole frame including the downsample, excluding the blit to the
+window:
 
-What a frame costs is the pixels it shades, not the rays it casts: on Haven at 1920x1080, tilting the
-view 30 degrees takes it from 1924 rays to 2826 (+47%) but the frame only from 75.5 to 86.9 ms (+15%),
-and 61% of the time is texture filtering. So the thing to turn is the render resolution, and
-`DynamicResolution` turns it from the measured frame time. It moves along eight steps from half the
-window's width to all of it (1280x720 in a 1920x1080 window is the fourth), aiming at `--fps`
-(60 by default):
-
-- over budget on average over the last 10 frames: one step down, straight away;
-- under 70% of the budget over the last 30 frames: one step up;
-- after a step, 20 frames are not judged, while the buffers are rebuilt;
-- one frame counts for at most 1.5 budgets, so a single hitch (a GC, the OS) cannot cost a step
-  on its own but a stall that lasts does.
-
-Down is quick and up is slow on purpose: a stutter is worse than a picture that is a little soft for
-a second. The 70% margin stops it climbing a step and falling straight back, since no two
-neighbouring steps differ by more than 27% in pixels. `,` and `.` take over by hand (and turn it off);
-`V` hands it back. The HUD and the minimap are drawn on the window rather than into the picture, so
-they stay sharp at any render size.
-
-Measured with `--bench --flat` on an 8-core Apple M3:
-
-| Map | Render size | ms / frame |
+| Rays (WxH) | ms / frame | fps |
 |---|---|---|
-| school | 640x360 | 3.05 |
-| school | 1280x720 | 12.20 (tilted 30 deg: 17.9) |
-| school | 1920x1080 | 31.88 |
-| haven | 640x360 | 5.79 |
-| haven | 1280x720 | 28.47 |
-| haven | 1920x1080 | 75.48 |
-
-The tables further down that give 640x360 as 0.65 ms predate anisotropic filtering and are kept
-for the record only; do not measure a change against them.
-
-### Measuring it (`./bench.sh`)
-
-`./run.sh` used to delete the classes and recompile on every run, which put the compiler in every
-timing; `build.sh` now only compiles when a source is newer than the last build. `--bench` runs 400
-untimed frames first for the JIT, then times every frame of a full turn, level and tilted, and
-prints the median and the 99th percentile rather than a mean.
-
-That still leaves the machine. On a fanless MacBook Air six identical runs spread by 39-55%, and
-they got slower as it went on: the first three at 10 ms, the last three at 12-16 ms. That is the chip
-throttling as it heats, and nothing in the JVM takes it out. `bench.sh` runs a fresh JVM several
-times with a rest in between and reports the median of the run medians with the spread, and with
-two builds (`CP=old CP_B=new ./bench.sh`) it runs them in turn, A B A B, and gives the median of the
-B/A ratios of neighbouring runs, so the heat falls on both sides of the comparison.
+| 320x180 | 0.23 | 4340 |
+| 640x360 (default) | 0.65 | 1540 |
+| 1280x720 | 2.23 | 450 |
+| 1920x1080 | 5.11 | 196 |
+| 2560x1440 | 9.50 | 105 |
+| 3840x2160 | 23.7 | 42 |
+| 7680x4320 | 120 | 8 |
 
 There is no hard limit on the ray count beyond memory (the pixel buffer is `W * H * 4` bytes) and
 the 16384x16384 sanity clamp. The *useful* limit for raw detail is one ray per horizontal pixel of
@@ -146,7 +94,7 @@ windows open:
 | **whole frame** | **27.6 ms (36 fps)** | **8.5 ms (117 fps)** |
 
 Closing the ray view with `R` roughly triples it again - it is a debugging window, not part of the
-engine, so it now starts closed and `R` opens it. What made it expensive was redrawing several hundred translucent antialiased shapes every
+engine. What made it expensive was redrawing several hundred translucent antialiased shapes every
 frame; the grid, regions and shape footprints never move, so they are now drawn once into an image
 (rebuilt only when you zoom) and blitted with the view transform.
 
