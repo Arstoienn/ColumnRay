@@ -73,10 +73,30 @@ final class Materials {
         /** Wrapped bilinear samples, blended between mip levels. out has six scratch components;
          *  the first three receive the RGB multipliers. w is in repetitions of the tile. */
         private void sample(double u, double v, double w, double[] out) {
+            sampleAt(u, v, lod(w), out);
+        }
+
+        /** The mip level, fractional, that a footprint of w repetitions of the tile samples. A strip
+         *  of anisotropic samples shares one footprint, so it can ask once and sampleAt each. */
+        double lod(double w) {
+            double footprint = Math.max(1, w * Math.max(levels[0].sx, levels[0].sy));
+            return Math.min(levels.length - 1, Math.log(footprint) / Math.log(2));
+        }
+
+        /** sampleAt's first component alone, for a texture only ever read as one channel (a blend
+         *  material's height): the same arithmetic on that channel, a third of the fetches. */
+        double sampleAt0(double u, double v, double lod) {
+            u = frac(u);
+            v = frac(v);
+            int lo = (int) lod, hi = Math.min(lo + 1, levels.length - 1);
+            double r = levels[lo].sample0(u, v);
+            if (hi != lo) r += (levels[hi].sample0(u, v) - r) * (lod - lo);
+            return mean[0] == 0 ? 1 : Math.max(0, Math.min(4, r / mean[0]));
+        }
+
+        void sampleAt(double u, double v, double lod, double[] out) {
             u = frac(u);
             v = frac(v);                              // PNG rows increase with the second coordinate
-            double footprint = Math.max(1, w * Math.max(levels[0].sx, levels[0].sy));
-            double lod = Math.min(levels.length - 1, Math.log(footprint) / Math.log(2));
             int lo = (int) lod, hi = Math.min(lo + 1, levels.length - 1);
             levels[lo].sample(u, v, out, 0);
             if (hi != lo) {
@@ -122,6 +142,19 @@ final class Materials {
             return next;
         }
 
+        double sample0(double u, double v) {
+            double x = u * sx - 0.5, y = v * sy - 0.5;
+            int ix = fl(x), iy = fl(y);
+            double fx = x - ix, fy = y - iy;
+            int x0 = Math.floorMod(ix, sx), y0 = Math.floorMod(iy, sy);
+            int x1 = (x0 + 1) % sx, y1 = (y0 + 1) % sy;
+            int a = 3 * (y0 * sx + x0), b = 3 * (y0 * sx + x1);
+            int c = 3 * (y1 * sx + x0), d = 3 * (y1 * sx + x1);
+            double top = rgb[a] + (rgb[b] - rgb[a]) * fx;
+            double bottom = rgb[c] + (rgb[d] - rgb[c]) * fx;
+            return top + (bottom - top) * fy;
+        }
+
         void sample(double u, double v, double[] out, int offset) {
             double x = u * sx - 0.5, y = v * sy - 0.5;
             int ix = fl(x), iy = fl(y);
@@ -141,8 +174,22 @@ final class Materials {
     /** A mesh's own coordinates: u = a p + b q + c, v = d p + e q + f. w is metres, and becomes
      *  repetitions of the image by how much of it one metre covers (the root of the map's area scale). */
     static void mapped(Texture tex, double[] uv, double p, double q, double w, double[] out) {
+        mappedAt(tex, uv, p, q, mappedLod(tex, uv, w), out);
+    }
+
+    /** The mip level mapped() would pick for footprint w, to hand to mappedAt(). */
+    static double mappedLod(Texture tex, double[] uv, double w) {
         double scale = Math.sqrt(Math.abs(uv[0] * uv[4] - uv[1] * uv[3]));
-        tex.sample(uv[0] * p + uv[1] * q + uv[2], uv[3] * p + uv[4] * q + uv[5], w * scale, out);
+        return tex.lod(w * scale);
+    }
+
+    static void mappedAt(Texture tex, double[] uv, double p, double q, double lod, double[] out) {
+        tex.sampleAt(uv[0] * p + uv[1] * q + uv[2], uv[3] * p + uv[4] * q + uv[5], lod, out);
+    }
+
+    /** mappedAt's first component alone. */
+    static double mappedAt0(Texture tex, double[] uv, double p, double q, double lod) {
+        return tex.sampleAt0(uv[0] * p + uv[1] * q + uv[2], uv[3] * p + uv[4] * q + uv[5], lod);
     }
 
     /**
