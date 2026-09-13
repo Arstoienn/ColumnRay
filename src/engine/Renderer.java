@@ -238,6 +238,8 @@ final class Renderer {
         private boolean baked;                              // ...and whether to use them
         private final float[] L = new float[3];             // one lightmap sample
         private final double[] T = new double[6];           // RGB texture factor + mip scratch, per thread
+        private Shape lodShape;                              // mappedSample's mip levels, for this shape and footprint
+        private double lodW = Double.NaN, lodImg, lodH, lodB;
 
         // The stack of storeys the ray is currently inside, lowest floor first. Empty means off the
         // map. Everything *not* inside one of these [floor, ceil) ranges is solid: that is the floor
@@ -810,15 +812,26 @@ final class Renderer {
         /** One sample of a shape's own texture at (p, q), into out: its image, or for a blend
          *  material its two layers mixed by the vertex alpha and height there (Materials.blend). */
         private void mappedSample(Shape s, double p, double q, double w, double[] out) {
-            Materials.mapped(s.img, s.uv, p, q, w, out);
+            // The mip level depends only on the shape and the footprint, and a strip of
+            // anisotropic samples repeats both: two logarithms per texture, once per strip.
+            if (s != lodShape || w != lodW) {
+                lodShape = s;
+                lodW = w;
+                lodImg = Materials.mappedLod(s.img, s.uv, w);
+                if (s.imgB != null) {
+                    lodH = Materials.mappedLod(s.hmap, s.uv, w);
+                    lodB = Materials.mappedLod(s.imgB, s.uv, w);
+                }
+            }
+            Materials.mappedAt(s.img, s.uv, p, q, lodImg, out);
             if (s.imgB != null) {
                 double r = out[0], g = out[1], b = out[2];
-                Materials.mapped(s.hmap, s.uv, p, q, w, out);
-                double k = Materials.blend(out[0], s.va[0] * p + s.va[1] * q + s.va[2], s.vb, s.inv);
+                double h = Materials.mappedAt0(s.hmap, s.uv, p, q, lodH);
+                double k = Materials.blend(h, s.va[0] * p + s.va[1] * q + s.va[2], s.vb, s.inv);
                 if (k <= 0) {
                     out[0] = r; out[1] = g; out[2] = b;
                 } else {
-                    Materials.mapped(s.imgB, s.uv, p, q, w, out);
+                    Materials.mappedAt(s.imgB, s.uv, p, q, lodB, out);
                     out[0] = r + (out[0] - r) * k;
                     out[1] = g + (out[1] - g) * k;
                     out[2] = b + (out[2] - b) * k;
