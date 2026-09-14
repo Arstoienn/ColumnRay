@@ -8,6 +8,8 @@ maps/haven.json
 maps/haven/
 maps/haven-tex.png
 maps/haven-img/
+
+# Blender source scenes are large and not part of the engine.
 *.blend
 
 # Generated output
