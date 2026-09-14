@@ -103,6 +103,57 @@ Maps are JSON files; `maps/school.json` documents the format in comments at the 
 - **Chunks** let large maps store shapes in separate files.
 - **Lighting**, **textures**, **images** and the spawn point are configured per map.
 
+## Haven
+
+**Mid Doors**
+
+![Mid Doors](docs/images/mid-doors.jpg)
+
+**Garage**
+
+![Garage](docs/images/garage.jpg)
+
+**C Long**
+
+![C Long](docs/images/c-long.jpg)
+
+**Flowerpot**
+
+![Flowerpot](docs/images/flowerpot.jpg)
+
+**Heaven and Hell**
+
+![Heaven, left, and Hell, right](docs/images/heaven-hell.jpg)
+
+![Ray views of Heaven, left, and Hell, right](docs/images/heaven-hell-rays.jpg)
+
+Heaven, on the left, is the upper floor of A Tower; Hell, on the right, is the room directly below
+it. Beneath each view is its ray view, the engine's top-down debug window (`R`), which draws every
+column's ray over the plan of the map and lists, for the centre column, each shape the ray met and
+how many rows it filled.
+
+The map is a 64 m by 64 m section of Haven, a map from VALORANT, converted triangle by triangle
+from a Blender scene: about 930,000 shapes and 408 baked material textures. It is not part of this
+repository: the converter writes it to `maps/haven.json` from a `.blend` file you supply yourself,
+and those paths are git-ignored - see the disclaimer. All of the screenshots above are rendered by
+this engine with baked lighting. Mid Doors, Garage and C Long are inside that section. Flowerpot,
+Heaven and Hell are at A site, outside it, and were rendered from a separate conversion of that
+area.
+
+```bash
+JAVA_OPTS=-Xmx12g ./run.sh maps/haven.json --flat --feet 3   # flat shading, loads in about 10 s
+JAVA_OPTS=-Xmx12g ./run.sh maps/haven.json --feet 3          # baked lighting
+```
+
+- Baking the lighting takes about 15 minutes on an 8-core Apple M3 and uses around 6 GB of
+  memory. The bake runs on every launch.
+- A 1280x720 frame takes roughly 110-150 ms on the same machine, limited by per-pixel texture
+  filtering on the CPU.
+- Beyond the converted section the map ends in open sky.
+
+Source: [Valorant - Heaven Map](https://open3dlab.com/project/4a0d5de0-05ac-4db3-a53b-6555879bc29d/)
+by AC_NONE on Open3DLab, licensed CC BY-NC-ND 4.0. See the disclaimer below.
+
 ## Benchmarking and verification
 
 - `./bench.sh [map] [size] [runs]` runs `--bench` in several fresh JVMs and reports the median.
@@ -128,20 +179,23 @@ Maps are JSON files; `maps/school.json` documents the format in comments at the 
 | `src/engine/Keys.java` | Physical key state |
 | `src/engine/Json.java` | JSON parser (supports `//` comments) |
 | `maps/school.json` | Demo map |
+| `maps/haven.json`, `maps/haven/`, `maps/haven-img/`, `maps/haven-tex.png` | Where the converter writes the Haven section if you build it: header, shape chunks, material images, texture atlas. Git-ignored |
+| `docs/images/` | README screenshots |
 | `docs/ENGINEERING.md` | Design notes, measurements and the reasoning behind each subsystem |
 
 ## License
 
 The source code is released under the MIT License; see [LICENSE](LICENSE). The license does not
-cover any third-party assets.
+cover the Haven screenshots, or a Haven conversion you build yourself; see the disclaimer.
 
 ## Disclaimer
 
-Some measurements in `docs/ENGINEERING.md` were taken on a map converted from Haven, a map from
-VALORANT, with separate tools that are not part of this repository. VALORANT and Haven are
-trademarks and copyrighted works of Riot Games, Inc. This project is not affiliated with or
-endorsed by Riot Games.
+The screenshots in `docs/images/` are rendered from a map derived from "Valorant - Heaven Map" by
+AC_NONE on Open3DLab (CC BY-NC-ND 4.0), which contains assets from VALORANT. VALORANT and Haven
+are trademarks and copyrighted works of Riot Games, Inc. This project is not affiliated with or
+endorsed by Riot Games. The screenshots are included for non-commercial demonstration only, remain
+the property of their respective owners, and are not covered by this repository's MIT License.
 
-No Riot Games assets are distributed with this repository. Converted maps and textures
-(`maps/haven.json`, `maps/haven/`, `maps/haven-img/`, `maps/haven-tex.png`) are generated
-locally from a `.blend` file the user supplies, and are excluded from version control.
+No Riot Games assets are distributed with this repository. The converted map and textures
+(`maps/haven.json`, `maps/haven/`, `maps/haven-img/`, `maps/haven-tex.png`) are generated locally
+from a `.blend` file you supply yourself, and are excluded from version control.
