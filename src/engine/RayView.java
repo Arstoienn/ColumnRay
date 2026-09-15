@@ -16,8 +16,6 @@ import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.Window;
-import java.awt.event.KeyAdapter;
-import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.AffineTransform;
@@ -163,25 +161,24 @@ final class RayView {
         frame.pack();
         frame.setLocation(owner.getX() + owner.getWidth() + 6, owner.getY());
         frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
-        frame.setVisible(true);
+        // Closed until R asks for it: it is a debugging window, and redrawing it every frame cost
+        // about 5 ms. pack() has made the canvas displayable, which is all the buffer strategy needs.
         canvas.createBufferStrategy(2);
         canvas.addMouseWheelListener(e ->
                 zoom = Math.max(4, Math.min(240, zoom * Math.pow(1.15, -e.getPreciseWheelRotation()))));
         canvas.addMouseListener(new MouseAdapter() {
-            @Override public void mousePressed(MouseEvent e) { canvas.requestFocus(); }   // so N reaches the key listener
+            @Override public void mousePressed(MouseEvent e) { canvas.requestFocus(); }
         });
-        canvas.addKeyListener(new KeyAdapter() {
-            @Override public void keyPressed(KeyEvent e) {
-                if (e.getKeyCode() == KeyEvent.VK_N) followTurn = !followTurn;
-            }
-        });
-        canvas.requestFocus();
+        canvas.addKeyListener(Keys.listener());                  // only used where the key state cannot be read
     }
 
     boolean visible() {
         JFrame f = frame;
         return f != null && f.isVisible();
     }
+
+    /** N: keep the player pointing up, or let the world stay put and the player turn instead. */
+    void toggleFollow() { followTurn = !followTurn; }
 
     void toggle() {
         if (frame != null) EventQueue.invokeLater(() -> frame.setVisible(!frame.isVisible()));

@@ -1,3 +1,16 @@
 .DS_Store
 out/
 *.log
+
+# Converted Riot assets: generated locally, never distributed.
+# maps/haven* is rebuilt from a .blend you supply yourself - see the Disclaimer.
+maps/haven.json
+maps/haven/
+maps/haven-tex.png
+maps/haven-img/
+*.blend
+
+# Generated output
+scratch/
+__pycache__/
+*.pyc
