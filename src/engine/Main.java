@@ -528,9 +528,62 @@ public final class Main {
             if (r.floor > stand + STEP || r.ceil < head(stand)) return true;
         }
         for (Shape s : world.shapesNear(px, py, RADIUS))
-            if (s.bottomAt(px, py) < head(stand) && s.topAt(px, py) > stand + STEP
-                    && Geometry.overlaps(px, py, RADIUS, s)) return true;
+            if (Geometry.overlaps(px, py, RADIUS, s)
+                    && bottomNear(s, px, py) < head(stand) && topNear(s, px, py) > stand + STEP) return true;
         return false;
+    }
+
+    /**
+     * A tilted top or bottom is a plane, and read past the shape's own edge it keeps going. The body
+     * is a disc, so it touches shapes whose footprint does not contain its centre - and for the
+     * near-vertical triangles of a converted mesh (a roof's fascia climbs 60 m per metre) the plane
+     * read 20 cm beyond the sliver was metres from any real part of it: a roof 10 m up stood in
+     * front of the player as a wall at chest height, and on Haven twelve of sixteen directions were
+     * blocked from the first step. So read the height where the shape is nearest the body.
+     */
+    private double topNear(Shape s, double px, double py) {
+        if (s.hx == 0 && s.hy == 0) return s.h;
+        nearest(s, px, py);
+        return s.topAt(near[0], near[1]);
+    }
+
+    private double bottomNear(Shape s, double px, double py) {
+        if (s.zx == 0 && s.zy == 0) return s.z0;
+        nearest(s, px, py);
+        return s.bottomAt(near[0], near[1]);
+    }
+
+    private final double[] near = new double[2];                 // update() is the only caller: one thread
+
+    /** The point of the shape's footprint nearest (px, py), into {@link #near}. */
+    private void nearest(Shape s, double px, double py) {
+        double nx = px, ny = py;
+        switch (s.kind) {
+            case SEG -> {
+                double ex = s.bx - s.ax, ey = s.by - s.ay, len2 = ex * ex + ey * ey;
+                double u = len2 == 0 ? 0 : Math.max(0, Math.min(1, ((px - s.ax) * ex + (py - s.ay) * ey) / len2));
+                nx = s.ax + ex * u;
+                ny = s.ay + ey * u;
+            }
+            case CIRCLE -> {
+                double d = Math.hypot(px - s.cx, py - s.cy);
+                if (d > s.r) { nx = s.cx + (px - s.cx) * s.r / d; ny = s.cy + (py - s.cy) * s.r / d; }
+            }
+            case POLY -> {
+                if (!Geometry.pointInPoly(px, py, s.xs, s.ys)) {
+                    double best = Double.POSITIVE_INFINITY;
+                    for (int i = 0, n = s.xs.length; i < n; i++) {
+                        int j = (i + 1) % n;
+                        double ax = s.xs[i], ay = s.ys[i], ex = s.xs[j] - ax, ey = s.ys[j] - ay, len2 = ex * ex + ey * ey;
+                        double u = len2 == 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * ex + (py - ay) * ey) / len2));
+                        double qx = ax + ex * u, qy = ay + ey * u, d = (px - qx) * (px - qx) + (py - qy) * (py - qy);
+                        if (d < best) { best = d; nx = qx; ny = qy; }
+                    }
+                }
+            }
+        }
+        near[0] = nx;
+        near[1] = ny;
     }
 
     /** { highest surface we can stand on, lowest thing above our head } */
@@ -542,7 +595,7 @@ public final class Main {
         }
         for (Shape s : world.shapesNear(px, py, RADIUS)) {
             if (!Geometry.overlaps(px, py, RADIUS, s)) continue;
-            double top = s.topAt(px, py);        // a tilted top is a different height under each foot
+            double top = topNear(s, px, py);     // a tilted top: its height where it meets the body
             if (top <= feet + STEP) ground = Math.max(ground, top);
         }
         if (ground == Double.NEGATIVE_INFINITY) ground = feet;
@@ -555,8 +608,8 @@ public final class Main {
             if (r.ceil > ground) ceil = Math.min(ceil, r.ceil);
         }
         for (Shape s : world.shapesNear(px, py, RADIUS))
-            if (Geometry.overlaps(px, py, RADIUS, s) && s.bottomAt(px, py) >= ground + STEP)
-                ceil = Math.min(ceil, s.bottomAt(px, py));
+            if (Geometry.overlaps(px, py, RADIUS, s) && bottomNear(s, px, py) >= ground + STEP)
+                ceil = Math.min(ceil, bottomNear(s, px, py));
         return new double[] {ground, ceil};
     }
 
