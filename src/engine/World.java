@@ -220,6 +220,7 @@ final class World {
     final double spawnX, spawnY, spawnAngle;
     final double minX, minY, maxX, maxY;
     final Map<String, Object> lighting;   // the map's "lighting" block, or null; read by Lighting
+    final List<Path> sources = new ArrayList<>();   // every file the map was read from, for LightCache's key
     double minimapRotate;                 // "minimap": {"rotate": degrees clockwise, in quarter turns}
 
     private World(String name, Region[] regions, Shape[] shapes, double cell,
@@ -406,9 +407,11 @@ final class World {
         // A big map keeps its shapes in pieces beside it: "chunks": ["haven/0_0.json", ...], each
         // {"shapes": [...]}, paths relative to this file. One 33 MB file had to be rewritten whole
         // for any change anywhere, and a diff of it said nothing.
+        List<Path> sources = new ArrayList<>(List.of(path));
         if (root.get("chunks") != null)
             for (Object c : list(root.get("chunks"))) {
                 Path file = path.resolveSibling((String) c);
+                sources.add(file);
                 Map<String, Object> chunk = obj(Json.parse(Files.readString(file)));
                 for (Object o : list(chunk.get("shapes"))) parseShape(obj(o), 0, 0, shapes, textures);
             }
@@ -421,6 +424,7 @@ final class World {
                 sun[0], sun[1], sp[0], sp[1], Math.toRadians(num(spawn, "angle", 0)),
                 root.get("lighting") instanceof Map ? obj(root.get("lighting")) : null);
         if (root.get("minimap") instanceof Map) world.minimapRotate = num(obj(root.get("minimap")), "rotate", 0);
+        world.sources.addAll(sources);
         return world;
     }
 
