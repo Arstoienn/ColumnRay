@@ -113,6 +113,7 @@ final class Lighting {
     private final double[][] hemi;                   // cosine-weighted directions around +z
     private final int samples, bounces, shadow, blurs;
     long rays;                                       // shadow and gather rays cast by the bake
+    private java.nio.file.Path fromCache;            // set when the texels were read back rather than baked
     private final double reach, reflect, sunSoft, lampSize;
 
     static Lighting bake(World w) {
@@ -134,8 +135,12 @@ final class Lighting {
                     for (float v : m.rgb) { sum += v; mx = Math.max(mx, v); n++; }
             System.out.printf("lightmap: mean %.3f, max %.3f over %,d channels%n", sum / n, mx, n);
         }
-        System.out.printf("lighting: %,d texels on %,d surfaces, %d lights, %,d rays, baked in %.1f s (%,.0f rays/s)%n",
-                texels, maps, l.lights.size(), l.rays, s, l.rays / s);
+        if (l.fromCache != null)
+            System.out.printf("lighting: %,d texels on %,d surfaces, %d lights, %,d rays when baked, read from %s in %.1f s%n",
+                    texels, maps, l.lights.size(), l.rays, l.fromCache, s);
+        else
+            System.out.printf("lighting: %,d texels on %,d surfaces, %d lights, %,d rays, baked in %.1f s (%,.0f rays/s)%n",
+                    texels, maps, l.lights.size(), l.rays, s, l.rays / s);
         return l;
     }
 
@@ -258,6 +263,20 @@ final class Lighting {
         // One task per texel row across every surface, spread over all cores. The direct pass
         // stands alone; every gather pass after it reads the totals the pass before wrote, so each
         // one adds a bounce. The sky arrives with the first of them.
+        // Baked before with the same files, settings and code: read the texels back instead.
+        byte[] key = LightCache.key(w);
+        java.nio.file.Path cacheFile = key == null ? null : LightCache.file(w, key);
+        List<LightMap> maps = jobs.stream().map(Job::map).toList();
+        if (cacheFile != null) {
+            long[] cached = new long[1];
+            if (LightCache.load(cacheFile, key, maps, cached)) {
+                rays = cached[0];
+                fromCache = cacheFile;
+                return;
+            }
+            for (LightMap m : maps) Arrays.fill(m.rgb, 0);         // a file that did not fit may have written some
+        }
+
         int[] start = new int[jobs.size() + 1];
         for (int k = 0; k < jobs.size(); k++) start[k + 1] = start[k] + jobs.get(k).map.h;
         List<Occluder> all = Collections.synchronizedList(new ArrayList<>());
@@ -291,6 +310,7 @@ final class Lighting {
         }
         jobs.parallelStream().forEach(j -> dilate(j.map, j.ok));
         for (Occluder o : all) rays += o.rays;
+        if (cacheFile != null) LightCache.save(cacheFile, key, maps, rays);
     }
 
     /** Print how long a pass took, and hand back the clock for the next one. */
