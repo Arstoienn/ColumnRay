@@ -14,7 +14,8 @@ and textured geometry while keeping the column-based renderer.
 - Multiple storeys through stacked regions, including open-air regions and floor openings
 - True camera pitch, implemented as an exact projective warp of the column renderer's output
 - Procedural and image textures with mip mapping and anisotropic filtering
-- Baked lightmaps: sun, sky, point and panel lights, soft shadows and two bounces of indirect light
+- Baked lightmaps: sun, sky, point and panel lights, soft shadows and two bounces of indirect light,
+  cached on disk and reused until the map, the settings or the bake code change
 - Dynamic resolution driven by measured frame time
 - Supersampled anti-aliasing
 - Minimap computed from walkable space, and a top-down debug view of the rays
@@ -67,6 +68,7 @@ JVM system properties can be set through `JAVA_OPTS`, for example
 |---|---|
 | `light.texel` | Lightmap texel size in metres |
 | `light.stats` | Print lightmap bake statistics |
+| `light.cache`, `light.cache.dir` | `false` bakes without the lightmap cache; the folder it is kept in (`.lightcache`) |
 | `bench.warmup`, `bench.frames` | Untimed and timed frames for `--bench` (400, 720) |
 | `minimap.debug` | Highlight standable ground the minimap flood did not reach |
 | `grade.sat`, `grade.lift` | Colour grading parameters |
@@ -145,8 +147,9 @@ JAVA_OPTS=-Xmx12g ./run.sh maps/haven.json --flat --feet 3   # flat shading, loa
 JAVA_OPTS=-Xmx12g ./run.sh maps/haven.json --feet 3          # baked lighting
 ```
 
-- Baking the lighting takes about 15 minutes on an 8-core Apple M3 and uses around 6 GB of
-  memory. The bake runs on every launch.
+- The first launch with lighting bakes it, which takes about 15 minutes on an 8-core Apple M3 and
+  uses around 6 GB of memory. The result is kept in `.lightcache/`, and later launches read it
+  back in a few seconds.
 - A 1280x720 frame takes roughly 110-150 ms on the same machine, limited by per-pixel texture
   filtering on the CPU.
 - Beyond the converted section the map ends in open sky.
@@ -171,6 +174,7 @@ by AC_NONE on Open3DLab, licensed CC BY-NC-ND 4.0. See the disclaimer below.
 | `src/engine/World.java` | Regions, shapes, JSON loading, acceleration grid |
 | `src/engine/Materials.java` | Procedural and image textures, filtering |
 | `src/engine/Lighting.java` | Lightmap bake |
+| `src/engine/LightCache.java` | Baked lightmaps on disk, keyed by the map, settings and bake code |
 | `src/engine/Occluder.java` | Line of sight and nearest-hit queries |
 | `src/engine/Main.java` | Window, input, player physics, HUD, command line |
 | `src/engine/DynamicResolution.java` | Frame-time-driven render scaling |
