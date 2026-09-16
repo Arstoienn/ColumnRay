@@ -110,8 +110,15 @@ Maps are JSON files; `maps/school.json` documents the format in comments at the 
 
 ## Haven
 
-A section of VALORANT's Haven converted for this engine; the map and how to run it are in
-**[ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven)**.
+A section of VALORANT's Haven converted for this engine. The map is a submodule at `maps/haven`,
+kept in its own repository, [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven),
+because it is about 290 MB:
+
+```bash
+git clone --recursive https://github.com/Arstoienn/ColumnRay.git   # or, in an existing clone:
+git submodule update --init maps/haven
+JAVA_OPTS=-Xmx12g ./run.sh maps/haven/haven.json --feet 3
+```
 
 **Mid Doors**
 
@@ -166,6 +173,7 @@ how many rows it filled.
 | `src/engine/Keys.java` | Physical key state |
 | `src/engine/Json.java` | JSON parser (supports `//` comments) |
 | `maps/school.json` | Demo map |
+| `maps/haven/` | Submodule: the Haven map, in [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven) |
 | `docs/images/` | README screenshots |
 | `docs/ENGINEERING.md` | Design notes, measurements and the reasoning behind each subsystem |
 

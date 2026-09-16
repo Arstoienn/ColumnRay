@@ -2,13 +2,6 @@
 out/
 *.log
 
-# Converted Riot assets: generated locally, never distributed.
-# maps/haven* is rebuilt from a .blend you supply yourself - see the Disclaimer.
-maps/haven.json
-maps/haven/
-maps/haven-tex.png
-maps/haven-img/
-
 # Blender source scenes are large and not part of the engine.
 *.blend
 
@@ -19,3 +12,6 @@ __pycache__/
 
 # Baked lightmaps (LightCache), rebuilt on demand
 .lightcache/
+
+# The Blender converter, kept beside the engine but not part of it.
+/tools/
