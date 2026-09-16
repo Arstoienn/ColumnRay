@@ -6,6 +6,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ./build.sh                     # compiles only when a source changed
 # JAVA_OPTS reaches the JVM, which is where the bake is tuned from:
-#   JAVA_OPTS=-Dlight.texel=1.2 ./run.sh maps/haven.json --feet 3     a quarter of the texels
+#   JAVA_OPTS=-Dlight.texel=1.2 ./run.sh maps/school.json            coarser texels, a faster bake
 # --enable-native-access: Keys reads the physical key state from macOS through the FFM API.
 exec java --enable-native-access=ALL-UNNAMED ${JAVA_OPTS:-} -cp out engine.Main "$@"

@@ -28,6 +28,19 @@ and textured geometry while keeping the column-based renderer.
 - Developed and tested on macOS. On other platforms, input falls back to AWT key events read
   as a US QWERTY layout
 
+## Haven map
+
+The VALORANT map shown in the screenshots below is a separate download:
+**[ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven)** (about 290 MB). Clone it next
+to this repository and pass its map to `run.sh`:
+
+```bash
+git clone https://github.com/Arstoienn/ColumnRay.git
+git clone https://github.com/Arstoienn/ColumnRay-Haven.git
+cd ColumnRay
+JAVA_OPTS=-Xmx12g ./run.sh ../ColumnRay-Haven/haven.json --feet 3
+```
+
 ## Building and running
 
 ```bash
@@ -138,24 +151,12 @@ column's ray over the plan of the map and lists, for the centre column, each sha
 how many rows it filled.
 
 The map is a 64 m by 64 m section of Haven, a map from VALORANT, converted triangle by triangle
-from a Blender scene: about 930,000 shapes and 408 baked material textures. It is not part of this
-repository: the converter writes it to `maps/haven.json` from a `.blend` file you supply yourself,
-and those paths are git-ignored - see the disclaimer. All of the screenshots above are rendered by
-this engine with baked lighting. Mid Doors, Garage and C Long are inside that section. Flowerpot,
-Heaven and Hell are at A site, outside it, and were rendered from a separate conversion of that
-area.
-
-```bash
-JAVA_OPTS=-Xmx12g ./run.sh maps/haven.json --flat --feet 3   # flat shading, loads in about 10 s
-JAVA_OPTS=-Xmx12g ./run.sh maps/haven.json --feet 3          # baked lighting
-```
-
-- The first launch with lighting bakes it, which takes about 15 minutes on an 8-core Apple M3 and
-  uses around 6 GB of memory. The result is kept in `.lightcache/`, and later launches read it
-  back in a few seconds.
-- A 1280x720 frame takes roughly 110-150 ms on the same machine, limited by per-pixel texture
-  filtering on the CPU.
-- Beyond the converted section the map ends in open sky.
+from a Blender scene: about 930,000 shapes and 408 baked material textures. It is kept in its own
+repository, [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven), which has the
+instructions for running it. All of the screenshots above are rendered by this engine with baked
+lighting. Mid Doors, Garage and C Long are inside that section. Flowerpot, Heaven and Hell are at
+A site, outside it, and were rendered from a separate conversion of that area that is not
+published.
 
 Source: [Valorant - Heaven Map](https://open3dlab.com/project/4a0d5de0-05ac-4db3-a53b-6555879bc29d/)
 by AC_NONE on Open3DLab, licensed CC BY-NC-ND 4.0. See the disclaimer below.
@@ -186,23 +187,20 @@ by AC_NONE on Open3DLab, licensed CC BY-NC-ND 4.0. See the disclaimer below.
 | `src/engine/Keys.java` | Physical key state |
 | `src/engine/Json.java` | JSON parser (supports `//` comments) |
 | `maps/school.json` | Demo map |
-| `maps/haven.json`, `maps/haven/`, `maps/haven-img/`, `maps/haven-tex.png` | Where the converter writes the Haven section if you build it: header, shape chunks, material images, texture atlas. Git-ignored |
 | `docs/images/` | README screenshots |
 | `docs/ENGINEERING.md` | Design notes, measurements and the reasoning behind each subsystem |
 
 ## License
 
 The source code is released under the MIT License; see [LICENSE](LICENSE). The license does not
-cover the Haven screenshots, or a Haven conversion you build yourself; see the disclaimer.
+cover the Haven screenshots; see the disclaimer.
 
 ## Disclaimer
 
 The screenshots in `docs/images/` are rendered from a map derived from "Valorant - Heaven Map" by
-AC_NONE on Open3DLab (CC BY-NC-ND 4.0), which contains assets from VALORANT. VALORANT and Haven
-are trademarks and copyrighted works of Riot Games, Inc. This project is not affiliated with or
-endorsed by Riot Games. The screenshots are included for non-commercial demonstration only, remain
-the property of their respective owners, and are not covered by this repository's MIT License.
-
-No Riot Games assets are distributed with this repository. The converted map and textures
-(`maps/haven.json`, `maps/haven/`, `maps/haven-img/`, `maps/haven-tex.png`) are generated locally
-from a `.blend` file you supply yourself, and are excluded from version control.
+AC_NONE on Open3DLab (CC BY-NC-ND 4.0), which contains assets from VALORANT. The map itself is not
+part of this repository; it is published separately in
+[ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven). VALORANT and Haven are trademarks
+and copyrighted works of Riot Games, Inc. This project is not affiliated with or endorsed by Riot
+Games. The screenshots are included for non-commercial demonstration only, remain the property of
+their respective owners, and are not covered by this repository's MIT License.

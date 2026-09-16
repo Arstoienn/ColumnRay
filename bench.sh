@@ -2,7 +2,7 @@
 # Time a map the same way every time, and say how far to trust the number.
 #
 #   ./bench.sh                                          school, 640x360, 5 runs
-#   ./bench.sh maps/haven.json 854x480 8                haven, 854x480, 8 runs
+#   ./bench.sh ../ColumnRay-Haven/haven.json 854x480 8  haven, 854x480, 8 runs
 #   CP=old/classes CP_B=new/classes ./bench.sh ...      A/B: two builds, run alternately
 #   JAVA_OPTS_B=-XX:ActiveProcessorCount=4 ./bench.sh   A/B: one build, two sets of JVM options
 #   REST=60 ./bench.sh ...                              seconds to let the CPU cool between runs
