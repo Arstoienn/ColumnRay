@@ -28,19 +28,6 @@ and textured geometry while keeping the column-based renderer.
 - Developed and tested on macOS. On other platforms, input falls back to AWT key events read
   as a US QWERTY layout
 
-## Haven map
-
-The VALORANT map shown in the screenshots below is a separate download:
-**[ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven)** (about 290 MB). Clone it next
-to this repository and pass its map to `run.sh`:
-
-```bash
-git clone https://github.com/Arstoienn/ColumnRay.git
-git clone https://github.com/Arstoienn/ColumnRay-Haven.git
-cd ColumnRay
-JAVA_OPTS=-Xmx12g ./run.sh ../ColumnRay-Haven/haven.json --feet 3
-```
-
 ## Building and running
 
 ```bash
@@ -123,6 +110,9 @@ Maps are JSON files; `maps/school.json` documents the format in comments at the 
 
 ## Haven
 
+A section of VALORANT's Haven converted for this engine; the map and how to run it are in
+**[ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven)**.
+
 **Mid Doors**
 
 ![Mid Doors](docs/images/mid-doors.jpg)
@@ -149,17 +139,6 @@ Heaven, on the left, is the upper floor of A Tower; Hell, on the right, is the r
 it. Beneath each view is its ray view, the engine's top-down debug window (`R`), which draws every
 column's ray over the plan of the map and lists, for the centre column, each shape the ray met and
 how many rows it filled.
-
-The map is a 64 m by 64 m section of Haven, a map from VALORANT, converted triangle by triangle
-from a Blender scene: about 930,000 shapes and 408 baked material textures. It is kept in its own
-repository, [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven), which has the
-instructions for running it. All of the screenshots above are rendered by this engine with baked
-lighting. Mid Doors, Garage and C Long are inside that section. Flowerpot, Heaven and Hell are at
-A site, outside it, and were rendered from a separate conversion of that area that is not
-published.
-
-Source: [Valorant - Heaven Map](https://open3dlab.com/project/4a0d5de0-05ac-4db3-a53b-6555879bc29d/)
-by AC_NONE on Open3DLab, licensed CC BY-NC-ND 4.0. See the disclaimer below.
 
 ## Benchmarking and verification
 
@@ -197,7 +176,8 @@ cover the Haven screenshots; see the disclaimer.
 
 ## Disclaimer
 
-The screenshots in `docs/images/` are rendered from a map derived from "Valorant - Heaven Map" by
+The screenshots in `docs/images/` are rendered from a map derived from
+["Valorant - Heaven Map"](https://open3dlab.com/project/4a0d5de0-05ac-4db3-a53b-6555879bc29d/) by
 AC_NONE on Open3DLab (CC BY-NC-ND 4.0), which contains assets from VALORANT. The map itself is not
 part of this repository; it is published separately in
 [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven). VALORANT and Haven are trademarks
