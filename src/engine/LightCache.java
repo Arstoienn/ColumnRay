@@ -200,12 +200,33 @@ final class LightCache {
         }
     }
 
+    /** Temporary files from a write that was interrupted, left behind for over a day. */
+    private static void sweep(Path dir) {
+        long old = System.currentTimeMillis() - 24 * 60 * 60 * 1000L;
+        try (Stream<Path> files = Files.list(dir)) {
+            for (Path f : files.toList()) {
+                String n = f.getFileName().toString();
+                if (n.startsWith("bake") && n.endsWith(".tmp")
+                        && Files.getLastModifiedTime(f).toMillis() < old) Files.deleteIfExists(f);
+            }
+        } catch (IOException tidyingIsOptional) {
+            // Nothing here is worth failing a bake over; the files are a few megabytes at worst.
+        }
+    }
+
     /** Write the finished bake. A failure only costs the next launch a bake; it is reported, not thrown. */
     static void save(Path file, byte[] key, List<Lighting.LightMap> maps, long rays) {
         Path tmp = null;
         try {
-            Files.createDirectories(file.toAbsolutePath().getParent());
-            tmp = Files.createTempFile(file.toAbsolutePath().getParent(), "bake", ".tmp");
+            Path dir = file.toAbsolutePath().getParent();
+            Files.createDirectories(dir);
+            sweep(dir);
+            tmp = Files.createTempFile(dir, "bake", ".tmp");
+            // A write that never finishes - Ctrl-C, a full disk, the power - leaves the real file
+            // untouched, because it is only ever replaced by a whole one. What it does leave is
+            // this temporary file, so it goes at exit too, and sweep() clears up after the times
+            // that was not reached either.
+            tmp.toFile().deleteOnExit();
             Deflater deflater = new Deflater(Deflater.BEST_SPEED);
             try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(
                     new DeflaterOutputStream(Files.newOutputStream(tmp), deflater, 1 << 20), 1 << 20))) {

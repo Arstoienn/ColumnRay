@@ -115,6 +115,9 @@ public final class Main {
     private DynamicResolution steer;
     private volatile int wantScale = -1;                         // set by a key, applied between frames
     private double startFeet = Double.NaN;                       // --feet: which storey to start on
+    /** False once something has asked the game to stop: Escape, the window's close button, or a
+     *  signal. Written from the event thread and from a shutdown hook, read by the loop. */
+    private volatile boolean running = true;
     // --shots: stand at exactly the height asked for instead of on whatever the map has here.
     // Snapping to our own floor moved the eye up to 25 cm away from where the reference camera
     // stands, which tilts the whole frame out of line; unsnapped, a floor that came out at the
@@ -337,7 +340,10 @@ public final class Main {
             frame.add(canvas);
             frame.pack();
             frame.setLocation(screen.x + 8, screen.y + 8);
-            frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+            frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+            frame.addWindowListener(new java.awt.event.WindowAdapter() {
+                @Override public void windowClosing(java.awt.event.WindowEvent e) { running = false; }
+            });
             frame.setVisible(true);
             canvas.createBufferStrategy(2);
             installInput(canvas);
@@ -355,8 +361,24 @@ public final class Main {
         scaleIx = DynamicResolution.nearest(W / (double) winW);
         autoRes = targetFps > 0;
         steer = new DynamicResolution(1000.0 / Math.max(1, targetFps), scaleIx);
+        // Ctrl-C, or a shell closing, arrives here rather than stopping the JVM where it stands.
+        // The hook waits for the loop to finish the frame it is on, so that a bake being written
+        // at that moment is either replaced whole or not at all - which is what LightCache's
+        // write-then-rename is for, and which only holds if the process lives long enough to
+        // finish the rename.
+        Thread loop = Thread.currentThread();
+        Thread stopped = new Thread(() -> {
+            running = false;
+            try {
+                loop.join(2000);
+            } catch (InterruptedException giveUp) {
+                Thread.currentThread().interrupt();
+            }
+        }, "columnray-stop");
+        Runtime.getRuntime().addShutdownHook(stopped);
+
         long last = System.nanoTime();
-        while (true) {
+        while (running) {
             long now = System.nanoTime();
             double dt = Math.min(0.05, (now - last) / 1e9);
             last = now;
@@ -373,6 +395,15 @@ public final class Main {
             fps = fps == 0 ? 1 / Math.max(dt, 1e-6) : fps * 0.95 + 0.05 / Math.max(dt, 1e-6);
             if (System.nanoTime() - now < 4_000_000) Thread.sleep(2);
         }
+        try {
+            Runtime.getRuntime().removeShutdownHook(stopped);
+        } catch (IllegalStateException alreadyShuttingDown) {
+            // The hook is what stopped us. There is nothing to remove and nothing to worry about.
+        }
+        SwingUtilities.invokeAndWait(() -> {
+            rayView.close();
+            for (Window w : Window.getWindows()) w.dispose();
+        });
     }
 
     private void installInput(Canvas canvas) {
@@ -413,7 +444,7 @@ public final class Main {
             if (!down(key)) { heldLastFrame.remove(key); continue; }
             if (!heldLastFrame.add(key)) continue;               // still held from last frame
             switch (key) {
-                case Keys.ESCAPE -> System.exit(0);
+                case Keys.ESCAPE -> running = false;
                 case Keys.M -> showMap = !showMap;
                 case Keys.G -> { flying = !flying; vz = 0; grounded = false; }
                 case Keys.F -> fisheye = !fisheye;
