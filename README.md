@@ -23,9 +23,12 @@ and textured geometry while keeping the column-based renderer.
 
 ## Requirements
 
-- JDK 21 or newer
+- JDK 22 or newer. Keys reads the physical key state through the foreign function API,
+  which is a preview feature before 22
 - Developed and tested on macOS. On other platforms, input falls back to AWT key events read
   as a US QWERTY layout
+- About 90 MB to clone: the Haven section below is committed in full, and its largest chunk
+  file is 61 MB
 
 ## Building and running
 
@@ -81,8 +84,10 @@ JVM system properties can be set through `JAVA_OPTS`, for example
 | Mouse drag, arrow keys | Look |
 | `Q` / `E` | Turn |
 | `Space` / `C` / `Shift` | Jump / crouch / run |
+| `G` | Fly: gravity off, Space and crouch go up and down, nothing is solid |
 | `M` | Toggle minimap |
 | `R` | Toggle ray view |
+| `N` | Ray view: keep the player pointing up, or let the world stay put instead |
 | `L` | Toggle baked lighting |
 | `F` | Toggle fisheye projection (for comparison) |
 | `P` | Toggle pitch model (for comparison) |
