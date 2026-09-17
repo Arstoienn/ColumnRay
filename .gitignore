@@ -9,3 +9,6 @@ out/
 scratch/
 __pycache__/
 *.pyc
+
+# Baked lightmaps (LightCache), rebuilt on demand
+.lightcache/
