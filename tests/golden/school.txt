@@ -1,0 +1,9 @@
+# columnray verify 1
+view classroom 320x180 plain=a58aeabf3d6ca397 albedo=46b20d4f57312e1c depth=876ff9ddd83a8173
+view corridor 320x180 plain=0880903746bcda4b albedo=20608f0974ae1b31 depth=441784dc59ee32ae
+view courtyard 320x180 plain=689fe3ada158378c albedo=574a32a062a8dee2 depth=f857d1f178892eff
+view courtyard-up 320x180 plain=90f02d4c347b9b39 albedo=db24fbaddf186673 depth=2f8ce9b35c9c3012
+view courtyard-down 320x180 plain=d1fb281c15ab3cbd albedo=e3f26517d6e1762d depth=24d1e143e536bea9
+view pool 320x180 plain=49fbd9be87d4c1d6 albedo=06428cb17fbae303 depth=8929cacbaec61e05
+view landing 320x180 plain=3d648f90385d3da7 albedo=397494f1923ef5db depth=400c72466f089700
+lightmap 33a63e07a58444ac rays=19831055
