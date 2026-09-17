@@ -15,3 +15,6 @@ __pycache__/
 
 # The Blender converter, kept beside the engine but not part of it.
 /tools/
+
+# Unit tests are compiled beside the engine, never into it.
+out-test/

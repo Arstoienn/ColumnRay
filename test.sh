@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Everything that says whether this build is the same engine as the last one.
+#
+#   ./test.sh                unit tests, determinism, then the golden frames
+#   ./test.sh --unit         unit tests only
+#   ./test.sh --determinism  the same build must render the same frames on one thread and on all
+#   ./test.sh --golden       the frames must match tests/golden/
+#   ./test.sh --bless        rewrite tests/golden/ from this build (read the diff first)
+#
+# The golden files hold digests of the renderer's own pixels, depth, albedo and lightmap - not of
+# the PNGs, which an encoder is free to write differently between JDK releases without a pixel
+# changing. See Main.verify and tests/golden/README.md.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+mode=all
+case "${1:-}" in
+    --unit|--determinism|--golden|--bless) mode=${1#--} ;;
+    "") ;;
+    *) echo "usage: $0 [--unit | --determinism | --golden | --bless]" >&2; exit 2 ;;
+esac
+
+# Small enough to run in seconds, large enough that a real change cannot hide in it. The size is
+# part of the golden file: change it and every digest changes with it.
+SIZE=320x180
+VIEWS=tests/views/school.txt
+
+./build.sh
+
+run() { java --enable-native-access=ALL-UNNAMED ${JAVA_OPTS:-} -cp out engine.Main "$@"; }
+frames() { run maps/school.json --verify "$VIEWS" --size "$SIZE" "$@" | grep -E '^(#|view |lightmap )'; }
+
+fail=0
+
+if [ "$mode" = all ] || [ "$mode" = unit ]; then
+    echo "== unit =="
+    mkdir -p out-test
+    javac -d out-test -cp out $(find tests/src -name '*.java')
+    java -cp out:out-test engine.Tests || fail=1
+fi
+
+if [ "$mode" = all ] || [ "$mode" = determinism ]; then
+    # Nothing about a frame or a bake may depend on how many cores ran it - that is what the
+    # distance tie-break and the cell padding are there for - and this holds on any machine,
+    # which the golden files cannot. So it is a test of its own, and CI runs it everywhere.
+    echo "== determinism =="
+    many=$(JAVA_OPTS="-Dlight.cache=false" frames)
+    one=$(JAVA_OPTS="-Dlight.cache=false -Djava.util.concurrent.ForkJoinPool.common.parallelism=1" frames)
+    if diff -u <(printf '%s\n' "$many") <(printf '%s\n' "$one"); then
+        echo "ok    one thread and all of them agree"
+    else
+        echo "FAIL  the output depends on how many threads produced it."
+        fail=1
+    fi
+fi
+
+if [ "$mode" = all ] || [ "$mode" = golden ] || [ "$mode" = bless ]; then
+    echo "== golden =="
+    golden() {   # golden <name> <extra flags...>
+        local name=$1; shift
+        local got
+        got=$(frames "$@")
+        if [ "$mode" = bless ]; then
+            printf '%s\n' "$got" > "tests/golden/$name.txt"
+            echo "blessed tests/golden/$name.txt"
+            return 0
+        fi
+        if diff -u "tests/golden/$name.txt" <(printf '%s\n' "$got"); then
+            echo "ok    $name"
+        else
+            cat >&2 <<MSG
+
+FAIL  $name: the frames are not the ones in tests/golden/$name.txt.
+      Every optimisation in this engine is meant to be provably free. If this change was
+      meant to alter the picture, read the diff above, check it is only what you intended,
+      and run ./test.sh --bless. If it was not, you have found a bug.
+      A first run on a new platform can differ for a duller reason: Math.sin and friends are
+      allowed a last-place error that varies by CPU. tests/golden/README.md says which
+      platform these were taken on.
+MSG
+            return 1
+        fi
+    }
+    golden school || fail=1
+    golden school-flat --flat || fail=1
+fi
+
+exit $fail
