@@ -11,6 +11,7 @@ import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -77,8 +78,11 @@ final class Keys {
                     FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, i32, i16));
             transform = linker.downcallHandle(app.find("TransformProcessType").orElseThrow(),
                     FunctionDescriptor.of(i32, ValueLayout.ADDRESS, i32));
-        } catch (Throwable notMacOrNotAllowed) {
-            // another OS, a JVM with native access shut off, a framework that moved: fall back to AWT
+        } catch (IllegalCallerException | UnsupportedOperationException | IllegalArgumentException
+                 | NoSuchElementException | LinkageError notMacOrNotAllowed) {
+            // another OS, a JVM with native access shut off, a framework that moved: fall back to AWT.
+            // Each of those is one of these five; anything else is this code being wrong, and a
+            // renderer that will not start says so far more usefully than keys that do nothing.
             keyState = null;
         }
         try {
@@ -101,7 +105,8 @@ final class Keys {
                             ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             layoutData = carbon.find("kTISPropertyUnicodeKeyLayoutData").orElseThrow()
                     .reinterpret(ValueLayout.ADDRESS.byteSize()).get(ValueLayout.ADDRESS, 0);
-        } catch (Throwable noLayoutToRead) {
+        } catch (IllegalCallerException | UnsupportedOperationException | IllegalArgumentException
+                 | NoSuchElementException | LinkageError noLayoutToRead) {
             // the HUD falls back to naming the keys as a US board would
             translate = null;
         }
@@ -140,10 +145,22 @@ final class Keys {
         return nativeDown(key);
     }
 
+    /**
+     * A native call through a {@link MethodHandle} is declared to throw {@code Throwable}, so the
+     * three calls below cannot be caught any more narrowly than that however much one would like
+     * to. What can still be done is to put back the ones that were never about the keyboard: an
+     * OutOfMemoryError or a StackOverflowError is the JVM in trouble, and swallowing it here turns
+     * a machine running out of memory into a key that mysteriously stopped working.
+     */
+    private static void rethrowIfNotNative(Throwable t) {
+        if (t instanceof VirtualMachineError e) throw e;
+    }
+
     private static boolean nativeDown(int key) {
         try {
             return (boolean) KEY_STATE.invokeExact(SESSION_STATE, (short) key);
-        } catch (Throwable t) {
+        } catch (Throwable notAnswering) {
+            rethrowIfNotNative(notAnswering);
             return false;
         }
     }
@@ -204,7 +221,8 @@ final class Keys {
             current.set(ValueLayout.JAVA_INT, 4, 2);
             int status = (int) TRANSFORM.invokeExact(current, 1); // kProcessTransformToForegroundApplication
             if (status != 0) System.err.println("keys: TransformProcessType returned " + status);
-        } catch (Throwable ignored) {
+        } catch (Throwable notTransformed) {
+            rethrowIfNotNative(notTransformed);
             // not fatal: the game still runs, the window may just need clicking
         }
     }
@@ -244,13 +262,15 @@ final class Keys {
             if (err != 0 || length.get(ValueLayout.JAVA_LONG, 0) != 1) return 0;
             char c = out.getAtIndex(ValueLayout.JAVA_CHAR, 0);
             return c > ' ' && c < 0x7f ? c : 0;                  // space, arrows, dead keys: use the name instead
-        } catch (Throwable t) {
+        } catch (Throwable noLabelToRead) {
+            rethrowIfNotNative(noLabelToRead);
             return 0;
         } finally {
             if (!source.equals(MemorySegment.NULL)) {
                 try {
                     RELEASE.invokeExact(source);                 // TISCopy... hands over a reference
-                } catch (Throwable ignored) {
+                } catch (Throwable notReleased) {
+                    rethrowIfNotNative(notReleased);
                     // nothing to do about a leaked input source
                 }
             }
