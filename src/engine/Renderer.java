@@ -81,7 +81,41 @@ final class Renderer {
     volatile Trace trace;                    // the most recent recording
     private volatile Lighting lighting;      // baked lightmaps, or null: then only the flat model exists
 
-    void setLighting(Lighting l) { lighting = l; }
+    /**
+     * The thread that drives the renderer, learnt from the first call to {@link #render}, and
+     * whether a frame is in flight.
+     *
+     * W, H, pixels, viewW, viewH and F are read by every column of every frame and are changed
+     * together: a resize is three arrays and four numbers, and there is no order in which those
+     * can be written that leaves a frame started halfway through it looking at a consistent view.
+     * Making them volatile would not fix that - it would only make the torn read reliable - so the
+     * rule is that they are changed between frames, from the thread that renders, and the rule is
+     * enforced here rather than written in a comment and hoped for.
+     *
+     * Today every caller obeys it: Main changes the view from its own loop. The point is the day
+     * somebody wires the field of view to a Swing slider, because the bug that makes is a frame
+     * that is torn only when the listener fires mid-render - the hardest kind there is to
+     * reproduce - and this turns it into an exception naming the thread that did it.
+     */
+    private Thread driver;
+    private boolean rendering;
+
+    /** Refuse a change to the view from the wrong thread, or from inside a frame. */
+    private void betweenFrames(String what) {
+        if (rendering)
+            throw new IllegalStateException(what + " while a frame is being rendered; "
+                    + "the view may only change between frames");
+        Thread t = driver;
+        if (t != null && t != Thread.currentThread())
+            throw new IllegalStateException(what + " from thread '" + Thread.currentThread().getName()
+                    + "', but this renderer is driven by '" + t.getName() + "'; "
+                    + "post the change to that thread and let it apply it between frames");
+    }
+
+    void setLighting(Lighting l) {
+        betweenFrames("setLighting");
+        lighting = l;
+    }
 
     Renderer(World world, int w, int h, int[] pixels) {
         this.world = world;
@@ -92,16 +126,19 @@ final class Renderer {
     }
 
     /** Change the size of the view itself - the ray count. The field of view is an angle, so it
-     *  stays what it was and only the focal length that realises it changes. Between frames only. */
+     *  stays what it was and only the focal length that realises it changes. Between frames, on the
+     *  rendering thread; see betweenFrames. */
     void setView(int w, int h) {
+        betweenFrames("setView");
         double deg = fov();
         viewW = w;
         viewH = h;
         setFov(deg);
     }
 
-    /** Point the renderer at a (usually larger) buffer. Call between frames only. */
+    /** Point the renderer at a (usually larger) buffer. Between frames, on the rendering thread. */
     void resize(int w, int h, int[] pixels) {
+        betweenFrames("resize");
         this.W = w;
         this.H = h;
         this.pixels = pixels;
@@ -114,6 +151,7 @@ final class Renderer {
     /** Horizontal field of view in degrees, across the view (not the overscan). The vertical axis
      *  uses the same focal length, so pixels stay square and nothing is stretched. */
     void setFov(double deg) {
+        betweenFrames("setFov");
         F = (viewW / 2.0) / Math.tan(Math.toRadians(deg) / 2);
     }
 
@@ -129,6 +167,17 @@ final class Renderer {
     double centerX() { return W / 2.0; }
 
     void render(Camera cam) {
+        betweenFrames("render");
+        driver = Thread.currentThread();
+        rendering = true;
+        try {
+            renderFrame(cam);
+        } finally {
+            rendering = false;
+        }
+    }
+
+    private void renderFrame(Camera cam) {
         if (cam.captureDepth) {
             if (depth == null || depth.length != W * H) depth = new float[W * H];
             else Arrays.fill(depth, 0);                       // sky and anything not hit stay zero
