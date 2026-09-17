@@ -58,6 +58,7 @@ the engine with `maps/school.json`. Arguments are passed through to `engine.Main
 | `--bench` | Time the renderer over a full turn, level and pitched 30 degrees |
 | `--shot out.png [x y heading pitch [column]]` | Render one frame headlessly |
 | `--shots views.txt` | Render several frames in one run, one `out.png x y feet heading` per line |
+| `--verify views.txt` | Render each view and print a digest of it instead of writing files; see Tests |
 
 `--shot` also writes `-plain.png` (no HUD), `-albedo.png` (unshaded surface colour),
 `-depth.pfm` (distance per pixel) and `-rays.png` (the ray view).
@@ -73,6 +74,29 @@ JVM system properties can be set through `JAVA_OPTS`, for example
 | `bench.warmup`, `bench.frames` | Untimed and timed frames for `--bench` (400, 720) |
 | `minimap.debug` | Highlight standable ground the minimap flood did not reach |
 | `grade.sat`, `grade.lift` | Colour grading parameters |
+
+## Tests
+
+```bash
+./test.sh
+```
+
+Unit tests for the parts that can be checked on their own - the JSON parser, the ray/segment and
+ray/polygon intersections, the frame-time controller, map loading and the lightmap cache's key -
+and then two checks on whole frames:
+
+- **Determinism.** The same build renders the seven cameras in `tests/views/school.txt` on one
+  thread and on every core, and the two must agree exactly. This is the property the renderer's
+  distance tie-break and the grid's cell padding exist to give, and it holds on any machine.
+- **Golden frames.** The same cameras, baked and `--flat`, against digests in `tests/golden/`.
+  What is hashed is the engine's own pixel, depth, albedo and lightmap arrays rather than the PNGs
+  written from them, so a change to an image encoder cannot turn the test red on its own.
+
+The rule the engine is built on is that an optimisation is proved not to change the output rather
+than assumed not to; the golden files are where that proof lives. A deliberate change to the
+picture is blessed with `./test.sh --bless` in the same commit that causes it.
+`tests/golden/README.md` explains the one thing they cannot promise - the same digests on a
+different CPU - and why CI checks them on macOS only.
 
 ## Controls
 
