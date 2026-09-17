@@ -172,6 +172,13 @@ final class RayView {
         canvas.addKeyListener(Keys.listener());                  // only used where the key state cannot be read
     }
 
+    /** Call on the EDT: let go of the window. The engine is stopping. */
+    void close() {
+        JFrame f = frame;
+        frame = null;
+        if (f != null) f.dispose();
+    }
+
     boolean visible() {
         JFrame f = frame;
         return f != null && f.isVisible();

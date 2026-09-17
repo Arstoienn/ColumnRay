@@ -115,6 +115,9 @@ public final class Main {
     private DynamicResolution steer;
     private volatile int wantScale = -1;                         // set by a key, applied between frames
     private double startFeet = Double.NaN;                       // --feet: which storey to start on
+    /** False once something has asked the game to stop: Escape, the window's close button, or a
+     *  signal. Written from the event thread and from a shutdown hook, read by the loop. */
+    private volatile boolean running = true;
     // --shots: stand at exactly the height asked for instead of on whatever the map has here.
     // Snapping to our own floor moved the eye up to 25 cm away from where the reference camera
     // stands, which tilts the whole frame out of line; unsnapped, a floor that came out at the
@@ -166,10 +169,10 @@ public final class Main {
         // Before AWT starts, and only when a window is going to open - see Keys. A headless run
         // has no HUD to name, and on a machine with no window service to ask, the question hangs.
         if (Arrays.stream(args).noneMatch(a ->
-                a.equals("--shot") || a.equals("--shots") || a.equals("--bench"))) {
+                a.equals("--shot") || a.equals("--shots") || a.equals("--bench") || a.equals("--verify"))) {
             Keys.readLabels();
         }
-        String mapPath = "maps/school.json", shot = null, shots = null;
+        String mapPath = "maps/school.json", shot = null, shots = null, verify = null;
         double[] at = null;
         boolean bench = false, shear = false, flatLight = false;
         int w = DEFAULT_W, h = DEFAULT_H, ss = 1, winW = DEFAULT_WINDOW_W, winH = DEFAULT_WINDOW_H, targetFps = 60;
@@ -233,6 +236,9 @@ public final class Main {
             } else if (args[i].equals("--shots")) {
                 if (i + 1 >= args.length) { usage("--shots needs a file of views"); return; }
                 shots = args[++i];
+            } else if (args[i].equals("--verify")) {
+                if (i + 1 >= args.length) { usage("--verify needs a file of views"); return; }
+                verify = args[++i];
             } else if (args[i].equals("--shot")) {
                 if (i + 1 >= args.length) { usage("--shot needs an output file"); return; }
                 shot = args[++i];
@@ -248,7 +254,7 @@ public final class Main {
                 mapPath = args[i];
             }
         }
-        if (shot != null || shots != null || bench) System.setProperty("java.awt.headless", "true");
+        if (shot != null || shots != null || bench || verify != null) System.setProperty("java.awt.headless", "true");
 
         if ((long) w * ss > 16384 || (long) h * ss > 16384) {
             usage("--size times --ss must stay within 16384x16384 (that would be " + w * ss + "x" + h * ss + ")");
@@ -275,6 +281,7 @@ public final class Main {
         }
         if (!Double.isNaN(startFeet)) game.standOn(startFeet);
         if (bench) game.bench();
+        else if (verify != null) game.verify(Path.of(verify));
         else if (shots != null) game.screenshots(Path.of(shots));
         else if (shot != null) game.screenshot(new File(shot), at);
         else game.run();
@@ -333,7 +340,10 @@ public final class Main {
             frame.add(canvas);
             frame.pack();
             frame.setLocation(screen.x + 8, screen.y + 8);
-            frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+            frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+            frame.addWindowListener(new java.awt.event.WindowAdapter() {
+                @Override public void windowClosing(java.awt.event.WindowEvent e) { running = false; }
+            });
             frame.setVisible(true);
             canvas.createBufferStrategy(2);
             installInput(canvas);
@@ -351,8 +361,24 @@ public final class Main {
         scaleIx = DynamicResolution.nearest(W / (double) winW);
         autoRes = targetFps > 0;
         steer = new DynamicResolution(1000.0 / Math.max(1, targetFps), scaleIx);
+        // Ctrl-C, or a shell closing, arrives here rather than stopping the JVM where it stands.
+        // The hook waits for the loop to finish the frame it is on, so that a bake being written
+        // at that moment is either replaced whole or not at all - which is what LightCache's
+        // write-then-rename is for, and which only holds if the process lives long enough to
+        // finish the rename.
+        Thread loop = Thread.currentThread();
+        Thread stopped = new Thread(() -> {
+            running = false;
+            try {
+                loop.join(2000);
+            } catch (InterruptedException giveUp) {
+                Thread.currentThread().interrupt();
+            }
+        }, "columnray-stop");
+        Runtime.getRuntime().addShutdownHook(stopped);
+
         long last = System.nanoTime();
-        while (true) {
+        while (running) {
             long now = System.nanoTime();
             double dt = Math.min(0.05, (now - last) / 1e9);
             last = now;
@@ -369,6 +395,15 @@ public final class Main {
             fps = fps == 0 ? 1 / Math.max(dt, 1e-6) : fps * 0.95 + 0.05 / Math.max(dt, 1e-6);
             if (System.nanoTime() - now < 4_000_000) Thread.sleep(2);
         }
+        try {
+            Runtime.getRuntime().removeShutdownHook(stopped);
+        } catch (IllegalStateException alreadyShuttingDown) {
+            // The hook is what stopped us. There is nothing to remove and nothing to worry about.
+        }
+        SwingUtilities.invokeAndWait(() -> {
+            rayView.close();
+            for (Window w : Window.getWindows()) w.dispose();
+        });
     }
 
     private void installInput(Canvas canvas) {
@@ -409,7 +444,7 @@ public final class Main {
             if (!down(key)) { heldLastFrame.remove(key); continue; }
             if (!heldLastFrame.add(key)) continue;               // still held from last frame
             switch (key) {
-                case Keys.ESCAPE -> System.exit(0);
+                case Keys.ESCAPE -> running = false;
                 case Keys.M -> showMap = !showMap;
                 case Keys.G -> { flying = !flying; vz = 0; grounded = false; }
                 case Keys.F -> fisheye = !fisheye;
@@ -850,6 +885,57 @@ public final class Main {
             bs.show();
         } while (bs.contentsLost());
         Toolkit.getDefaultToolkit().sync();
+    }
+
+    /**
+     * Render each view and print what it came out as, instead of writing any files.
+     *
+     * The rule this project runs on is that an optimisation is proved not to change the output
+     * rather than assumed not to, and until now that was a habit rather than a mechanism: you
+     * rendered the shots by hand before and after and hoped you remembered to. This is the same
+     * comparison with the pictures taken out of it - the renderer's own pixels, depth and albedo
+     * arrays, and the lightmap, each as a digest that a script can diff against a golden file.
+     *
+     * One view per line: {@code name x y heading pitch feet}, where feet may be {@code -} to stand
+     * on whatever ground is there. The HUD is deliberately not included: it draws text, and the
+     * glyphs a machine has are not the engine's output.
+     */
+    private void verify(Path list) throws Exception {
+        System.out.println("# columnray verify 1");
+        for (String line : Files.readAllLines(list)) {
+            String t = line.trim();
+            if (t.isEmpty() || t.startsWith("#")) continue;
+            String[] f = t.split("\\s+");
+            if (f.length < 5) { System.err.println("skipping: " + t); continue; }
+            exactFeet = f.length > 5 && !f[5].equals("-") ? Double.parseDouble(f[5]) : Double.NaN;
+            x = Double.parseDouble(f[1]);
+            y = Double.parseDouble(f[2]);
+            angle = Math.toRadians(Double.parseDouble(f[3]));
+            pitch = Math.toRadians(Double.parseDouble(f[4]));
+            if (Double.isNaN(exactFeet)) {
+                placeOnGround();
+            } else {
+                feet = viewFeet = exactFeet;
+                vz = 0;
+                grounded = true;
+            }
+            traceI = W / 2 * SS + SS / 2;
+            traceJ = -1;
+            cam.captureDepth = true;
+            try {
+                frame();
+            } finally {
+                cam.captureDepth = false;
+            }
+            System.out.printf("view %s %dx%d plain=%s albedo=%s depth=%s%n", f[0], W, H,
+                    Hash.of().add(out, W * H).hex(),
+                    Hash.of().add(albedo, W * H).hex(),
+                    Hash.of().add(depth, W * H).hex());
+            depth = hiDepth = renderer.depth = null;
+            albedo = hiAlbedo = renderer.albedo = null;
+        }
+        if (lighting != null) System.out.printf("lightmap %s rays=%d%n", lighting.hash(), lighting.rays);
+        else System.out.println("lightmap - rays=0   # --flat");
     }
 
     /** Every view in a file, one per line: "out.png x y feet heading". Baking the lightmaps for

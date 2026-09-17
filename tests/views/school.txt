@@ -1,0 +1,13 @@
+# Cameras the golden test renders, chosen to touch a different part of the renderer each:
+#   name          x      y   heading  pitch  feet ("-" = stand on whatever ground is here)
+#
+# A closed room with a lit ceiling panel; an open-air region with sky, water and a lawn; the
+# pitch warp at both extremes, which is where the overscan and the row resampling bite; and an
+# upper storey, so the acceleration grid is asked for cells with two floors in them.
+classroom       13      4      90      0     -
+corridor        16     9.8      0      0     -
+courtyard       16    21.6   -100      0     -
+courtyard-up    16    21.6   -100     30     -
+courtyard-down  16    21.6   -100    -30     -
+pool            16      17     90    -15     -
+landing       29.5      14    180      0    1.8
