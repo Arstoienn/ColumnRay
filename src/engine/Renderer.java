@@ -8,7 +8,6 @@ import engine.World.Region;
 import engine.World.Shape;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 import java.util.function.IntUnaryOperator;
 import java.util.stream.IntStream;
@@ -63,7 +62,7 @@ final class Renderer {
     }
 
     /** The pixel buffer. It can be larger than the view: looking up or down needs a little
-     *  overscan around it, which Main then warps into the tilted view (see Main.preparePitch). */
+     *  overscan around it, which is then warped into the tilted view (see {@link Warp}). */
     int W, H;
     int viewW, viewH;                        // the image the camera actually shows
     private double F;                        // focal length in pixels
@@ -203,13 +202,36 @@ final class Renderer {
         });
     }
 
-    /** face: which of the shape's side lightmaps the hit is on - the side of a thin wall (0/1),
-     *  the edge of a polygon, or 0 for a cylinder. */
-    private record Hit(Shape s, double t1, double t2, boolean inside, double nx, double ny, double u, int face) {}
+    /**
+     * Where a ray met a shape. face: which of the shape's side lightmaps the hit is on - the side
+     * of a thin wall (0/1), the edge of a polygon, or 0 for a cylinder.
+     *
+     * Mutable and pooled, like Masked, Plane and Cand below, and for the same reason: this is the
+     * hot path. Every shape a ray so much as passes through makes one of these, and on Haven a
+     * frame is millions of them - all of it garbage a millisecond later, and none of it eligible
+     * for the escape analysis that would have made a record free, because they go into a list and
+     * outlive the call that made them. A column's hits are now a pooled array it keeps for the
+     * life of the thread.
+     */
+    private static final class Hit {
+        Shape s;
+        double t1, t2, nx, ny, u;
+        boolean inside;
+        int face;
+    }
 
-    // An exact tie in distance goes to the lower shape id, so what is drawn does not depend on the
-    // order the grid happens to hand the shapes over in.
-    private static final Comparator<Hit> BY_T1 = Comparator.comparingDouble(Hit::t1).thenComparingInt(h -> h.s().id);
+    /**
+     * Distance order, and on an exact tie the lower shape id, so that what is drawn does not
+     * depend on the order the grid happens to hand the shapes over in.
+     *
+     * Double.compare rather than {@code >}, which is not the same relation: it is what the
+     * Comparator this replaced was built from, and it is the one that has a defined answer for
+     * -0.0 and for a NaN distance.
+     */
+    private static boolean after(Hit a, Hit b) {
+        int c = Double.compare(a.t1, b.t1);
+        return c > 0 || (c == 0 && a.s.id > b.s.id);
+    }
 
     /** Scratch state for a single column; one instance per thread. */
     private final class Column {
@@ -218,7 +240,21 @@ final class Renderer {
         private final int[] stamp = new int[world.shapes.length];
         private final int[] nodes = new int[128];           // the tree walk's stack; a tree is ~log2(n) deep
         private int ray;
-        private final ArrayList<Hit> pending = new ArrayList<>();
+
+        /**
+         * The hits found but not yet drawn, nearest first once sorted; pend[0, pendN) are live and
+         * pend[0, sortedN) are known to be in order. Slots past pendN keep their Hit objects, so a
+         * column after the first allocates nothing here at all.
+         *
+         * The sort is an insertion sort from sortedN, not a general one. It is the right shape for
+         * what is actually being sorted: what is left over from the last flush is already in order,
+         * and a cell's new hits are appended to it, so the work is proportional to how far out of
+         * place the new ones are rather than to the whole list. It also sorts the array in place,
+         * where a comparator sort of an object array allocates a merge buffer of its own.
+         */
+        private Hit[] pend = new Hit[32];
+        private Hit[] carry = new Hit[32];                  // the drawn ones, on their way back to the pool
+        private int pendN, sortedN;
 
         /**
          * A masked surface waiting to be blended in - a crown of leaves, a clump of ferns. It
@@ -326,7 +362,7 @@ final class Renderer {
             o0[0] = y0;
             o1[0] = y1;
             if (++ray == Integer.MAX_VALUE) { Arrays.fill(stamp, 0); ray = 1; }
-            pending.clear();
+            pendN = sortedN = 0;
             maskedN = 0;
             planeN = 0;
             crossings = 0;
@@ -405,8 +441,7 @@ final class Renderer {
                             }
                             tests++;
                             if (tr != null) tr.tested.add(sh);
-                            Hit h = intersect(sh);
-                            if (h != null) pending.add(h);
+                            if (intersect(sh, slot())) pendN++;
                         }
                     }
                 }
@@ -423,16 +458,16 @@ final class Renderer {
 
         /** Handle every event with t <= tout in distance order: a shape, or a crossing into the next region. */
         private void flush(double tout) {
-            pending.sort(BY_T1);
+            sortPending();
             int k = 0;
             while (open > 0) {
                 // on a tie the shape wins, so a wall sitting on a region boundary is drawn first
-                boolean hitFirst = k < pending.size() && pending.get(k).t1() <= crossT + TIE;
-                double tn = hitFirst ? pending.get(k).t1() : crossT;
+                boolean hitFirst = k < pendN && pend[k].t1 <= crossT + TIE;
+                double tn = hitFirst ? pend[k].t1 : crossT;
                 if (tn > tout || tn == Double.POSITIVE_INFINITY) break;
                 if (hitFirst) {
-                    Hit h = pending.get(k++);
-                    double t = Math.max(h.t1(), tPrev);
+                    Hit h = pend[k++];
+                    double t = Math.max(h.t1, tPrev);
                     surfaces(tPrev, t);
                     tPrev = t;
                     drawHit(h);
@@ -446,7 +481,38 @@ final class Renderer {
                     endReason = "column full";
                 }
             }
-            pending.subList(0, k).clear();
+            drop(k);
+        }
+
+        /** The Hit to fill in next, kept from the last time this slot was used. */
+        private Hit slot() {
+            if (pendN == pend.length) {
+                pend = Arrays.copyOf(pend, pendN * 2);
+                carry = new Hit[pend.length];
+            }
+            Hit h = pend[pendN];
+            return h != null ? h : (pend[pendN] = new Hit());
+        }
+
+        private void sortPending() {
+            for (int i = sortedN; i < pendN; i++) {
+                Hit h = pend[i];
+                int j = i - 1;
+                while (j >= 0 && after(pend[j], h)) pend[j + 1] = pend[j--];
+                pend[j + 1] = h;
+            }
+            sortedN = pendN;
+        }
+
+        /** The first k have been drawn. They go to the back rather than away: the objects are the
+         *  pool, and the ones behind them are still in order. */
+        private void drop(int k) {
+            if (k == 0) return;
+            System.arraycopy(pend, 0, carry, 0, k);
+            System.arraycopy(pend, k, pend, 0, pendN - k);
+            System.arraycopy(carry, 0, pend, pendN - k, k);
+            pendN -= k;
+            sortedN = pendN;
         }
 
         // ---- Intersection ----
@@ -507,7 +573,7 @@ final class Renderer {
         private void paintAhead(double tout) {
             if (open == 0) return;
             double upTo = Math.min(Math.min(tout, crossT), MAX_DIST);
-            if (!pending.isEmpty()) upTo = Math.min(upTo, pending.get(0).t1());
+            if (pendN > 0) upTo = Math.min(upTo, pend[0].t1);
             if (upTo <= tPrev) return;
             surfaces(tPrev, upTo);
             tPrev = upTo;
@@ -517,34 +583,52 @@ final class Renderer {
             }
         }
 
-        private Hit intersect(Shape s) {
-            return switch (s.kind) {
+        /** Fill {@code into} with where the ray meets this shape, or return false and leave it be. */
+        private boolean intersect(Shape s, Hit into) {
+            switch (s.kind) {
                 case SEG -> {
-                    if (!(s.len > 1e-9)) yield null;              // a wall with no length has no normal to draw by
+                    if (!(s.len > 1e-9)) return false;            // a wall with no length has no normal to draw by
                     SegHit h = Geometry.raySeg(px, py, rx, ry, s.ax, s.ay, s.bx, s.by);
-                    if (h == null || h.t() <= NEAR || h.t() > s.maxDist) yield null;
+                    if (h == null || h.t() <= NEAR || h.t() > s.maxDist) return false;
                     double nx = -h.ey() / s.len, ny = h.ex() / s.len;    // edge vector rotated 90 degrees
                     boolean back = nx * rx + ny * ry > 0;
                     if (back) { nx = -nx; ny = -ny; }                      // make it face the camera
-                    yield new Hit(s, h.t(), h.t(), false, nx, ny, h.u() * s.len, back ? 1 : 0);
+                    return set(into, s, h.t(), h.t(), false, nx, ny, h.u() * s.len, back ? 1 : 0);
                 }
                 case CIRCLE -> {
                     Span sp = Geometry.rayCircle(px, py, rx, ry, s.cx, s.cy, s.r);
-                    if (sp == null || sp.t2() <= NEAR || sp.t1() > s.maxDist) yield null;
+                    if (sp == null || sp.t2() <= NEAR || sp.t1() > s.maxDist) return false;
                     double nx = (px + rx * sp.t1() - s.cx) / s.r;       // hit point minus centre
                     double ny = (py + ry * sp.t1() - s.cy) / s.r;
-                    yield new Hit(s, sp.t1(), sp.t2(), sp.t1() <= NEAR, nx, ny, (Math.atan2(ny, nx) + Math.PI) * s.r, 0);
+                    return set(into, s, sp.t1(), sp.t2(), sp.t1() <= NEAR, nx, ny,
+                            (Math.atan2(ny, nx) + Math.PI) * s.r, 0);
                 }
                 case POLY -> {
                     PolyHit ph = Geometry.rayPoly(px, py, rx, ry, s.xs, s.ys);
-                    if (ph == null || ph.t2() <= NEAR || ph.t1() > s.maxDist) yield null;
+                    if (ph == null || ph.t2() <= NEAR || ph.t1() > s.maxDist) return false;
                     int i = ph.enterEdge(), j = (i + 1) % s.xs.length;
                     double ex = s.xs[j] - s.xs[i], ey = s.ys[j] - s.ys[i], len = Math.hypot(ex, ey);
                     double nx = -ey / len, ny = ex / len;
                     if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }
-                    yield new Hit(s, ph.t1(), ph.t2(), ph.t1() <= NEAR, nx, ny, ph.enterU() * len, i);
+                    return set(into, s, ph.t1(), ph.t2(), ph.t1() <= NEAR, nx, ny, ph.enterU() * len, i);
                 }
-            };
+                default -> {
+                    return false;
+                }
+            }
+        }
+
+        private boolean set(Hit h, Shape s, double t1, double t2, boolean inside,
+                            double nx, double ny, double u, int face) {
+            h.s = s;
+            h.t1 = t1;
+            h.t2 = t2;
+            h.inside = inside;
+            h.nx = nx;
+            h.ny = ny;
+            h.u = u;
+            h.face = face;
+            return true;
         }
 
         /** The nearest point at which any storey in the stack ends. Once off the map, rays currently
@@ -609,30 +693,30 @@ final class Renderer {
         /** Side face, top face (when the eye is above it) and bottom face (when the eye is below it).
          *  A shape is clipped to the ceiling of the region the ray is in. */
         private void drawHit(Hit h) {
-            Shape s = h.s();
+            Shape s = h.s;
             Region in = storeyAt(s.zLow);
             // Where this ray meets the shape, not the middle of it: a tilted top is a different
             // height at every column, and that is the whole point of it. The same goes for a
             // tilted bottom.
             double slope = s.topSlope(rx, ry), atEye = s.topAt(px, py);
             double bSlope = s.bottomSlope(rx, ry), bEye = s.bottomAt(px, py);
-            double top = atEye + slope * h.t1();
-            double z0 = bEye + bSlope * h.t1();
+            double top = atEye + slope * h.t1;
+            double z0 = bEye + bSlope * h.t1;
             if (s.hTop <= s.zLow) {
-                if (tr != null) note(EventKind.SHAPE, h.t1(), s.label + " (entirely above the ceiling)", 0);
+                if (tr != null) note(EventKind.SHAPE, h.t1, s.label + " (entirely above the ceiling)", 0);
                 return;
             }
-            double t1 = h.t1(), yTop = rowZ(top, t1), yBot = rowZ(z0, t1);
+            double t1 = h.t1, yTop = rowZ(top, t1), yBot = rowZ(z0, t1);
             double light = in == null ? 1 : in.light;
             if (s.mask >= 0 || (s.amap != null && s.kind == World.Kind.SEG)) {   // leaves and the like: blended later
                 record(s, h, t1, yTop, yBot, in);
                 return;
             }
             int side = 0;
-            if (!h.inside() && s.amap == null) {             // a cut-out slab's edge is a few cm of nothing
-                double u = h.u();
-                Lighting.LightMap lm = baked ? lit.side(s, h.face()) : null;
-                double sq = square(h.nx(), h.ny());
+            if (!h.inside && s.amap == null) {             // a cut-out slab's edge is a few cm of nothing
+                double u = h.u;
+                Lighting.LightMap lm = baked ? lit.side(s, h.face) : null;
+                double sq = square(h.nx, h.ny);
                 if (lm != null) {
                     double f = fog(t1);
                     side = paint(yTop, yBot, t1, 0, s.albedoColor, y -> {
@@ -641,7 +725,7 @@ final class Renderer {
                         return sideColor(s, u, z, t1, sq, f, L);
                     });
                 } else {
-                    double k = lambert(h.nx(), h.ny()) * fog(t1) * light;
+                    double k = lambert(h.nx, h.ny) * fog(t1) * light;
                     side = paint(yTop, yBot, t1, 0, s.albedoColor, y -> sideColor(s,
                             u, eye - (y + 0.5 - hz) * t1 * dk / F, t1, sq, k, null));
                 }
@@ -650,7 +734,7 @@ final class Renderer {
             int[] rows = null;
             String label = null;
             if (tr != null) {
-                label = s.label + (h.inside() ? " (eye inside its footprint)" : "");
+                label = s.label + (h.inside ? " (eye inside its footprint)" : "");
                 rows = new int[] {side, 0, 0};
                 ev = tr.events.size();
                 note(EventKind.SHAPE, t1, String.format("%s side %d top 0 bottom 0", label, side), side);
@@ -670,13 +754,13 @@ final class Renderer {
             if (planeN == planes.size()) planes.add(new Plane());
             Plane p = planes.get(planeN++);
             p.top = top;
-            p.inside = h.inside();
+            p.inside = h.inside;
             p.masked = s.amap != null;
             p.owner = s;
             p.z = z;
             p.slope = slope;
-            p.t1 = Math.max(h.t1(), NEAR);
-            p.t2 = Math.min(h.t2(), MAX_DIST);
+            p.t1 = Math.max(h.t1, NEAR);
+            p.t2 = Math.min(h.t2, MAX_DIST);
             p.base = s.albedoColor;
             p.color = color;
             p.ev = ev;
@@ -982,11 +1066,11 @@ final class Renderer {
                 Masked m = masked.get(maskedN++);
                 m.s = s;
                 m.t = t;
-                m.u = h.u();
-                m.sq = square(h.nx(), h.ny());
+                m.u = h.u;
+                m.sq = square(h.nx, h.ny);
                 m.f = fog(t) * (in == null ? 1 : in.light);
                 m.w = pixelSize(t) / span;                    // a pixel, in the mask's own units
-                m.lm = baked ? lit.side(s, h.face()) : null;
+                m.lm = baked ? lit.side(s, h.face) : null;
                 m.y0 = y0;
                 m.y1 = y1;
                 m.plane = false;

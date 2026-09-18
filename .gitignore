@@ -18,3 +18,6 @@ __pycache__/
 
 # Unit tests are compiled beside the engine, never into it.
 out-test/
+
+# A/B benchmarking keeps the other build beside this one.
+out-base/
