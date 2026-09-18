@@ -91,6 +91,8 @@ and then two checks on whole frames:
 - **Golden frames.** The same cameras, baked and `--flat`, against digests in `tests/golden/`.
   What is hashed is the engine's own pixel, depth, albedo and lightmap arrays rather than the PNGs
   written from them, so a change to an image encoder cannot turn the test red on its own.
+  `./test.sh --haven` does the same against the `maps/haven` submodule, where the map is large
+  enough to exercise the acceleration structures properly.
 
 The rule the engine is built on is that an optimisation is proved not to change the output rather
 than assumed not to; the golden files are where that proof lives. A deliberate change to the
