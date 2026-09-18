@@ -24,8 +24,8 @@ final class WorldTest {
                 { "name": "upstairs", "poly": [[0,0],[8,0],[8,4],[0,4]], "floor": 3, "ceil": 6 }
               ],
               "shapes": [
-                { "kind": "wall", "a": [4,0], "b": [4,4], "z0": 0, "h": 3 },
-                { "kind": "circle", "c": [1,6], "r": 0.5, "z0": 0, "h": 1 }
+                { "type": "wall", "a": [4,0], "b": [4,4], "z0": 0, "h": 3 },
+                { "type": "circle", "c": [1,6], "r": 0.5, "z0": 0, "h": 1 }
               ] }
             """;
 
@@ -60,10 +60,15 @@ final class WorldTest {
         // The invariant: a wall flush against a cell line belongs to both cells. Without the pad,
         // the ray meets a region boundary at exactly the wall's distance with the wall not yet in
         // its pending list, and lights and clips it with the room on the far side.
-        Check.that(cellsHolding(w, 0) >= 4,
-                "a wall lying exactly on the cell line at x = 4 is registered in the cells either side of it, "
-                + "not only in one of them");
-        Check.that(cellsHolding(w, 1) >= 1, "a shape well inside one cell is still registered");
+        //
+        // The wall runs from (4, 0) to (4, 4) on a 2 m grid, so it spans four cells vertically and
+        // lies exactly on a cell line horizontally. Padded, that is eight cells; unpadded it would
+        // be three, all on the same side of the line.
+        Check.eq(cellsHolding(w, 0), 8,
+                "a wall lying exactly on the cell line at x = 4 is registered in the cells either side of it");
+        Check.that(holds(w.grid.shapes[cell(w, 3.5, 1)], 0) && holds(w.grid.shapes[cell(w, 4.5, 1)], 0),
+                "and specifically in both of the two that meet at it");
+        Check.eq(cellsHolding(w, 1), 2, "a shape that straddles one cell line is in the two cells it touches");
 
         // Regions are padded the same way, for the same reason.
         int east = cell(w, 4.5, 2), west = cell(w, 3.5, 2);
