@@ -13,6 +13,7 @@ public final class Tests {
         HashTest.run();
         MaterialsTest.run();
         WorldTest.run();
+        LightingTest.run();
         PlayerTest.run();
         WarpTest.run();
         RendererTest.run();
