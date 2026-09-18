@@ -1,12 +1,8 @@
 package engine;
 
-import engine.World.Region;
-import engine.World.Shape;
-import java.awt.BasicStroke;
 import java.awt.Canvas;
 import java.awt.Color;
 import java.awt.Dimension;
-import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.GraphicsEnvironment;
 import java.awt.Rectangle;
@@ -15,27 +11,16 @@ import java.awt.Toolkit;
 import java.awt.Window;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
-import java.awt.geom.AffineTransform;
-import java.awt.geom.Ellipse2D;
 import java.awt.geom.Line2D;
-import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferStrategy;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
-import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.IntStream;
-import javax.imageio.ImageIO;
 import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
 
@@ -80,10 +65,10 @@ public final class Main {
 
     private final World world;
     BufferedImage image;
-    int[] out;            // the W x H pixels the window sees
+    int[] out;                    // the W x H pixels the window sees
     private int[] hi;             // the RW x RH tilted view after the pitch warp; same array as `out` when SS = 1
     float[] depth, hiDepth; // shot only: output depth and the same pitch warp before downsampling
-    int[] albedo, hiAlbedo; // shot only: unshaded map colours, following the depth samples
+    int[] albedo, hiAlbedo;       // shot only: unshaded map colours, following the depth samples
     private int[] src;            // what the renderer writes: the upright (y-sheared) view plus overscan
     private int srcW, srcH;
     final Renderer renderer;
@@ -99,12 +84,12 @@ public final class Main {
     private boolean listening;                                   // is a window of ours in front?
     private double mouseDX, mouseDY;
     private volatile boolean showMap = true, fisheye = false;
-    volatile boolean shear = false;                      // P: the old y-shearing pitch, for comparison
+    volatile boolean shear = false;                              // P: the old y-shearing pitch, for comparison
     private volatile boolean baked = true;                       // L: baked lighting, or the old flat model
-    Lighting lighting;                                   // null with --flat
+    Lighting lighting;                                           // null with --flat
     private volatile double fovDeg = Renderer.DEFAULT_FOV;
     private volatile int hoverColumn = -1, hoverRow = -1;        // which pixel of the main view the mouse is over
-    int traceI = -1, traceJ = -1;                        // the output pixel whose ray the ray view traces
+    int traceI = -1, traceJ = -1;                                // the output pixel whose ray the ray view traces
 
     private final Warp warp = new Warp();                        // this frame's pitch warp; see Warp
     private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
