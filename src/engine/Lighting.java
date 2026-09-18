@@ -113,6 +113,7 @@ final class Lighting {
     private final double[][] hemi;                   // cosine-weighted directions around +z
     private final int samples, bounces, shadow, blurs;
     long rays;                                       // shadow and gather rays cast by the bake
+    private List<LightMap> allMaps = List.of();      // every map in bake order, for the cache and hash()
     private java.nio.file.Path fromCache;            // set when the texels were read back rather than baked
     private final double reach, reflect, sunSoft, lampSize;
 
@@ -142,6 +143,22 @@ final class Lighting {
             System.out.printf("lighting: %,d texels on %,d surfaces, %d lights, %,d rays, baked in %.1f s (%,.0f rays/s)%n",
                     texels, maps, l.lights.size(), l.rays, s, l.rays / s);
         return l;
+    }
+
+    /**
+     * Every texel of every lightmap, in the order the bake lays its surfaces out, with the shape
+     * of each map so that two bakes which merely divide the same texels differently do not agree.
+     *
+     * This is the check that caught the unpadded point-in-node test and the {@code bottomAt}
+     * rounding error: both moved 480 rays and not one pixel, so only the texels showed it.
+     */
+    String hash() {
+        Hash h = Hash.of();
+        for (LightMap m : allMaps) {
+            h.add(m.w).add(m.h).add(m.rgb, m.rgb.length);
+            h.add(m.albedo, m.albedo.length).add(m.mat);
+        }
+        return h.hex();
     }
 
     private Lighting(World w) {
@@ -267,6 +284,7 @@ final class Lighting {
         byte[] key = LightCache.key(w);
         java.nio.file.Path cacheFile = key == null ? null : LightCache.file(w, key);
         List<LightMap> maps = jobs.stream().map(Job::map).toList();
+        allMaps = maps;
         if (cacheFile != null) {
             long[] cached = new long[1];
             if (LightCache.load(cacheFile, key, maps, cached)) {

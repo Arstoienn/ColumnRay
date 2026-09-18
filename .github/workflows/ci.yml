@@ -1,0 +1,57 @@
+name: CI
+
+# The engine has no dependencies, so there is nothing to resolve and nothing to cache: a job is a
+# JDK, a checkout and ./test.sh. maps/haven is a submodule and is deliberately not checked out -
+# its bake is a quarter of an hour, and maps/school.json exercises every subsystem in seconds.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # What must hold on any machine: the code compiles, the units behave, and neither a frame nor a
+  # bake depends on how many cores ran it.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+      - run: ./test.sh --unit
+      - run: ./test.sh --determinism
+
+  # The golden frames, which are digests of actual pixels and so are tied to a CPU: Math.sin is
+  # specified to one unit in the last place, not exactly. They were taken on Apple silicon, which
+  # is what the project is developed on, so that is where they are checked. See
+  # tests/golden/README.md.
+  golden:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+      - run: ./test.sh --golden
+      - name: What this build actually rendered
+        if: failure()
+        run: |
+          ./test.sh --bless
+          echo "::group::tests/golden after --bless"
+          cat tests/golden/*.txt
+          echo "::endgroup::"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: golden-from-this-build
+          path: tests/golden/*.txt
