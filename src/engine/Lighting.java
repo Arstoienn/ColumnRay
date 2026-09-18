@@ -45,12 +45,22 @@ final class Lighting {
         final float[] albedo = new float[3];     // the surface's own colour: what it bounces back
         int mat;                                 // its material, for the ceiling panels that glow
 
+        /** Every surface in the map gets one of these, so a texel count is a decision the map makes:
+         *  a 2 km wall at 20 cm texels is ten thousand across, and w * h * 3 in int wraps long
+         *  before the allocation is refused. Checked in double, and refused with the size in it. */
+        private static final long MAX_TEXELS = 1L << 28;
+
         LightMap(double u0, double v0, double u1, double v1, double step) {
             this.u0 = u0;
             this.v0 = v0;
             this.step = step;
-            this.w = Math.max(2, (int) Math.ceil((u1 - u0) / step) + 1);
-            this.h = Math.max(2, (int) Math.ceil((v1 - v0) / step) + 1);
+            double wide = Math.max(2, Math.ceil((u1 - u0) / step) + 1);
+            double tall = Math.max(2, Math.ceil((v1 - v0) / step) + 1);
+            if (wide * tall > MAX_TEXELS)
+                throw new IllegalArgumentException("a surface needs a lightmap of " + wide + " x " + tall
+                        + " texels, which is more than " + MAX_TEXELS + ": raise lighting.texel");
+            this.w = (int) wide;
+            this.h = (int) tall;
             this.rgb = new float[w * h * 3];
         }
 
@@ -170,10 +180,15 @@ final class Lighting {
         // the light matters: -Dlight.texel=1 quarters the texels and the time with them.
         double texel = Double.parseDouble(System.getProperty("light.texel",
                 String.valueOf(World.num(spec, "texel", 0.2))));
-        samples = (int) World.num(ind, "samples", 32);
-        bounces = Math.max(1, (int) World.num(ind, "bounces", 2));   // pass 1 is the sky's as well
+        // The texel size divides every surface in the map, and the counts below size arrays and
+        // loops. A map that asks for a texel of zero, or for a million samples a texel, is not
+        // asking for a bake; the bake it would start does not end.
+        if (!(texel > 0) || !Double.isFinite(texel))
+            throw new IllegalArgumentException("lighting texel must be a positive size in metres, not " + texel);
+        samples = count(ind, "samples", 32, 1, 65_536);
+        bounces = count(ind, "bounces", 2, 1, 64);                   // pass 1 is the sky's as well
         reach = World.num(ind, "reach", 40);
-        blurs = Math.max(0, (int) World.num(ind, "smooth", 2));
+        blurs = count(ind, "smooth", 2, 0, 64);
         reflect = World.num(ind, "reflectance", 0.6);
 
         double el = Math.toRadians(World.num(sun, "elevation", 40));
@@ -184,7 +199,7 @@ final class Lighting {
         skyColor = rgb(World.color(sky, "color", "#a9c6ee"), World.num(sky, "intensity", 0.5));
         ambient = rgb(World.color(spec, "ambient", "#121418"), 1);
         soft = World.num(panels, "soft", 2.0);
-        shadow = Math.max(1, (int) World.num(spec, "shadowSamples", 8));
+        shadow = count(spec, "shadowSamples", 8, 1, 4096);
         sunSoft = Math.tan(Math.toRadians(World.num(sun, "softness", 2.0)));
         lampSize = World.num(panels, "size", Materials.PANEL_CELL);
         // The panels are point lights already; as a surface they only glow enough to keep the
@@ -780,6 +795,15 @@ final class Lighting {
     private static float[] rgb(int c, double k) {
         return new float[] {(float) (((c >> 16) & 255) / 255.0 * k), (float) (((c >> 8) & 255) / 255.0 * k),
                 (float) ((c & 255) / 255.0 * k)};
+    }
+
+    /** A whole number the bake will size an array or a loop from. */
+    private static int count(Map<String, Object> m, String k, int def, int min, int max) {
+        double v = World.num(m, k, def);
+        if (v != Math.rint(v) || v < min || v > max)
+            throw new IllegalArgumentException("lighting " + k + " must be a whole number from " + min
+                    + " to " + max + ", not " + v);
+        return (int) v;
     }
 
     @SuppressWarnings("unchecked")

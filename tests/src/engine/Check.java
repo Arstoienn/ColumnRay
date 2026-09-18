@@ -31,6 +31,10 @@ final class Check {
         System.out.println("FAIL  " + group + ": " + what);
     }
 
+    static void eq(int got, int want, String what) {
+        that(got == want, what + " (wanted " + want + ", got " + got + ")");
+    }
+
     static void eq(Object got, Object want, String what) {
         that(want == null ? got == null : want.equals(got),
                 what + " (wanted " + want + ", got " + got + ")");

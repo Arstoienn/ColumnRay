@@ -28,7 +28,7 @@ final class Minimap {
      *  diagonal, so a slanted wall leaves no corner-to-corner gap for the flood to leak through. */
     private static final double WALL = CELL * 0.75;
     private static final double CLIMB = 0.45;            // a step and a bit, not a jump
-    private static final double CLEAR = Main.EYE_CROUCH + Main.HEAD_ABOVE_EYE;
+    private static final double CLEAR = Player.EYE_CROUCH + Player.HEAD_ABOVE_EYE;
     private static final double OBSTACLE = 25;           // m2: smaller than this is a crate, bigger a building
 
     private static final int FLOOR = 0xff777777, SITE = 0xff969a73, OBST = 0xff8b8b8b, EDGE = 0xffdadada;

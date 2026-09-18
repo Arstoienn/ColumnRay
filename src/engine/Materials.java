@@ -3,7 +3,10 @@ package engine;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Iterator;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
 
 /**
  * Surface multipliers applied to the shape's base colour: a procedural brightness, or an image's
@@ -11,6 +14,10 @@ import javax.imageio.ImageIO;
  * footprint of each of its anisotropic samples, just as it does for procedural detail.
  */
 final class Materials {
+    /** The largest image the engine will decode. Haven's are 1024 and 2048 square. */
+    static final int MAX_SIDE = 16384;
+    private static final long MAX_PIXELS = 64L << 20;
+
     private Materials() {}
 
     static final int CONCRETE = 0, PLASTER = 1, BRICK = 2, WOOD = 3, STONE = 4, METAL = 5, TILE = 6,
@@ -25,8 +32,7 @@ final class Materials {
     static Texture[] loadAtlas(Path file, int size, int cols, int count, int[] means) throws IOException {
         if (size <= 0 || cols <= 0 || count <= 0 || means.length != count)
             throw new IllegalArgumentException("textures: size, cols and count must be positive; mean needs count entries");
-        BufferedImage atlas = ImageIO.read(file.toFile());
-        if (atlas == null) throw new IOException("cannot decode texture atlas: " + file);
+        BufferedImage atlas = read(file, "texture atlas");
         long rows = (count + (long) cols - 1) / cols;
         if (atlas.getWidth() != (long) cols * size || atlas.getHeight() < rows * size
                 || atlas.getHeight() % size != 0)
@@ -46,10 +52,38 @@ final class Materials {
      * average in place. Rows run with v, as in the atlas: row 0 is v = 0.
      */
     static Texture loadImage(Path file) throws IOException {
-        BufferedImage im = ImageIO.read(file.toFile());
-        if (im == null) throw new IOException("cannot decode image: " + file);
+        BufferedImage im = read(file, "image");
         int w = im.getWidth(), h = im.getHeight();
         return new Texture(w, h, im.getRGB(0, 0, w, h, null, 0, w), 0xffffff);
+    }
+
+    /**
+     * Read the dimensions out of the header before decoding any pixels.
+     *
+     * ImageIO.read decodes first and asks questions later, and a PNG's size in the file says
+     * nothing about the raster it unpacks to: a few hundred kilobytes of one flat colour declares
+     * 60000 x 60000 and the decoder asks the heap for 14 GB of it. The header is four bytes, so
+     * ask it first, and turn what would be an OutOfMemoryError from inside a parallel stream into a
+     * refusal naming the file. A texture the engine cannot use is also a texture nobody meant to
+     * ship: Haven's largest is 2048 square.
+     */
+    private static BufferedImage read(Path file, String what) throws IOException {
+        try (ImageInputStream in = ImageIO.createImageInputStream(file.toFile())) {
+            if (in == null) throw new IOException("cannot open " + what + ": " + file);
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(in);
+            if (!readers.hasNext()) throw new IOException("cannot decode " + what + ": " + file);
+            ImageReader reader = readers.next();
+            try {
+                reader.setInput(in, true, true);
+                int w = reader.getWidth(0), h = reader.getHeight(0);
+                if (w <= 0 || h <= 0 || w > MAX_SIDE || h > MAX_SIDE || (long) w * h > MAX_PIXELS)
+                    throw new IOException(what + " is " + w + "x" + h + ", which is more than the engine"
+                            + " will decode (" + MAX_SIDE + " a side, " + MAX_PIXELS + " pixels): " + file);
+                return reader.read(0);
+            } finally {
+                reader.dispose();
+            }
+        }
     }
 
     /** Immutable after loading; sample output belongs to the renderer's thread, never the tile. */

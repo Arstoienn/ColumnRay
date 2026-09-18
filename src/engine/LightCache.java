@@ -67,7 +67,8 @@ final class LightCache {
      * merely slow, rather than wrong light, which is invisible.
      */
     private static final Set<String> BAKES_NOT = Set.of(
-            "Main", "Renderer", "Minimap", "RayView", "DynamicResolution", "Keys", "LightCache", "Hash");
+            "Main", "Options", "Renderer", "Warp", "Player", "Hud", "Capture",
+            "Minimap", "RayView", "DynamicResolution", "Keys", "LightCache", "Hash");
 
     private LightCache() {}
 

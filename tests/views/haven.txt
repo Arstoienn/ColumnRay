@@ -1,0 +1,18 @@
+# Haven cameras, for a check against the map in the maps/haven submodule:
+#
+#   ./test.sh --haven
+#
+# Taken from tools/haven.spots, the ten frozen cameras the Blender comparison scores against, less
+# the four that stand outside what the current conversion covers and would only ever hash an empty
+# sky. Two of them are repeated looking up, because the pitch warp's overscan is where a change to
+# the renderer is most likely to show and least likely to be noticed.
+#
+#   name     x      y   heading  pitch  feet
+spot4       95.2  122.8   180      0     3.00
+spot6       71.8   49.2   330      0     3.00
+spot7       69.2  124.2   255      0     1.00
+spot8       65.8   84.8   180      0     1.00
+spot9       34.8  120.2   270      0     1.50
+spot10      34.8   80.8    90      0     2.00
+spot8-up    65.8   84.8   180     30     1.00
+spot6-down  71.8   49.2   330    -30     3.00
