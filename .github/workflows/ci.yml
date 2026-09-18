@@ -12,6 +12,11 @@ on:
 permissions:
   contents: read
 
+# Actions are pinned to the commit each v4 tag pointed at, not to the tag. A tag is a name its
+# owner can move, and these run with a checkout of this repository in front of them; a moved tag
+# would be new code in this job without a commit here to show for it. The comment says which
+# release the hash is, so a bump stays readable in a diff.
+
 jobs:
   # What must hold on any machine: the code compiles, the units behave, and neither a frame nor a
   # bake depends on how many cores ran it.
@@ -22,8 +27,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '26'
@@ -37,8 +42,8 @@ jobs:
   golden:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '26'
@@ -50,7 +55,7 @@ jobs:
           echo "::group::tests/golden after --bless"
           cat tests/golden/*.txt
           echo "::endgroup::"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
         with:
           name: golden-from-this-build

@@ -11,7 +11,9 @@ public final class Tests {
         GeometryTest.run();
         DynamicResolutionTest.run();
         HashTest.run();
+        MaterialsTest.run();
         WorldTest.run();
+        LightingTest.run();
         PlayerTest.run();
         WarpTest.run();
         RendererTest.run();

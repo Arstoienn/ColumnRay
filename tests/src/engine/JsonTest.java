@@ -45,6 +45,22 @@ final class JsonTest {
         Check.rejects(() -> Json.parse(""), "unexpected end of input", "an empty file");
         Check.rejects(() -> Json.parse("tru"), "expected true", "a half-written literal");
 
+        // A map file comes from somewhere - a converter, a download, half a file. None of these may
+        // reach the caller as an Error from inside the parser's own arithmetic.
+        String backslash = "\\";
+        Check.rejects(() -> Json.parse("[".repeat(200)), "nested deeper than",
+                "nesting deep enough to overflow the parser's stack");
+        Check.rejects(() -> Json.parse("\"a" + backslash), "a backslash with nothing after it",
+                "a string that ends on its escape character");
+        Check.rejects(() -> Json.parse("\"" + backslash + "u12\""), "cut short",
+                "a unicode escape with two digits instead of four");
+        Check.rejects(() -> Json.parse("\"" + backslash + "uZZZZ\""), "four hex digits",
+                "a unicode escape that is not hex");
+        Check.rejects(() -> Json.parse("1.2.3"), "not a number",
+                "a run of number characters that is not a number");
+        Check.that(Json.parse("[".repeat(120) + "]".repeat(120)) != null,
+                "nesting deeper than any map, but not deep enough to be dangerous, still parses");
+
         // The line number is the whole point of the message: a map file is thousands of lines.
         Check.rejects(() -> Json.parse("{\n\"a\": 1,\n\"b\": }\n"), "line 3", "the line a problem is on");
     }
