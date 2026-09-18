@@ -6,11 +6,14 @@ public final class Tests {
 
     public static void main(String[] args) throws Exception {
         long t0 = System.nanoTime();
+        OptionsTest.run();
         JsonTest.run();
         GeometryTest.run();
         DynamicResolutionTest.run();
         HashTest.run();
         WorldTest.run();
+        PlayerTest.run();
+        WarpTest.run();
         RendererTest.run();
         LightCacheTest.run();
         System.out.printf("%d checks, %d failed, %.1f s%n",

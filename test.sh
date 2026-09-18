@@ -5,6 +5,7 @@
 #   ./test.sh --unit         unit tests only
 #   ./test.sh --determinism  the same build must render the same frames on one thread and on all
 #   ./test.sh --golden       the frames must match tests/golden/
+#   ./test.sh --haven        the same, against the maps/haven submodule (--flat, so no bake)
 #   ./test.sh --bless        rewrite tests/golden/ from this build (read the diff first)
 #
 # The golden files hold digests of the renderer's own pixels, depth, albedo and lightmap - not of
@@ -15,20 +16,26 @@ cd "$(dirname "$0")"
 
 mode=all
 case "${1:-}" in
-    --unit|--determinism|--golden|--bless) mode=${1#--} ;;
+    --unit|--determinism|--golden|--haven|--bless) mode=${1#--} ;;
     "") ;;
-    *) echo "usage: $0 [--unit | --determinism | --golden | --bless]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--unit | --determinism | --golden | --haven | --bless]" >&2; exit 2 ;;
 esac
 
 # Small enough to run in seconds, large enough that a real change cannot hide in it. The size is
 # part of the golden file: change it and every digest changes with it.
 SIZE=320x180
 VIEWS=tests/views/school.txt
+# Haven is a submodule, and the size of it: 3.8 million surfaces and a bake of a quarter of an
+# hour. So it is a target of its own, --flat, and CI never sees it.
+HAVEN=maps/haven/haven.json
+HAVEN_VIEWS=tests/views/haven.txt
 
 ./build.sh
 
 run() { java --enable-native-access=ALL-UNNAMED ${JAVA_OPTS:-} -cp out engine.Main "$@"; }
 frames() { run maps/school.json --verify "$VIEWS" --size "$SIZE" "$@" | grep -E '^(#|view |lightmap )'; }
+havenFrames() { JAVA_OPTS="-Xmx12g ${JAVA_OPTS:-}" run "$HAVEN" --verify "$HAVEN_VIEWS" --size "$SIZE" --flat "$@" \
+    | grep -E '^(#|view |lightmap )'; }
 
 fail=0
 
@@ -51,6 +58,24 @@ if [ "$mode" = all ] || [ "$mode" = determinism ]; then
     else
         echo "FAIL  the output depends on how many threads produced it."
         fail=1
+    fi
+fi
+
+if [ "$mode" = haven ] || { [ "$mode" = bless ] && [ -f "$HAVEN" ]; }; then
+    if [ ! -f "$HAVEN" ]; then
+        echo "skip  haven: $HAVEN is not there. git submodule update --init maps/haven"
+    else
+        echo "== haven =="
+        got=$(havenFrames)
+        if [ "$mode" = bless ]; then
+            printf '%s\n' "$got" > tests/golden/haven-flat.txt
+            echo "blessed tests/golden/haven-flat.txt"
+        elif diff -u tests/golden/haven-flat.txt <(printf '%s\n' "$got"); then
+            echo "ok    haven-flat"
+        else
+            echo "FAIL  haven-flat: see the note under the school golden failure; the same applies." >&2
+            fail=1
+        fi
     fi
 fi
 

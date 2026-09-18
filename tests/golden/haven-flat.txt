@@ -1,0 +1,10 @@
+# columnray verify 1
+view spot4 320x180 plain=afc0a841db6e3d23 albedo=d347204053280630 depth=c4a51134c6b513d3
+view spot6 320x180 plain=248d8ef1691c16a1 albedo=c1953f469cbb4df3 depth=9f93cff0bfdf5f79
+view spot7 320x180 plain=47d639993e66ba1a albedo=030c07a62ef8e95e depth=02699a2331b41914
+view spot8 320x180 plain=11239f4f33ba78ed albedo=a0ec924eb783e9e4 depth=de2ef91ffb24ebff
+view spot9 320x180 plain=65e1af5b49107bd9 albedo=2570920e5ca2ad4f depth=1c55ebf901c268ee
+view spot10 320x180 plain=b8630800d54d874d albedo=9dc9a58b3504c843 depth=885e9761f12aa15a
+view spot8-up 320x180 plain=14f27806c4741f88 albedo=25933b3bb21e727f depth=4bad6c80609f4346
+view spot6-down 320x180 plain=96004025f1945ee4 albedo=adb69f52f13673e4 depth=72c664f5248fecb7
+lightmap - rays=0   # --flat
