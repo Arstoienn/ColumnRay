@@ -7,6 +7,12 @@ import java.util.Map;
 
 /** Minimal JSON parser (// comments allowed). Object -> Map, array -> List, number -> Double. */
 final class Json {
+    /** A map file is data, and data from anywhere describes its own nesting. The parser recurses
+     *  once per level, so without a ceiling a file of nothing but brackets is a stack overflow -
+     *  an Error, thrown from wherever the stack happened to run out, rather than a refusal that
+     *  says which line is at fault. The limit is far above any map: Haven's deepest is 7. */
+    private static final int MAX_DEPTH = 128;
+
     private final String s;
     private int i;
 
@@ -14,18 +20,19 @@ final class Json {
 
     static Object parse(String text) {
         Json j = new Json(text);
-        Object v = j.value();
+        Object v = j.value(0);
         j.ws();
         if (j.i != j.s.length()) throw j.err("trailing content");
         return v;
     }
 
-    private Object value() {
+    private Object value(int depth) {
+        if (depth > MAX_DEPTH) throw err("nested deeper than " + MAX_DEPTH + " levels");
         ws();
         if (i >= s.length()) throw err("unexpected end of input");
         return switch (s.charAt(i)) {
-            case '{' -> object();
-            case '[' -> array();
+            case '{' -> object(depth + 1);
+            case '[' -> array(depth + 1);
             case '"' -> string();
             case 't' -> literal("true", Boolean.TRUE);
             case 'f' -> literal("false", Boolean.FALSE);
@@ -34,7 +41,7 @@ final class Json {
         };
     }
 
-    private Map<String, Object> object() {
+    private Map<String, Object> object(int depth) {
         Map<String, Object> m = new LinkedHashMap<>();
         i++;
         ws();
@@ -45,7 +52,7 @@ final class Json {
             String key = string();
             ws();
             expect(':');
-            m.put(key, value());
+            m.put(key, value(depth));
             ws();
             if (peek() == ',') { i++; continue; }
             expect('}');
@@ -53,13 +60,13 @@ final class Json {
         }
     }
 
-    private List<Object> array() {
+    private List<Object> array(int depth) {
         List<Object> l = new ArrayList<>();
         i++;
         ws();
         if (peek() == ']') { i++; return l; }
         while (true) {
-            l.add(value());
+            l.add(value(depth));
             ws();
             if (peek() == ',') { i++; continue; }
             expect(']');
@@ -75,6 +82,7 @@ final class Json {
             char c = s.charAt(i++);
             if (c == '"') return b.toString();
             if (c != '\\') { b.append(c); continue; }
+            if (i >= s.length()) throw err("a backslash with nothing after it");
             char e = s.charAt(i++);
             switch (e) {
                 case 'n' -> b.append('\n');
@@ -82,7 +90,15 @@ final class Json {
                 case 'r' -> b.append('\r');
                 case 'b' -> b.append('\b');
                 case 'f' -> b.append('\f');
-                case 'u' -> { b.append((char) Integer.parseInt(s.substring(i, i + 4), 16)); i += 4; }
+                case 'u' -> {
+                    if (i + 4 > s.length()) throw err("a \\u escape cut short");
+                    try {
+                        b.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+                    } catch (NumberFormatException notHex) {
+                        throw err("a \\u escape that is not four hex digits");
+                    }
+                    i += 4;
+                }
                 default -> b.append(e);
             }
         }
@@ -92,7 +108,13 @@ final class Json {
         int start = i;
         while (i < s.length() && "+-0123456789.eE".indexOf(s.charAt(i)) >= 0) i++;
         if (start == i) throw err("unexpected character '" + s.charAt(i) + "'");
-        return Double.parseDouble(s.substring(start, i));
+        // The scan above accepts any run of number characters, so "1.2.3" and "--4" reach this
+        // point and Double.parseDouble throws where it stands. Thrown from here it says which line.
+        try {
+            return Double.parseDouble(s.substring(start, i));
+        } catch (NumberFormatException notANumber) {
+            throw err("not a number: " + s.substring(start, i));
+        }
     }
 
     private Object literal(String word, Object v) {
