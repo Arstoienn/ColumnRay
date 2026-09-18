@@ -10,6 +10,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.IntConsumer;
 
 /**
@@ -18,6 +19,23 @@ import java.util.function.IntConsumer;
  * bounding boxes touch it, and it is rebuilt automatically on load.
  */
 final class World {
+    /**
+     * What a map file is allowed to ask for.
+     *
+     * A map is data, and the engine loads whichever one it is pointed at - a map someone sent you,
+     * a converter's output, a file that was truncated halfway. Every number below is far above any
+     * real map (Haven: 3.8 million surfaces, a 448 x 448 grid, 408 images) and far below the point
+     * where the request stops being a map and becomes a way to exhaust the machine: "count":
+     * [1e9, 1e9] on an array of one box asks for 10^18 shapes, and without a ceiling the loader
+     * spends the rest of the afternoon finding that out. Refusing says which key was at fault.
+     */
+    private static final long MAX_JSON_BYTES = 512L << 20;
+    private static final int MAX_SHAPES = 20_000_000;
+    private static final int MAX_FILES = 65_536;          // chunks, images: one map's worth
+    private static final int MAX_POLY_POINTS = 100_000;
+    private static final long MAX_GRID_CELLS = 64_000_000L;
+    private static final int MAX_REPEAT = 1_000_000;      // an array's count, a canopy's cards
+
     enum Kind { SEG, CIRCLE, POLY }
 
     /** A convex polygon region. ceil = +infinity means open to the sky. */
@@ -230,9 +248,16 @@ final class World {
         this.regions = regions;
         this.shapes = shapes;
         this.lighting = lighting;
+        if (regions.length == 0) throw new IllegalArgumentException("a map needs at least one region");
+        if (!Double.isFinite(cell) || cell <= 0)
+            throw new IllegalArgumentException("cell must be a finite positive size in metres");
         for (int i = 0; i < regions.length; i++) regions[i].id = i;
         for (int i = 0; i < shapes.length; i++) shapes[i].id = i;
         double len = Math.hypot(sunX, sunY);
+        // Every shading term divides by this. A sun of [0, 0] would make the whole map NaN, which
+        // draws as a black frame with nothing to say why.
+        if (!Double.isFinite(len) || len == 0)
+            throw new IllegalArgumentException("sun must be a finite direction that is not [0, 0]");
         this.sunX = sunX / len;
         this.sunY = sunY / len;
         this.spawnX = spawnX;
@@ -334,13 +359,20 @@ final class World {
         g.cell = cell;
         g.x0 = minX - cell;
         g.y0 = minY - cell;
-        g.nx = (int) Math.ceil((maxX - g.x0) / cell) + 1;
-        g.ny = (int) Math.ceil((maxY - g.y0) / cell) + 1;
-        g.shapes = new int[g.nx * g.ny][];
-        g.regions = new int[g.nx * g.ny][];
+        // In double, and checked: a map a kilometre across with a 1 mm cell is 10^12 cells, and
+        // nx * ny in int wraps to something small or negative long before the allocation fails.
+        double wide = Math.ceil((maxX - g.x0) / cell) + 1, tall = Math.ceil((maxY - g.y0) / cell) + 1;
+        if (!(wide >= 1) || !(tall >= 1) || wide * tall > MAX_GRID_CELLS)
+            throw new IllegalArgumentException("the map needs a grid of " + wide + " x " + tall
+                    + " cells, which is more than " + MAX_GRID_CELLS + ": raise \"cell\"");
+        g.nx = (int) wide;
+        g.ny = (int) tall;
+        int cells = g.nx * g.ny;
+        g.shapes = new int[cells][];
+        g.regions = new int[cells][];
 
         @SuppressWarnings({"unchecked", "rawtypes"})
-        List<Integer>[] sh = new List[g.nx * g.ny], rg = new List[g.nx * g.ny];
+        List<Integer>[] sh = new List[cells], rg = new List[cells];
         for (int c = 0; c < sh.length; c++) { sh[c] = new ArrayList<>(); rg[c] = new ArrayList<>(); }
         for (int i = 0; i < shapes.length; i++) {
             final int id = i;
@@ -397,7 +429,8 @@ final class World {
     // ---- JSON loading ----
 
     static World load(Path path) throws IOException {
-        Map<String, Object> root = obj(Json.parse(Files.readString(path)));
+        path = path.toAbsolutePath().normalize();
+        Map<String, Object> root = readJson(path);
         Assets textures = new Assets(parseTextures(root, path), parseImages(root, path));
         List<Region> regions = new ArrayList<>();
         for (Object o : list(root.get("regions"))) regions.add(parseRegion(obj(o)));
@@ -408,13 +441,17 @@ final class World {
         // {"shapes": [...]}, paths relative to this file. One 33 MB file had to be rewritten whole
         // for any change anywhere, and a diff of it said nothing.
         List<Path> sources = new ArrayList<>(List.of(path));
-        if (root.get("chunks") != null)
-            for (Object c : list(root.get("chunks"))) {
-                Path file = path.resolveSibling((String) c);
+        if (root.get("chunks") != null) {
+            List<Object> names = list(root.get("chunks"));
+            if (names.size() > MAX_FILES)
+                throw new IllegalArgumentException("a map may name at most " + MAX_FILES + " chunks");
+            for (Object c : names) {
+                Path file = beside(path, c, "chunk");
                 sources.add(file);
-                Map<String, Object> chunk = obj(Json.parse(Files.readString(file)));
+                Map<String, Object> chunk = readJson(file);
                 for (Object o : list(chunk.get("shapes"))) parseShape(obj(o), 0, 0, shapes, textures);
             }
+        }
 
         double[] sun = root.containsKey("sun") ? pt(root.get("sun")) : new double[] {0.5, 0.8};
         Map<String, Object> spawn = obj(root.get("spawn"));
@@ -434,6 +471,9 @@ final class World {
             throw new IllegalArgumentException("textures must be an object");
         Map<String, Object> m = obj(root.get("textures"));
         int size = textureInt(m, "size", 1), cols = textureInt(m, "cols", 1), count = textureInt(m, "count", 1);
+        if (size > Materials.MAX_SIDE || cols > Materials.MAX_SIDE || count > MAX_FILES)
+            throw new IllegalArgumentException("textures.size/cols must be at most " + Materials.MAX_SIDE
+                    + " and count at most " + MAX_FILES);
         if (!(m.get("file") instanceof String file) || file.isBlank())
             throw new IllegalArgumentException("textures.file must name the atlas PNG beside the map");
         if (!(m.get("mean") instanceof List<?> means) || means.size() != count)
@@ -444,7 +484,7 @@ final class World {
                 throw new IllegalArgumentException("textures.mean[" + i + "] must be #rrggbb");
             colors[i] = Integer.parseInt(color.substring(1), 16);
         }
-        return Materials.loadAtlas(map.resolveSibling(file), size, cols, count, colors);
+        return Materials.loadAtlas(beside(map, file, "texture atlas"), size, cols, count, colors);
     }
 
     /** The atlas's tiles and the map's whole images, whichever of the two it has. */
@@ -455,16 +495,24 @@ final class World {
     private static Materials.Texture[] parseImages(Map<String, Object> root, Path map) throws IOException {
         if (root.get("images") == null) return null;
         List<Object> files = list(root.get("images"));
+        if (files.size() > MAX_FILES)
+            throw new IllegalArgumentException("a map may name at most " + MAX_FILES + " images");
+        // Resolve every path on this thread: a refusal must name the file that caused it, and the
+        // check is the one thing here that must not be racing anything.
+        Path[] paths = new Path[files.size()];
+        for (int i = 0; i < paths.length; i++) paths[i] = beside(map, files.get(i), "image");
         Materials.Texture[] out = new Materials.Texture[files.size()];
-        IOException[] failed = new IOException[1];
+        // Two images failing at once used to overwrite the same slot from both threads; which
+        // exception came out was then whichever write landed last, or neither.
+        AtomicReference<IOException> failed = new AtomicReference<>();
         java.util.stream.IntStream.range(0, out.length).parallel().forEach(i -> {
             try {
-                out[i] = Materials.loadImage(map.resolveSibling((String) files.get(i)));
+                out[i] = Materials.loadImage(paths[i]);
             } catch (IOException e) {
-                failed[0] = e;
+                failed.compareAndSet(null, e);
             }
         });
-        if (failed[0] != null) throw failed[0];
+        if (failed.get() != null) throw failed.get();
         return out;
     }
 
@@ -507,7 +555,7 @@ final class World {
         r.floor = num(m, "floor", 0);
         Object c = m.get("ceil");
         r.sky = c == null;
-        r.ceil = r.sky ? Double.POSITIVE_INFINITY : ((Number) c).doubleValue();
+        r.ceil = r.sky ? Double.POSITIVE_INFINITY : finite(c, "region ceil");
         r.top = num(m, "top", r.ceil);
         r.walkable = !(m.get("walkable") instanceof Boolean b) || b;
         r.floorMat = Materials.id(str(m, "floorMat", "concrete"));
@@ -539,7 +587,9 @@ final class World {
         double[] c = pt(m.get("c"));
         double cx = c[0] + ox, cy = c[1] + oy;
         double r = num(m, "r", 1.8), z0 = num(m, "z0", 1.8), z1 = num(m, "h", 4.8);
-        int cards = (int) num(m, "cards", 16), seed = (int) num(m, "seed", 1);
+        int cards = whole(num(m, "cards", 16), "canopy cards", 0, MAX_REPEAT);
+        int seed = whole(num(m, "seed", 1), "canopy seed", Integer.MIN_VALUE, Integer.MAX_VALUE);
+        room(out, cards, "canopy cards");
         int color = color(m, "color", "#4d7d36");
         double mid = (z0 + z1) / 2, halfZ = (z1 - z0) / 2;
         for (int i = 0; i < cards; i++) {
@@ -597,12 +647,17 @@ final class World {
         }
         if (type.equals("array")) {
             double[] o = pt(m.get("origin")), n = pt(m.get("count")), st = pt(m.get("step"));
-            for (int j = 0; j < (int) n[1]; j++)
-                for (int i = 0; i < (int) n[0]; i++)
-                    for (Object item : list(m.get("items")))
+            int nx = whole(n[0], "array count x", 0, MAX_REPEAT);
+            int ny = whole(n[1], "array count y", 0, MAX_REPEAT);
+            List<Object> items = list(m.get("items"));
+            room(out, (long) nx * ny * items.size(), "array copies");
+            for (int j = 0; j < ny; j++)
+                for (int i = 0; i < nx; i++)
+                    for (Object item : items)
                         parseShape(obj(item), ox + o[0] + i * st[0], oy + o[1] + j * st[1], out, textures);
             return;
         }
+        room(out, 1, "shapes");
 
         Shape s = new Shape();
         s.z0 = num(m, "z0", 0);
@@ -627,14 +682,14 @@ final class World {
                 throw new IllegalArgumentException("a shape with img needs uv: six numbers");
             s.img = image(textures, m, "img");
             s.uv = new double[6];
-            for (int i = 0; i < 6; i++) s.uv[i] = ((Number) uv.get(i)).doubleValue();
+            for (int i = 0; i < 6; i++) s.uv[i] = finite(uv.get(i), "uv[" + i + "]");
             if (m.containsKey("imgB")) {
                 if (!(m.get("va") instanceof List<?> va) || va.size() != 3)
                     throw new IllegalArgumentException("a shape with imgB needs va: three numbers");
                 s.imgB = image(textures, m, "imgB");
                 s.hmap = image(textures, m, "hmap");
                 s.va = new double[3];
-                for (int i = 0; i < 3; i++) s.va[i] = ((Number) va.get(i)).doubleValue();
+                for (int i = 0; i < 3; i++) s.va[i] = finite(va.get(i), "va[" + i + "]");
                 s.vb = num(m, "vb", 0);
                 s.inv = num(m, "inv", 0) != 0;
             }
@@ -643,7 +698,7 @@ final class World {
                 if (!(m.get("vc") instanceof List<?> vc) || vc.size() != 9)
                     throw new IllegalArgumentException("shape vc must be nine numbers");
                 s.vc = new double[9];
-                for (int i = 0; i < 9; i++) s.vc[i] = ((Number) vc.get(i)).doubleValue();
+                for (int i = 0; i < 9; i++) s.vc[i] = finite(vc.get(i), "vc[" + i + "]");
             }
         }
         s.color = color(m, "color", "#c8c8c8");
@@ -686,7 +741,7 @@ final class World {
                 } else if (type.equals("ngon")) {
                     double[] c = pt(m.get("c"));
                     double r = num(m, "r", 0.5), rot = Math.toRadians(num(m, "rot", 0));
-                    int n = (int) num(m, "n", 6);
+                    int n = whole(num(m, "n", 6), "ngon n", 3, MAX_POLY_POINTS);
                     p = new double[2][n];
                     for (int i = 0; i < n; i++) {
                         double a = rot + i * 2 * Math.PI / n;
@@ -716,8 +771,12 @@ final class World {
     @SuppressWarnings("unchecked")
     static List<Object> list(Object o) { return (List<Object>) o; }
 
+    /** A missing key takes the default; a key that is there must be a number the arithmetic can
+     *  use. A NaN width spreads to the shape's bounds, from there to the map's, and from there to
+     *  the whole grid, which then covers nothing and draws an empty world with nothing said. */
     static double num(Map<String, Object> m, String k, double def) {
-        return m.get(k) instanceof Number n ? n.doubleValue() : def;
+        if (!m.containsKey(k)) return def;
+        return finite(m.get(k), k);
     }
 
     static String str(Map<String, Object> m, String k, String def) {
@@ -725,16 +784,22 @@ final class World {
     }
 
     static int color(Map<String, Object> m, String k, String def) {
-        return Integer.parseInt(str(m, k, def).substring(1), 16);
+        String value = str(m, k, def);
+        if (value == null || !value.matches("#[0-9a-fA-F]{6}"))
+            throw new IllegalArgumentException(k + " must be a colour like #rrggbb, not " + value);
+        return Integer.parseInt(value.substring(1), 16);
     }
 
     static double[] pt(Object o) {
         List<Object> l = list(o);
-        return new double[] {((Number) l.get(0)).doubleValue(), ((Number) l.get(1)).doubleValue()};
+        if (l == null || l.size() != 2) throw new IllegalArgumentException("a point must be two numbers");
+        return new double[] {finite(l.get(0), "point x"), finite(l.get(1), "point y")};
     }
 
     private static double[][] poly(Object o, double ox, double oy) {
         List<Object> l = list(o);
+        if (l == null || l.size() < 3 || l.size() > MAX_POLY_POINTS)
+            throw new IllegalArgumentException("a polygon needs 3 to " + MAX_POLY_POINTS + " points");
         double[][] p = new double[2][l.size()];
         for (int i = 0; i < l.size(); i++) {
             double[] q = pt(l.get(i));
@@ -742,6 +807,54 @@ final class World {
             p[1][i] = q[1] + oy;
         }
         return p;
+    }
+
+    /** A number a map gave us, which the engine is about to compute with. */
+    private static double finite(Object value, String what) {
+        if (!(value instanceof Number n) || !Double.isFinite(n.doubleValue()))
+            throw new IllegalArgumentException(what + " must be a finite number, not " + value);
+        return n.doubleValue();
+    }
+
+    /** A count, an index, a number of sides: whole, and within what the engine can build. */
+    private static int whole(double value, String what, int min, int max) {
+        if (value != Math.rint(value) || value < min || value > max)
+            throw new IllegalArgumentException(what + " must be a whole number from " + min + " to " + max
+                    + ", not " + value);
+        return (int) value;
+    }
+
+    /** Is there room for this many more shapes? Asked before the loop that would make them, not
+     *  after, so an expansion that cannot fit costs a message rather than the whole heap. */
+    private static void room(List<Shape> out, long more, String what) {
+        if (more > MAX_SHAPES - out.size())
+            throw new IllegalArgumentException(what + " would take the map past " + MAX_SHAPES + " shapes");
+    }
+
+    private static Map<String, Object> readJson(Path file) throws IOException {
+        long size = Files.size(file);
+        if (size > MAX_JSON_BYTES)
+            throw new IOException(file + " is " + size + " bytes, more than the " + MAX_JSON_BYTES + " a map may be");
+        return obj(Json.parse(Files.readString(file)));
+    }
+
+    /**
+     * A file the map names, resolved against the map's own directory and required to stay inside it.
+     *
+     * Every path in a map file is relative to the map - "haven/0_0.json", "haven-img/12.png" - and
+     * a map is a thing you are handed: a converter's output, a level someone sent you. Without this
+     * check "../../../../etc/passwd" is a path the loader will happily read and hand to a PNG
+     * decoder, and "images" is a list of any length. Keeping a map to its own directory costs
+     * nothing that a real map does.
+     */
+    private static Path beside(Path map, Object name, String what) {
+        if (!(name instanceof String file) || file.isBlank())
+            throw new IllegalArgumentException("a " + what + " path must be a non-empty string, not " + name);
+        Path dir = map.toAbsolutePath().normalize().getParent();
+        Path resolved = dir.resolve(file).normalize();
+        if (!resolved.startsWith(dir))
+            throw new IllegalArgumentException(what + " \"" + file + "\" is outside the map's own directory");
+        return resolved;
     }
 
     private interface BoundsSink { void accept(double[] b); }
