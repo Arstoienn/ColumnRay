@@ -11,6 +11,7 @@ public final class Tests {
         DynamicResolutionTest.run();
         HashTest.run();
         WorldTest.run();
+        RendererTest.run();
         LightCacheTest.run();
         System.out.printf("%d checks, %d failed, %.1f s%n",
                 Check.checks, Check.failed, (System.nanoTime() - t0) / 1e9);
