@@ -12,9 +12,8 @@ import java.util.Map;
 /**
  * Every image the map uses, on the card.
  *
- * Haven's 452 images come in fifteen distinct sizes - 222 of them 512 square, 75 of them 1024,
- * and seven in sizes of their own - so they go into one array texture per size rather than a
- * packed atlas. An array layer keeps
+ * Haven's 452 images come in fifteen distinct sizes - 222 of them 512 square, 75 of them 1024 -
+ * so they go into one array texture per size rather than a packed atlas. An array layer keeps
  * its own mip chain, exactly as {@link Materials.Texture} does, which is the property a packed
  * atlas would lose: a mip level of an atlas averages across the seam between two unrelated
  * images, and the engine deliberately never lets that happen.
@@ -42,8 +41,9 @@ final class GpuTextures {
      * A fragment shader may use sixteen samplers in all and the frame already spends five on the
      * spans, the lightmaps and the material table, so there is room for ten arrays. Haven's
      * images come in fifteen sizes, but the sizes are not evenly used - 512 square alone accounts
-     * for half of them - so the ten largest groups are taken and the stragglers are left to the
-     * CPU, where the skip mask counts them rather than letting them draw wrong.
+     * for half of them - so the ten largest groups are taken and the seven images in the five
+     * rarest sizes are left to the CPU, where the skip mask counts them rather than letting them
+     * draw wrong.
      */
     static final int MAX_BANKS = 10;
 
