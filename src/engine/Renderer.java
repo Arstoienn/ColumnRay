@@ -352,7 +352,7 @@ final class Renderer {
         /** The GPU path: where wall intervals go, and the wall currently being painted. */
         private GpuSpans sink;
         private boolean spanWall;
-        private double spanU, spanW, spanSq, spanLight, spanZ0, spanDz;
+        private double spanU, spanW, spanSq, spanLight;
         private int spanMat, spanRgb;
 
         private Trace tr;
@@ -742,8 +742,22 @@ final class Renderer {
                     });
                 } else {
                     double k = lambert(h.nx, h.ny) * fog(t1) * light;
+                    // The same capture wallBand makes, for the other kind of wall: a shape's own
+                    // side. Only the procedural path is on the GPU, so an image-textured shape is
+                    // left off and the comparison leaves its pixels out rather than failing them.
+                    if (sink != null && s.img == null && s.tex == null) {
+                        double c = t1 * dk / F;
+                        spanWall = true;
+                        spanU = u;
+                        spanW = c;
+                        spanSq = sq;
+                        spanLight = k;
+                        spanMat = s.mat;
+                        spanRgb = s.color;
+                    }
                     side = paint(yTop, yBot, t1, 0, s.albedoColor, y -> sideColor(s,
                             u, eye - (y + 0.5 - hz) * t1 * dk / F, t1, sq, k, null));
+                    spanWall = false;
                 }
             }
             int ev = -1;
@@ -1073,8 +1087,6 @@ final class Renderer {
                 spanW = c;                              // pixelSize(t): how wide a pixel is here
                 spanSq = sq;
                 spanLight = lam * skin.light;
-                spanZ0 = eye + (hz - 0.5) * c;          // z of row 0, and how it falls per row
-                spanDz = -c;
                 spanMat = skin.wallMat;
                 spanRgb = skin.wallColor;
             }
@@ -1515,7 +1527,7 @@ final class Renderer {
                         }
                     }
                 }
-                if (spanWall) sink.add(x, s0, s1, spanU, spanZ0, spanDz, spanLight, spanW, spanSq, spanMat, spanRgb);
+                if (spanWall) sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq, spanMat, spanRgb);
                 filled += s1 - s0;
                 if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above
                 if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // leftover below

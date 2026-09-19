@@ -68,8 +68,7 @@ final class GpuSpans {
      * One wall interval. Called from the column's own thread while it paints, so the only shared
      * thing it touches is the drop counter, and that is only ever a count of something going wrong.
      */
-    void add(int x, int y0, int y1, double u, double z0, double dz, double light,
-             double w, double sq, int mat, int rgb) {
+    void add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb) {
         int n = count[x];
         if (n >= MAX_PER_COLUMN) {
             dropped++;
@@ -81,8 +80,8 @@ final class GpuSpans {
         data[at + 2] = y1;
         data[at + 3] = mat;
         data[at + 4] = (float) u;
-        data[at + 5] = (float) z0;
-        data[at + 6] = (float) dz;
+        data[at + 5] = 0;
+        data[at + 6] = 0;
         data[at + 7] = (float) light;
         data[at + 8] = (float) w;
         data[at + 9] = (float) sq;

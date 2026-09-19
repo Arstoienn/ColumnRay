@@ -21,6 +21,14 @@ import java.util.Arrays;
  *     ./build.sh && java --enable-native-access=ALL-UNNAMED -cp out engine.GpuCheck [map.json] [WxH]
  */
 final class GpuCheck {
+    /** A scene with nothing but walls in it, for when the point is that the card drew the frame
+     *  and not that it drew part of one: if the GPU pass were doing nothing, these would be black. */
+    private static final String[][] WALLS_ONLY = {
+        {"shaft-n", "5", "5", "-90", "25"},
+        {"shaft-e", "5", "5", "0", "25"},
+        {"shaft-corner", "2", "2", "45", "25"},
+    };
+
     /** name, x, y, heading, feet - the school cameras, at the heights they stand at. */
     private static final String[][] VIEWS = {
         {"classroom", "13", "4", "90", "0"},
@@ -52,7 +60,8 @@ final class GpuCheck {
             System.out.printf("%-12s %8s %8s %8s %8s %8s %8s %8s%n",
                     "view", "pixels", "worst", "mean", "over 2", "masked", "cpu ms", "gpu ms");
             int worstAll = 0;
-            for (String[] v : VIEWS) {
+            String[][] views = map.getFileName().toString().contains("walls") ? WALLS_ONLY : VIEWS;
+            for (String[] v : views) {
                 spans.reset();
                 Arrays.fill(cpu, 0);
                 Renderer.Camera cam = new Renderer.Camera();
@@ -63,7 +72,7 @@ final class GpuCheck {
                 cam.dirY = Math.sin(heading);
                 cam.eye = Double.parseDouble(v[4]) + Player.EYE_STAND;
                 renderer.render(cam);
-                walls.draw(spans, gpu);
+                walls.draw(spans, gpu, cam.eye, h / 2.0 + cam.pitch);
 
                 // How long each side takes, once both are warm. The CPU figure is a whole frame -
                 // rays, grid, floors, ceilings and walls - and the GPU figure is the wall pass
@@ -75,12 +84,16 @@ final class GpuCheck {
                     long a0 = System.nanoTime();
                     renderer.render(cam);
                     long a1 = System.nanoTime();
-                    walls.draw(spans, gpu);
+                    walls.draw(spans, gpu, cam.eye, h / 2.0 + cam.pitch);
                     long a2 = System.nanoTime();
                     cpuMs = Math.min(cpuMs, (a1 - a0) / 1e6);
                     gpuMs = Math.min(gpuMs, (a2 - a1) / 1e6);
                 }
 
+                if (System.getProperty("gpucheck.png") != null) {
+                    png(cpu, w, h, System.getProperty("gpucheck.png") + "/" + v[0] + "-cpu.png");
+                    png(gpu, w, h, System.getProperty("gpucheck.png") + "/" + v[0] + "-gpu.png");
+                }
                 long n = 0, sum = 0, over = 0, skipped = 0;
                 int worst = 0;
                 String worstAt = "";
@@ -102,7 +115,7 @@ final class GpuCheck {
                                         + "      mat %.0f  u %.4f  z %.4f  w %.6f  sq %.4f  light %.4f  rgb %06x")
                                         .formatted(x, y, a & 0xffffff, b & 0xffffff,
                                                 spans.data()[at + 3], spans.data()[at + 4],
-                                                spans.data()[at + 5] + y * spans.data()[at + 6],
+                                                cam.eye - (y + 0.5 - (h / 2.0 + cam.pitch)) * spans.data()[at + 8],
                                                 spans.data()[at + 8], spans.data()[at + 9],
                                                 spans.data()[at + 7], (int) spans.data()[at + 10]);
                             }
@@ -119,6 +132,14 @@ final class GpuCheck {
             }
             System.out.printf("%nworst channel difference anywhere: %d of 255%n", worstAll);
         }
+    }
+
+    /** -Dgpucheck.png=DIR writes both pictures, for when the numbers want looking at. */
+    private static void png(int[] pixels, int w, int h, String path) throws java.io.IOException {
+        java.awt.image.BufferedImage im =
+                new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        im.setRGB(0, 0, w, h, pixels, 0, w);
+        javax.imageio.ImageIO.write(im, "png", new java.io.File(path));
     }
 
     private GpuCheck() {}
