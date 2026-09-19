@@ -47,23 +47,34 @@ final class GpuMaterials {
     }
 
     /**
-     * Give every shape the indices of its three faces' records.
+     * Give every shape the indices of its faces' records.
      *
      * A shape with a blend material or vertex colour is left out: those cost a {@code pow} per
      * channel and are the likeliest place for the two sides to drift, so they keep the CPU's
      * pixels and the comparison counts them as not done rather than as wrong.
+     *
+     * A face only gets a record of its own when it really differs from one already made. A shape
+     * carrying its mesh's coordinates needs exactly one for all three faces: they differ in
+     * nothing but {@code worldUv}, and only a side ever reads that - a top or a bottom is a
+     * plane, and a plane's image is always placed by where the ray lands in the world
+     * ({@code Renderer.flatImg}). A tile-textured shape shares one between its side and its
+     * bottom, which are the same texture at the same size. That is what brings Haven's
+     * 929,404 shapes down from two and a half million records to under a million.
      */
     GpuMaterials(World world, GpuTextures images) {
         Gl.context();
         for (World.Shape s : world.shapes) {
             if (s.imgB != null || s.vc != null) continue;
-            boolean worldUv = s.img != null && s.kind != World.Kind.SEG;
-            s.gpuSide = s.img != null ? record(images, s.img, s.uv, 0, worldUv)
-                    : record(images, s.tex, null, s.ts, false);
-            s.gpuTop = s.img != null ? record(images, s.img, s.uv, 0, false)
-                    : record(images, s.topTex, null, s.topTs, false);
-            s.gpuBottom = s.img != null ? record(images, s.img, s.uv, 0, false)
-                    : record(images, s.tex, null, s.ts, false);
+            if (s.img != null) {
+                s.gpuSide = s.gpuTop = s.gpuBottom =
+                        record(images, s.img, s.uv, 0, s.kind != World.Kind.SEG);
+            } else {
+                int side = record(images, s.tex, null, s.ts, false);
+                s.gpuSide = side;
+                s.gpuBottom = side;
+                s.gpuTop = s.topTex == s.tex && s.topTs == s.ts
+                        ? side : record(images, s.topTex, null, s.topTs, false);
+            }
         }
         table = new GpuTable(TEXELS, records.size());
         upload();
