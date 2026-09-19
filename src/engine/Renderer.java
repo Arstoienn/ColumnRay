@@ -111,6 +111,15 @@ final class Renderer {
                     + "post the change to that thread and let it apply it between frames");
     }
 
+    /** When set, every wall interval the columns paint is also recorded here for the GPU path.
+     *  Null - which it is unless something asks otherwise - costs one null test an interval. */
+    private volatile GpuSpans spanSink;
+
+    void captureSpans(GpuSpans s) {
+        betweenFrames("captureSpans");
+        spanSink = s;
+    }
+
     void setLighting(Lighting l) {
         betweenFrames("setLighting");
         lighting = l;
@@ -340,6 +349,12 @@ final class Renderer {
         private int crossEdge, crossings;
 
         // Statistics and recording
+        /** The GPU path: where wall intervals go, and the wall currently being painted. */
+        private GpuSpans sink;
+        private boolean spanWall;
+        private double spanU, spanW, spanSq, spanLight, spanZ0, spanDz;
+        private int spanMat, spanRgb;
+
         private Trace tr;
         private double endT, lastT;
         private String endReason;
@@ -347,6 +362,7 @@ final class Renderer {
 
         void render(int x, Camera cam) {
             this.x = x;
+            sink = spanSink;
             px = cam.x;
             py = cam.y;
             eye = cam.eye;
@@ -1050,7 +1066,21 @@ final class Renderer {
                 wall = y -> shade(skin.wallColor,
                         sideTex(skin.wallMat, u, eye - (y + 0.5 - hz) * t * dk / F, t, sq) * k);
             }
-            return paint(rowZ(zHi, t), rowZ(zLo, t), t, 0, skin.wallColor, wall);
+            if (sink != null && em == null) {          // lightmapped walls are not on the GPU path yet
+                double c = t * dk / F;
+                spanWall = true;
+                spanU = u;
+                spanW = c;                              // pixelSize(t): how wide a pixel is here
+                spanSq = sq;
+                spanLight = lam * skin.light;
+                spanZ0 = eye + (hz - 0.5) * c;          // z of row 0, and how it falls per row
+                spanDz = -c;
+                spanMat = skin.wallMat;
+                spanRgb = skin.wallColor;
+            }
+            int rows = paint(rowZ(zHi, t), rowZ(zLo, t), t, 0, skin.wallColor, wall);
+            spanWall = false;
+            return rows;
         }
 
         /** Note the rows a masked surface could cover, clipped to the ones still open. */
@@ -1109,6 +1139,7 @@ final class Renderer {
                     } else {
                         c = sideColor(s, m.u, z, m.t, m.sq, m.f, null);
                     }
+                    if (sink != null) sink.blend(x, y);
                     int p = y * W + x;
                     pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
                     // A blended pixel has several surfaces; keep the nearest one that contributes.
@@ -1154,6 +1185,7 @@ final class Renderer {
 
         /** Write one blended pixel of a cut-out, and its albedo and depth for a screenshot. */
         private void blendPixel(int y, int c, double a, double t, Shape s) {
+            if (sink != null) sink.blend(x, y);
             int p = y * W + x;
             pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
             if (depth != null) {
@@ -1483,6 +1515,7 @@ final class Renderer {
                         }
                     }
                 }
+                if (spanWall) sink.add(x, s0, s1, spanU, spanZ0, spanDz, spanLight, spanW, spanSq, spanMat, spanRgb);
                 filled += s1 - s0;
                 if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above
                 if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // leftover below
