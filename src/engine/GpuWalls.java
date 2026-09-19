@@ -330,13 +330,39 @@ final class GpuWalls implements AutoCloseable {
                  *  Levels, 0 to 255, like everything from graded(): a mask blends over the
                  *  finished pixel with Renderer.mix's byte arithmetic, so the whole of a frame is
                  *  carried at that scale and divided once at the end. */
-                %s
                 vec3 sky(int row) {
                     if (float(row) >= hz) return vec3(58.0, 60.0, 64.0);
                     float s = clamp((hz - float(row)) / (viewH * 0.9), 0.0, 1.0);
                     return graded(vec3(205.0 - 125.0 * s, 222.0 - 87.0 * s, 238.0 - 28.0 * s));
                 }
 
+                /** Renderer.sideColor: what a vertical face is, shaded. Both a span and a
+                 *  masked surface blended over one are made of exactly this. */
+                vec3 wallColour(int mat, int lm, int rec, float rgb,
+                                float u, float z, float narrow, float sq, float k) {
+                    vec3 L = lm < 0 ? vec3(1.0) : lightAt(lm, u, z);
+                    #ifdef HAS_IMAGES
+                    if (rec >= 0)
+                        return shadeT(rgb, sideImage(rec, u, z, narrow, sq, narrow * foc / dk), k, L);
+                    #endif
+                    return shadeT(rgb, vec3(sideTex(mat, u, z, narrow, sq)), k, L);
+                }
+
+                /** Renderer.flat's operator: a floor, a ceiling, or a shape's top or bottom, at
+                 *  the distance the row puts it. */
+                vec3 planeColour(int mat, int lm, int rec, float rgb, float k0, float t, int row) {
+                    if (!(t > 0.0) || t > maxDist) return shade(rgb, 0.3 * k0);
+                    float wx = camX + rayX * t, wy = camY + rayY * t, f = fog(t);
+                    if (lm >= 0 && emissive(mat, wx, wy)) return shade(16774374.0, f);  // EMISSIVE
+                    vec3 L = lm < 0 ? vec3(1.0) : lightAt(lm, wx, wy);
+                    float k = lm < 0 ? k0 * f : f;
+                    #ifdef HAS_IMAGES
+                    if (rec >= 0) return shadeT(rgb, flatImage(rec, t, row), k, L);
+                    #endif
+                    return shadeT(rgb, vec3(flatTex(mat, t, row)), k, L);
+                }
+
+                %s
                 void main() {
                     int col = int(gl_FragCoord.x);
                     // The column's ray, worked out the way Column.render does, so the floor lands
@@ -359,39 +385,13 @@ final class GpuWalls implements AutoCloseable {
                         vec4 c = texelFetch(spans, ivec2(s * 4 + 2, col), 0);
                         vec4 e = texelFetch(spans, ivec2(s * 4 + 3, col), 0);
                         int mat = int(a.w), lm = int(b.z), rec = int(e.x);
-                        vec3 L = lm < 0 ? vec3(1.0) : vec3(0.0);
                         if (c.w == 0.0) {
                             float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
-                            if (lm >= 0) L = lightAt(lm, b.x, z);
-                            float k = lm < 0 ? b.w : b.y;
-                            #ifdef HAS_IMAGES
-                            if (rec >= 0) {
-                                colour = shadeT(c.z, sideImage(rec, b.x, z, c.x, c.y, c.x * foc / dk),
-                                        k, L);
-                                break;
-                            }
-                            #endif
-                            colour = shadeT(c.z, vec3(sideTex(mat, b.x, z, c.x, c.y)), k, L);
+                            colour = wallColour(mat, lm, rec, c.z, b.x, z, c.x, c.y,
+                                    lm < 0 ? b.w : b.y);
                         } else {
-                            float t = (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc);
-                            if (!(t > 0.0) || t > maxDist) {
-                                colour = shade(c.z, 0.3 * b.w);
-                            } else {
-                                float wx = camX + rayX * t, wy = camY + rayY * t, f = fog(t);
-                                if (lm >= 0 && emissive(mat, wx, wy)) {
-                                    colour = shade(16774374.0, f);   // Renderer.EMISSIVE
-                                    break;
-                                }
-                                if (lm >= 0) L = lightAt(lm, wx, wy);
-                                float k = lm < 0 ? b.w * f : f;
-                                #ifdef HAS_IMAGES
-                                if (rec >= 0) {
-                                    colour = shadeT(c.z, flatImage(rec, t, row), k, L);
-                                    break;
-                                }
-                                #endif
-                                colour = shadeT(c.z, vec3(flatTex(mat, t, row)), k, L);
-                            }
+                            colour = planeColour(mat, lm, rec, c.z, b.w,
+                                    (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc), row);
                         }
                         break;
                     }
