@@ -79,6 +79,7 @@ final class GpuTextures {
                 }
             }
             Gl.arrayFiltering(first.levelCount());
+            Gl.check("an image array, %dx%d in %d layers".formatted(w, h, n));
             banks.add(new Bank(w, h, name, n));
         }
     }

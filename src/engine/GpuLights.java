@@ -32,6 +32,7 @@ final class GpuLights {
 
     private final int atlas, records, count;
     private final int side;
+    private final GpuTable table;
 
     /** Pack every map in the bake's own order - the order {@link LightCache} serialises in, which
      *  is proof enough that a flat layout of them round-trips. */
@@ -76,14 +77,16 @@ final class GpuLights {
             }
             Gl.texImage(Gl.RGB32F, side, side, Gl.RGB, Gl.FLOAT, texels);
             Gl.texUnfiltered();
+            Gl.check("the lightmap atlas, %d square".formatted(side));
 
             records = Gl.texture();
             Gl.activeTexture(3);
             Gl.bindTexture(records);
-            MemorySegment rec = arena.allocate((long) RECORD_TEXELS * Math.max(1, count) * 4 * Float.BYTES);
+            table = new GpuTable(RECORD_TEXELS, count);
+            MemorySegment rec = arena.allocate((long) table.width() * table.rows() * 4 * Float.BYTES);
             for (int i = 0; i < count; i++) {
                 Lighting.LightMap m = maps.get(i);
-                int at = i * RECORD_TEXELS * 4;
+                long at = table.at(i);
                 rec.setAtIndex(ValueLayout.JAVA_FLOAT, at, px[i]);
                 rec.setAtIndex(ValueLayout.JAVA_FLOAT, at + 1, py[i]);
                 rec.setAtIndex(ValueLayout.JAVA_FLOAT, at + 2, m.w);
@@ -93,8 +96,9 @@ final class GpuLights {
                 rec.setAtIndex(ValueLayout.JAVA_FLOAT, at + 6, (float) m.step);
                 rec.setAtIndex(ValueLayout.JAVA_FLOAT, at + 7, 0);
             }
-            Gl.texImage(Gl.RGBA32F, RECORD_TEXELS, Math.max(1, count), Gl.RGBA, Gl.FLOAT, rec);
+            Gl.texImage(Gl.RGBA32F, table.width(), table.rows(), Gl.RGBA, Gl.FLOAT, rec);
             Gl.texUnfiltered();
+            Gl.check("the lightmap records, %dx%d".formatted(table.width(), table.rows()));
         }
     }
 
@@ -116,13 +120,22 @@ final class GpuLights {
     }
 
     /** Lighting.LightMap.sample, fetch for fetch. */
-    static final String GLSL = """
+    String glsl() { return glsl(table); }
+
+    /** The flat model has no lightmaps and no span asks for one, but the shader still has to
+     *  compile the call: give it a table of nothing. */
+    static String absent() { return glsl(new GpuTable(RECORD_TEXELS, 0)); }
+
+    private static String glsl(GpuTable t) {
+        return """
             uniform sampler2D lightAtlas;
             uniform sampler2D lightRecords;
+            """ + t.glsl("lightRecordAt") + """
 
             vec3 lightAt(int idx, float u, float v) {
-                vec4 a = texelFetch(lightRecords, ivec2(0, idx), 0);
-                vec4 b = texelFetch(lightRecords, ivec2(1, idx), 0);
+                ivec2 r = lightRecordAt(idx);
+                vec4 a = texelFetch(lightRecords, r, 0);
+                vec4 b = texelFetch(lightRecords, r + ivec2(1, 0), 0);
                 float fu = clamp((u - b.x) / b.z, 0.0, a.z - 1.0001);
                 float fv = clamp((v - b.y) / b.z, 0.0, a.w - 1.0001);
                 int i = int(fu), j = int(fv);
@@ -137,4 +150,5 @@ final class GpuLights {
                 return top + (bot - top) * t;
             }
             """;
+    }
 }

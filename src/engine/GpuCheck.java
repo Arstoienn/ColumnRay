@@ -72,8 +72,12 @@ final class GpuCheck {
             java.util.List<Materials.Texture> imgs = GpuTextures.of(world);
             if (!imgs.isEmpty()) {
                 GpuTextures textures = new GpuTextures(imgs);
-                walls.setImages(textures, new GpuMaterials(world, textures));
-                System.out.printf("%d images in %d array textures%n", imgs.size(), textures.banks());
+                GpuMaterials materials = new GpuMaterials(world, textures);
+                walls.setImages(textures, materials);
+                System.out.printf("%d images in %d array textures, %d of them left to the CPU%n",
+                        imgs.size(), textures.banks(), textures.leftToCpu());
+                System.out.printf("%d shapes in %d material records%n",
+                        world.shapes.length, materials.count());
             }
             System.out.printf("GL %s on %s%n", Gl.version(), Gl.device());
             System.out.printf("%s at %dx%d, %s%n%n", map, w, h, lit ? "baked lighting" : "flat shading");
@@ -157,13 +161,13 @@ final class GpuCheck {
             int at = (x * GpuSpans.MAX_PER_COLUMN + i) * GpuSpans.FLOATS;
             if (y < (int) sp[at + 1] || y >= (int) sp[at + 2]) continue;
             return head + (sp[at + 11] == 0
-                    ? "      wall  mat %.0f  u %.4f  z %.4f  w %.6f  sq %.4f  light %.4f  rgb %06x"
+                    ? "      wall  mat %.0f  u %.4f  z %.4f  w %.6f  sq %.4f  light %.4f  rgb %06x  rec %.0f"
                             .formatted(sp[at + 3], sp[at + 4],
                                     cam.eye - (y + 0.5 - (h / 2.0 + cam.pitch)) * sp[at + 8],
-                                    sp[at + 8], sp[at + 9], sp[at + 7], (int) sp[at + 10])
-                    : "      plane mat %.0f  z %.4f  slope %.4f  light %.4f  rgb %06x"
+                                    sp[at + 8], sp[at + 9], sp[at + 7], (int) sp[at + 10], sp[at + 12])
+                    : "      plane mat %.0f  z %.4f  slope %.4f  light %.4f  rgb %06x  rec %.0f"
                             .formatted(sp[at + 3], sp[at + 4], sp[at + 5], sp[at + 7],
-                                    (int) sp[at + 10]));
+                                    (int) sp[at + 10], sp[at + 12]));
         }
         return head + "      sky (no span covers this row)";
     }

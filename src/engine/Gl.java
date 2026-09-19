@@ -39,7 +39,7 @@ final class Gl {
             COMPILE_STATUS = 0x8B81, LINK_STATUS = 0x8B82, FRAMEBUFFER = 0x8D40,
             FRAMEBUFFER_COMPLETE = 0x8CD5, COLOR_ATTACHMENT0 = 0x8CE0, RENDERER = 0x1F01,
             VERSION = 0x1F02, TEXTURE_2D_ARRAY = 0x8C1A, TEXTURE_MAX_LEVEL = 0x813D,
-            RGB8 = 0x8051, UNPACK_ALIGNMENT = 0x0CF5;
+            RGB8 = 0x8051, UNPACK_ALIGNMENT = 0x0CF5, MAX_TEXTURE_SIZE = 0x0D33;
 
     /** CGL pixel format attributes: a core profile, accelerated, and no drawable at all. */
     private static final int PFA_ACCELERATED = 73, PFA_PROFILE = 99,
@@ -108,6 +108,7 @@ final class Gl {
             FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, PTR));
     private static final MethodHandle GET_STRING = fn("glGetString", FunctionDescriptor.of(PTR, I32));
     private static final MethodHandle GET_ERROR = fn("glGetError", FunctionDescriptor.of(I32));
+    private static final MethodHandle GET_INTEGER = fn("glGetIntegerv", FunctionDescriptor.ofVoid(I32, PTR));
     private static final MethodHandle TEX_IMAGE_3D = fn("glTexImage3D",
             FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, I32, I32, I32, PTR));
     private static final MethodHandle TEX_SUB_IMAGE_3D = fn("glTexSubImage3D",
@@ -291,6 +292,23 @@ final class Gl {
     }
 
     static int error() { return (int) call(GET_ERROR); }
+
+    /** The widest and tallest a texture may be on this card - 16384 on an M3. A table that asks
+     *  for more is not refused loudly: the call fails, every fetch from it reads zero, and the
+     *  frame comes back plausibly shaded and wrong. Ask first instead. */
+    static int maxTextureSize() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment n = arena.allocate(I32);
+            call(GET_INTEGER, MAX_TEXTURE_SIZE, n);
+            return n.get(I32, 0);
+        }
+    }
+
+    /** Fail where the mistake was made, for the calls that can be given something impossible. */
+    static void check(String what) {
+        int e = error();
+        if (e != 0) throw new IllegalStateException("GL error 0x%x on %s".formatted(e, what));
+    }
 
     static String version() { return string(VERSION); }
 
