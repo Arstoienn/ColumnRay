@@ -54,7 +54,7 @@ final class GpuMaterials {
      * pixels and the comparison counts them as not done rather than as wrong.
      *
      * A face only gets a record of its own when it really differs from one already made. A shape
-     * carrying its mesh's coordinates needs exactly one for all three faces: they differ in
+     * carrying its mesh's coordinates needs exactly one for its three faces: they differ in
      * nothing but {@code worldUv}, and only a side ever reads that - a top or a bottom is a
      * plane, and a plane's image is always placed by where the ray lands in the world
      * ({@code Renderer.flatImg}). A tile-textured shape shares one between its side and its
@@ -65,6 +65,8 @@ final class GpuMaterials {
         Gl.context();
         for (World.Shape s : world.shapes) {
             if (s.imgB != null || s.vc != null) continue;
+            // A cut-out's alpha is an image like any other, read for its first channel alone.
+            s.gpuAlpha = record(images, s.amap, s.uv, 0, false);
             if (s.img != null) {
                 s.gpuSide = s.gpuTop = s.gpuBottom =
                         record(images, s.img, s.uv, 0, s.kind != World.Kind.SEG);

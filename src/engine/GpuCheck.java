@@ -150,6 +150,8 @@ final class GpuCheck {
                 if (worst > 2) System.out.println(worstAt);
                 if (spans.dropped() > 0) System.out.printf("  %d spans dropped%n", spans.dropped());
                 if (masks.dropped() > 0) System.out.printf("  %d masks dropped%n", masks.dropped());
+                System.out.printf("  a column holds at most %d spans and %d masks%n",
+                        spans.most(), masks.most());
             }
             System.out.printf("%nworst channel difference anywhere: %d of 255%n", worstAll);
         }

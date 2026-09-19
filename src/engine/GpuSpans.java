@@ -26,7 +26,10 @@ package engine;
  * anisotropic filter runs on.
  */
 final class GpuSpans {
-    static final int MAX_PER_COLUMN = 64;
+    /** Measured at 1280 columns: school's busiest column holds 42 wall intervals and Haven's
+     *  204. A column that wants more hands the rest back to the CPU (see {@link #slot}). Only
+     *  what a frame uses is uploaded, so this is heap rather than bandwidth. */
+    static final int MAX_PER_COLUMN = 256;
     static final int TEXELS = 4, FLOATS = TEXELS * 4;
 
     private final int columns;
@@ -48,6 +51,13 @@ final class GpuSpans {
     float[] data() { return data; }
 
     int[] count() { return count; }
+
+    /** The most any one column holds, which is how much of the buffer a frame really uses. */
+    int most() {
+        int m = 0;
+        for (int n : count) m = Math.max(m, n);
+        return m;
+    }
 
     int dropped() { return dropped; }
 
