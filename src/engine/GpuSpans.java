@@ -26,7 +26,7 @@ package engine;
  * anisotropic filter runs on.
  */
 final class GpuSpans {
-    static final int MAX_PER_COLUMN = 24;
+    static final int MAX_PER_COLUMN = 64;
     static final int TEXELS = 3, FLOATS = TEXELS * 4;
 
     private final int columns;
@@ -69,24 +69,58 @@ final class GpuSpans {
      * thing it touches is the drop counter, and that is only ever a count of something going wrong.
      */
     void add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb) {
-        int n = count[x];
-        if (n >= MAX_PER_COLUMN) {
-            dropped++;
-            return;
-        }
-        int at = (x * MAX_PER_COLUMN + n) * FLOATS;
+        int at = slot(x);
+        if (at < 0) return;
+        data[at + 4] = (float) u;
+        data[at + 8] = (float) w;
+        data[at + 9] = (float) sq;
+        head(at, x, y0, y1, mat, light, rgb, 0);
+    }
+
+    /** One stretch of a floor, a ceiling or a shape's top or bottom. */
+    void addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb) {
+        int at = slot(x);
+        if (at < 0) return;
+        data[at + 4] = (float) z;
+        data[at + 5] = (float) slope;
+        head(at, x, y0, y1, mat, light, rgb, 1);
+    }
+
+    /** Floors are painted a grid cell at a time, so one floor arrives as a run of short spans
+     *  with the same numbers and touching rows. Joining them keeps a column's list to the few
+     *  surfaces it really sees rather than the few dozen cells its ray crossed. */
+    private boolean joins(int at, int x, int y0, int y1, int mat, double light, int rgb, int kind) {
+        if (count[x] == 0) return false;
+        int prev = at - FLOATS;
+        if (prev < x * MAX_PER_COLUMN * FLOATS) return false;
+        if (data[prev + 11] != kind || data[prev + 3] != mat || data[prev + 10] != rgb
+                || data[prev + 7] != (float) light) return false;
+        for (int i = 4; i <= 9; i++) if (data[prev + i] != data[at + i]) return false;
+        if (data[prev + 2] == y0) { data[prev + 2] = y1; return true; }
+        if (data[prev + 1] == y1) { data[prev + 1] = y0; return true; }
+        return false;
+    }
+
+    private void head(int at, int x, int y0, int y1, int mat, double light, int rgb, int kind) {
+        if (joins(at, x, y0, y1, mat, light, rgb, kind)) return;
         data[at] = x;
         data[at + 1] = y0;
         data[at + 2] = y1;
         data[at + 3] = mat;
-        data[at + 4] = (float) u;
-        data[at + 5] = 0;
-        data[at + 6] = 0;
         data[at + 7] = (float) light;
-        data[at + 8] = (float) w;
-        data[at + 9] = (float) sq;
         data[at + 10] = rgb;
-        data[at + 11] = 0;
-        count[x] = n + 1;
+        data[at + 11] = kind;
+        count[x]++;
+    }
+
+    private int slot(int x) {
+        int n = count[x];
+        if (n >= MAX_PER_COLUMN) {
+            dropped++;
+            return -1;
+        }
+        int at = (x * MAX_PER_COLUMN + n) * FLOATS;
+        for (int i = 0; i < FLOATS; i++) data[at + i] = 0;
+        return at;
     }
 }

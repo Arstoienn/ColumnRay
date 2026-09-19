@@ -72,7 +72,7 @@ final class GpuCheck {
                 cam.dirY = Math.sin(heading);
                 cam.eye = Double.parseDouble(v[4]) + Player.EYE_STAND;
                 renderer.render(cam);
-                walls.draw(spans, gpu, cam.eye, h / 2.0 + cam.pitch);
+                walls.draw(spans, gpu, cam, h / 2.0 + cam.pitch, renderer.focal());
 
                 // How long each side takes, once both are warm. The CPU figure is a whole frame -
                 // rays, grid, floors, ceilings and walls - and the GPU figure is the wall pass
@@ -84,7 +84,7 @@ final class GpuCheck {
                     long a0 = System.nanoTime();
                     renderer.render(cam);
                     long a1 = System.nanoTime();
-                    walls.draw(spans, gpu, cam.eye, h / 2.0 + cam.pitch);
+                    walls.draw(spans, gpu, cam, h / 2.0 + cam.pitch, renderer.focal());
                     long a2 = System.nanoTime();
                     cpuMs = Math.min(cpuMs, (a1 - a0) / 1e6);
                     gpuMs = Math.min(gpuMs, (a2 - a1) / 1e6);
@@ -111,13 +111,18 @@ final class GpuCheck {
                             sum += d;
                             if (d > worst) {
                                 worst = d;
-                                worstAt = ("    worst at column %d row %d: cpu %06x gpu %06x%n"
-                                        + "      mat %.0f  u %.4f  z %.4f  w %.6f  sq %.4f  light %.4f  rgb %06x")
-                                        .formatted(x, y, a & 0xffffff, b & 0xffffff,
-                                                spans.data()[at + 3], spans.data()[at + 4],
-                                                cam.eye - (y + 0.5 - (h / 2.0 + cam.pitch)) * spans.data()[at + 8],
-                                                spans.data()[at + 8], spans.data()[at + 9],
-                                                spans.data()[at + 7], (int) spans.data()[at + 10]);
+                                float[] sp = spans.data();
+                                worstAt = sp[at + 11] == 0
+                                        ? ("    worst at column %d row %d: cpu %06x gpu %06x%n"
+                                                + "      wall  mat %.0f  u %.4f  z %.4f  w %.6f  sq %.4f"
+                                                + "  light %.4f  rgb %06x")
+                                                .formatted(x, y, a & 0xffffff, b & 0xffffff, sp[at + 3], sp[at + 4],
+                                                        cam.eye - (y + 0.5 - (h / 2.0 + cam.pitch)) * sp[at + 8],
+                                                        sp[at + 8], sp[at + 9], sp[at + 7], (int) sp[at + 10])
+                                        : ("    worst at column %d row %d: cpu %06x gpu %06x%n"
+                                                + "      plane mat %.0f  z %.4f  slope %.4f  light %.4f  rgb %06x")
+                                                .formatted(x, y, a & 0xffffff, b & 0xffffff, sp[at + 3], sp[at + 4],
+                                                        sp[at + 5], sp[at + 7], (int) sp[at + 10]);
                             }
                             if (d > 2) over++;
                         }

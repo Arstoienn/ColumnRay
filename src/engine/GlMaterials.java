@@ -112,4 +112,43 @@ final class GlMaterials {
                 return 1.0;
             }
             """;
+
+    /**
+     * {@code Materials.flat}: the same detail seen on a floor, a ceiling or a shape's top, indexed
+     * by where it is on the plan rather than by height. Anything with no horizontal pattern of its
+     * own falls through to {@link #SIDE}'s, exactly as the CPU's does.
+     */
+    static final String FLAT = """
+            bool emissive(int m, float x, float y) {
+                if (m != 11 || frac(x / 0.6) < 0.04 || frac(y / 0.6) < 0.04) return false;
+                int cx = fl(x / 0.6), cy = fl(y / 0.6);
+                return ((cx % 4) + 4) % 4 == 1 && ((cy % 3) + 3) % 3 == 1;
+            }
+
+            float flatAt(int m, float x, float y, float w) {
+                if (m == 6) {
+                    float face = fadeTo(((fl(x * 2.0) + fl(y * 2.0)) & 1) == 0 ? 1.0 : 0.86, 0.93, w, 0.5);
+                    return lines(frac(x * 2.0) < 0.05 || frac(y * 2.0) < 0.05, 0.6, face, 0.098, 0.025, w);
+                }
+                if (m == 3) {
+                    int row = fl(y * 6.0);
+                    float grain = 0.8 + 0.2 * cellShade(
+                            valueNoise(x * 0.7 + float(row) * 0.37, float(row) + 0.5), 1.4, w);
+                    return lines(frac(y * 6.0) < 0.07, 0.55, grain, 0.07, 0.012, w);
+                }
+                if (m == 11) {
+                    float face = emissive(m, x, y) ? 1.35 : 0.95;
+                    return lines(frac(x / 0.6) < 0.04 || frac(y / 0.6) < 0.04, 0.7, face, 0.078, 0.024, w);
+                }
+                if (m == 4) {
+                    float block = 0.8 + 0.2 * cellShade(hash(fl(x / 0.8), fl(y / 0.8)), 0.8, w);
+                    return lines(frac(x / 0.8) < 0.04 || frac(y / 0.8) < 0.04, 0.65, block, 0.078, 0.032, w);
+                }
+                if (m == 8) { return 0.62 + 0.28 * noiseAt(x, y, 4.0, w) + 0.14 * noiseAt(x, y, 15.0, w); }
+                if (m == 7) { return 0.85 + 0.15 * fadeTo(sin(x * 3.1 + sin(y * 2.3) * 2.0), 0.0, w, 1.0); }
+                if (m == 9) { return 0.5 + 0.34 * noiseAt(x, y, 5.0, w) + 0.16 * noiseAt(x, y, 17.0, w); }
+                if (m == 0) { return 0.85 + 0.07 * noiseAt(x, y, 2.0, w) + 0.04 * noiseAt(x, y, 7.0, w); }
+                return side(m, x, y, w);
+            }
+            """;
 }
