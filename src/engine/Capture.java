@@ -77,6 +77,7 @@ final class Capture {
             System.out.printf("BENCH %dx%d rendered %dx%d ss %d pitch %.0f %s rays %d median %.3f p99 %.3f mean %.3f ms  (median %.0f fps)%n",
                     g.W, g.H, g.RW, g.RH, g.SS, Math.toDegrees(p), g.shear ? "shear" : "true",
                     g.renderer.drawnX1 - g.renderer.drawnX0, median, p99, mean, 1000 / median);
+            g.gpuStats();
         }
         g.player.pitch = saved;
     }

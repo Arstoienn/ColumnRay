@@ -96,6 +96,11 @@ public final class Main {
      *  rebuilt whenever the pitch warp grows the render buffer under it. */
     volatile boolean useGpu;
     private GpuWalls gpu;
+
+    /** What the card's side of a frame cost, for --bench with -Dgpu.stats=true. */
+    void gpuStats() {
+        if (gpu != null) gpu.stats();
+    }
     private GpuSpans spans;
     private GpuMasks masks;
     private GpuLights gpuLights;
