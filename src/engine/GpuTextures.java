@@ -12,8 +12,9 @@ import java.util.Map;
 /**
  * Every image the map uses, on the card.
  *
- * Haven's 408 images come in about ten distinct sizes - 222 of them 512 square, 75 of them 1024
- * - so they go into one array texture per size rather than a packed atlas. An array layer keeps
+ * Haven's 452 images come in fifteen distinct sizes - 222 of them 512 square, 75 of them 1024,
+ * and seven in sizes of their own - so they go into one array texture per size rather than a
+ * packed atlas. An array layer keeps
  * its own mip chain, exactly as {@link Materials.Texture} does, which is the property a packed
  * atlas would lose: a mip level of an atlas averages across the seam between two unrelated
  * images, and the engine deliberately never lets that happen.
