@@ -27,9 +27,11 @@ package engine;
  */
 final class GpuSpans {
     /** Measured at 1280 columns: school's busiest column holds 42 wall intervals and Haven's
-     *  204. A column that wants more hands the rest back to the CPU (see {@link #slot}). Only
-     *  what a frame uses is uploaded, so this is heap rather than bandwidth. */
-    static final int MAX_PER_COLUMN = 256;
+     *  256, which is what a column looks like once the blend materials are on the card too and
+     *  it no longer stops recording at the first surface it cannot draw. A column that wants
+     *  more hands the rest back to the CPU (see {@link #slot}). Only what a frame uses is
+     *  uploaded, so this is heap rather than bandwidth. */
+    static final int MAX_PER_COLUMN = 512;
     static final int TEXELS = 4, FLOATS = TEXELS * 4;
 
     private final int columns;

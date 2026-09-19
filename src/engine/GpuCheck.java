@@ -172,6 +172,7 @@ final class GpuCheck {
                 System.out.printf("%-12s %8d %8d %8.3f %7.3f%% %8d %8.2f %8.2f %8.2f %6d%n",
                         v[0], n, worst, n == 0 ? 0 : (double) sum / n,
                         n == 0 ? 0 : 100.0 * over / n, skipped, cpuMs, fastMs, gpuMs, merged);
+                if (over > 0) System.out.printf("  %d pixels differ by more than 2%n", over);
                 if (worst > 2) System.out.println(worstAt);
                 if (spans.dropped() > 0) System.out.printf("  %d spans dropped%n", spans.dropped());
                 if (masks.dropped() > 0) System.out.printf("  %d masks dropped%n", masks.dropped());

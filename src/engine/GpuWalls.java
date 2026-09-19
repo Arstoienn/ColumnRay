@@ -21,12 +21,21 @@ import java.lang.foreign.ValueLayout;
  * {@code GpuCheck} measures how far apart the two pictures are instead of hashing them.
  */
 final class GpuWalls implements AutoCloseable {
-    /** Texture units 0..4 are the spans, the counts, the light atlas and its records, and the
-     *  material table; the ten image arrays follow, and the masked surfaces take the sixteenth
-     *  and last unit a fragment shader is promised. The mask count shares the counts texture's
-     *  second channel rather than asking for a seventeenth. */
+    /**
+     * Where each thing the shader reads is bound. There are sixteen units and a fragment shader
+     * is promised no more, so every one of them is spoken for: the spans, the blend table, the
+     * light atlas and its records, the material table, ten image arrays and the masked surfaces.
+     *
+     * How many each column holds used to have a unit of its own. It is two numbers a column, so
+     * it now rides in the first texel of the column's own row of the span texture instead, which
+     * costs a texel a column and buys back the unit the blend table needed.
+     */
+    static final int EXTRA_UNIT = 1;
     private static final int FIRST_IMAGE_UNIT = 5;
     private static final int MASK_UNIT = 15;
+
+    /** The first texel of a column's row of spans holds its two counts; the spans follow it. */
+    private static final int HEADER = 1;
     private static final String VERT = """
             #version 330 core
             void main() {
@@ -36,8 +45,8 @@ final class GpuWalls implements AutoCloseable {
             """;
 
     private int program;                       // built on the first draw: its text depends on the images
-    private final int target, frame, spanTex, countTex, maskTex, w, h, columns;
-    private final MemorySegment spanBuf, countBuf, maskBuf, back;
+    private final int target, frame, spanTex, maskTex, w, h, columns;
+    private final MemorySegment spanBuf, maskBuf, back;
     private final Arena own;
 
     /** For a window, which needs the buffers to outlive the call that made them. */
@@ -80,16 +89,11 @@ final class GpuWalls implements AutoCloseable {
         Gl.bindVertexArray(Gl.vertexArray());
         Gl.viewport(w, h);
 
-        int spanW = GpuSpans.MAX_PER_COLUMN * GpuSpans.TEXELS;
+        int spanW = GpuSpans.MAX_PER_COLUMN * GpuSpans.TEXELS + HEADER;
         spanTex = Gl.texture();
         Gl.activeTexture(0);
         Gl.bindTexture(spanTex);
         Gl.texImage(Gl.RGBA32F, spanW, columns, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
-        Gl.texUnfiltered();
-        countTex = Gl.texture();
-        Gl.activeTexture(1);
-        Gl.bindTexture(countTex);
-        Gl.texImage(Gl.RGBA32F, columns, 1, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
         Gl.texUnfiltered();
         maskTex = Gl.texture();
         Gl.activeTexture(MASK_UNIT);
@@ -99,9 +103,9 @@ final class GpuWalls implements AutoCloseable {
         Gl.texUnfiltered();
 
 
-        spanBuf = arena.allocate((long) columns * GpuSpans.MAX_PER_COLUMN * GpuSpans.FLOATS * Float.BYTES);
+        spanBuf = arena.allocate((long) columns
+                * (GpuSpans.MAX_PER_COLUMN * GpuSpans.FLOATS + HEADER * 4) * Float.BYTES);
         maskBuf = arena.allocate((long) columns * GpuMasks.MAX_PER_COLUMN * GpuMasks.FLOATS * Float.BYTES);
-        countBuf = arena.allocate((long) columns * 4 * Float.BYTES);
         back = arena.allocate((long) w * h * 4);
     }
 
@@ -109,7 +113,7 @@ final class GpuWalls implements AutoCloseable {
         program = Gl.program(VERT, fragment());
         Gl.useProgram(program);
         Gl.uniform(program, "spans", 0);
-        Gl.uniform(program, "counts", 1);
+        Gl.uniform(program, "blends", EXTRA_UNIT);
         Gl.uniform(program, "lightAtlas", 2);
         Gl.uniform(program, "lightRecords", 3);
         Gl.uniform(program, "materials", 4);
@@ -124,7 +128,6 @@ final class GpuWalls implements AutoCloseable {
     @Override public void close() {
         Gl.deleteTexture(target);
         Gl.deleteTexture(spanTex);
-        Gl.deleteTexture(countTex);
         Gl.deleteTexture(maskTex);
         Gl.deleteFramebuffer(frame);
         if (own != null) own.close();
@@ -136,12 +139,13 @@ final class GpuWalls implements AutoCloseable {
               double focal, int viewH) {
         int[] count = spans.count(), maskCount = masks.count();
         int spanW = pack(spans.data(), count, GpuSpans.MAX_PER_COLUMN, GpuSpans.TEXELS,
-                spans.most(), spanBuf);
+                spans.most(), spanBuf, HEADER) + HEADER;
         int maskW = pack(masks.data(), maskCount, GpuMasks.MAX_PER_COLUMN, GpuMasks.TEXELS,
-                masks.most(), maskBuf);
-        for (int x = 0; x < columns; x++) {
-            countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4, count[x]);
-            countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4 + 1, maskCount[x]);
+                masks.most(), maskBuf, 0);
+        for (int x = 0; x < columns; x++) {          // the header: how many of each this column has
+            long at = (long) x * spanW * 4;
+            spanBuf.setAtIndex(ValueLayout.JAVA_FLOAT, at, count[x]);
+            spanBuf.setAtIndex(ValueLayout.JAVA_FLOAT, at + 1, maskCount[x]);
         }
         Gl.activeTexture(0);
         Gl.bindTexture(spanTex);
@@ -149,9 +153,6 @@ final class GpuWalls implements AutoCloseable {
         Gl.activeTexture(MASK_UNIT);
         Gl.bindTexture(maskTex);
         if (maskW > 0) Gl.texSubImage(maskW, columns, Gl.RGBA, Gl.FLOAT, maskBuf);
-        Gl.activeTexture(1);
-        Gl.bindTexture(countTex);
-        Gl.texSubImage(columns, 1, Gl.RGBA, Gl.FLOAT, countBuf);
         if (program == 0) link();
         if (lights != null) lights.bind();
         if (mats != null) { mats.bind(); images.bind(FIRST_IMAGE_UNIT); }
@@ -187,13 +188,14 @@ final class GpuWalls implements AutoCloseable {
      * beyond each column's own entries is simply never read - a column's count is what stops the
      * shader.
      */
-    private int pack(float[] from, int[] count, int perColumn, int texels, int most, MemorySegment into) {
+    private int pack(float[] from, int[] count, int perColumn, int texels, int most,
+                     MemorySegment into, int header) {
         if (most == 0) return 0;
-        int floats = texels * 4, stride = most * floats;
+        int floats = texels * 4, stride = (most * texels + header) * 4;
         for (int x = 0; x < columns; x++)
             if (count[x] > 0)
                 MemorySegment.copy(from, x * perColumn * floats, into, ValueLayout.JAVA_FLOAT,
-                        (long) x * stride * Float.BYTES, count[x] * floats);
+                        (long) (x * stride + header * 4) * Float.BYTES, count[x] * floats);
         return most * texels;
     }
 
@@ -234,7 +236,6 @@ final class GpuWalls implements AutoCloseable {
                 #version 330 core
                 %s
                 uniform sampler2D spans;
-                uniform sampler2D counts;                 // per column: spans in r, masks in g
                 uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
                 uniform float fogOn, maxDist;
                 float rayX, rayY, dk;
@@ -398,15 +399,16 @@ final class GpuWalls implements AutoCloseable {
                     // the top one, so the two flips cancel: shade framebuffer row j as row j and
                     // the array that comes back is already the right way up.
                     int row = int(gl_FragCoord.y);
-                    vec2 have = texelFetch(counts, ivec2(col, 0), 0).rg;
+                    vec2 have = texelFetch(spans, ivec2(0, col), 0).rg;   // the row's header
                     int n = int(have.x);
                     vec3 colour = vec3(-1.0);          // nothing has claimed this row yet
                     for (int s = 0; s < n; s++) {
-                        vec4 a = texelFetch(spans, ivec2(s * 4, col), 0);
+                        int at = 1 + s * 4;                  // past the header texel
+                        vec4 a = texelFetch(spans, ivec2(at, col), 0);
                         if (row < int(a.y) || row >= int(a.z)) continue;
-                        vec4 b = texelFetch(spans, ivec2(s * 4 + 1, col), 0);
-                        vec4 c = texelFetch(spans, ivec2(s * 4 + 2, col), 0);
-                        vec4 e = texelFetch(spans, ivec2(s * 4 + 3, col), 0);
+                        vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
+                        vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
+                        vec4 e = texelFetch(spans, ivec2(at + 3, col), 0);
                         int mat = int(a.w), lm = int(b.z), rec = int(e.x);
                         if (c.w == 0.0) {
                             float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
