@@ -92,6 +92,12 @@ public final class Main {
     int traceI = -1, traceJ = -1;                                // the output pixel whose ray the ray view traces
 
     private final Warp warp = new Warp();                        // this frame's pitch warp; see Warp
+    /** --gpu: the card shades the frame the CPU's columns worked out. Null on the CPU path, and
+     *  rebuilt whenever the pitch warp grows the render buffer under it. */
+    volatile boolean useGpu;
+    private GpuWalls gpu;
+    private GpuSpans spans;
+    private int[] gpuPixels;                                     // only when part of the frame is not ported
     private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
     private final int baseW, baseH;                              // the resolution --size asked for
     private int winW = DEFAULT_WINDOW_W, winH = DEFAULT_WINDOW_H; // --window: the output, which the picture is scaled to
@@ -139,6 +145,10 @@ public final class Main {
         Options o = Options.parse(args);
         if (o == null) return;
         if (Options.headless(args)) System.setProperty("java.awt.headless", "true");
+        // Before AWT. A context asked for after the toolkit has started gets no accelerated
+        // pixel format on macOS - the same ordering trap that once left the window taking no
+        // keys, in the other direction.
+        if (o.gpu) Gl.context();
 
         Main game = new Main(World.load(Path.of(o.map)), o.w, o.h, o.ss);
         game.winW = o.winW;
@@ -155,6 +165,7 @@ public final class Main {
                         String.valueOf(World.num(g, "lift", 0.0)))));
         Renderer.fogOn = !Boolean.FALSE.equals(lg.get("fog"));
         game.shear = o.shear;
+        game.useGpu = o.gpu;
         if (!o.flat) {
             game.lighting = Lighting.bake(game.world);
             game.renderer.setLighting(game.lighting);
@@ -413,7 +424,9 @@ public final class Main {
         // screenshot's -rays.png read it.
         renderer.traceColumn = rayView.visible() || c.captureDepth
                 ? warp.sourceColumn(traceI >= 0 ? traceI : RW / 2, traceJ >= 0 ? traceJ : RH / 2) : -1;
+        if (spans != null) spans.reset();
         renderer.render(c);
+        if (gpu != null) shadeOnGpu(c);
         if (c.captureDepth) {
             depth = new float[W * H];
             hiDepth = SS == 1 ? depth : new float[RW * RH];
@@ -427,6 +440,29 @@ public final class Main {
         }
     }
 
+    /**
+     * Put the card's picture into the render buffer.
+     *
+     * A surface whose shading is not ported yet emits no span, so the card would draw sky
+     * through it. While that is still true the card's frame is merged rather than taken: every
+     * pixel the CPU marked as one it painted itself keeps the CPU's colour, and the rest comes
+     * from the card. Once every resource is on the card nothing is ever marked, and this is a
+     * straight read into the render buffer with no merge and no second buffer.
+     */
+    private void shadeOnGpu(Renderer.Camera c) {
+        double horizon = srcH / 2.0 + c.pitch;
+        if (!spans.anySkipped()) {
+            gpu.draw(spans, src, c, horizon, renderer.focal(), RH);
+            return;
+        }
+        if (gpuPixels == null || gpuPixels.length != src.length) gpuPixels = new int[src.length];
+        gpu.draw(spans, gpuPixels, c, horizon, renderer.focal(), RH);
+        IntStream.range(0, srcH).parallel().forEach(y -> {
+            int row = y * srcW;
+            for (int x = 0; x < srcW; x++) if (!spans.skipped(x, y)) src[row + x] = gpuPixels[row + x];
+        });
+    }
+
     /** Work out this frame's warp, grow the render buffer if the tilt needs more overscan than it
      *  has, and tell the camera which part of that buffer to draw. See {@link Warp}. */
     private void preparePitch(Renderer.Camera c) {
@@ -438,6 +474,13 @@ public final class Main {
             renderer.resize(srcW, srcH, src);
         }
         warp.place(renderer.centerX(), srcW, srcH, c);
+        if (useGpu && (gpu == null || spans == null || spans.columns() != srcW)) {
+            if (gpu != null) gpu.close();
+            gpu = new GpuWalls(srcW, srcH, srcW);
+            spans = new GpuSpans(srcW, srcH);
+            gpuPixels = null;
+            renderer.captureSpans(spans);
+        }
     }
 
     /** Average each SS x SS block of the render buffer into one output pixel. */
