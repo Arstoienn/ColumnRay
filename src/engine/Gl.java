@@ -107,11 +107,18 @@ final class Gl {
             FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, PTR));
     private static final MethodHandle GET_STRING = fn("glGetString", FunctionDescriptor.of(PTR, I32));
     private static final MethodHandle GET_ERROR = fn("glGetError", FunctionDescriptor.of(I32));
+    private static final MethodHandle DELETE_TEXTURES = fn("glDeleteTextures", FunctionDescriptor.ofVoid(I32, PTR));
+    private static final MethodHandle DELETE_FB = fn("glDeleteFramebuffers", FunctionDescriptor.ofVoid(I32, PTR));
 
     private Gl() {}
 
-    /** A 4.1 core context, or a 3.2 one if the machine will not give 4.1. Neither has a window. */
+    private static boolean current;
+
+    /** A 4.1 core context, or a 3.2 one if the machine will not give 4.1. Neither has a window.
+     *  Idempotent: a second context would leave the first one's textures unreachable. */
     static void context() {
+        if (current) return;
+        current = true;
         try (Arena arena = Arena.ofConfined()) {
             for (int profile : new int[] {PROFILE_4_1_CORE, PROFILE_3_2_CORE}) {
                 MemorySegment attrs = arena.allocateFrom(I32, PFA_PROFILE, profile, PFA_ACCELERATED, 0);
@@ -240,6 +247,16 @@ final class Gl {
     private static int location(int program, String name) {
         try (Arena arena = Arena.ofConfined()) {
             return (int) call(UNIFORM_LOC, program, arena.allocateFrom(name));
+        }
+    }
+
+    static void deleteTexture(int name) { free(DELETE_TEXTURES, name); }
+
+    static void deleteFramebuffer(int name) { free(DELETE_FB, name); }
+
+    private static void free(MethodHandle del, int name) {
+        try (Arena arena = Arena.ofConfined()) {
+            call(del, 1, arena.allocateFrom(I32, name));
         }
     }
 

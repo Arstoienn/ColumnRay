@@ -20,7 +20,7 @@ import java.lang.foreign.ValueLayout;
  * rather than rounding into the tone curve. It cannot be bit-exact - float against double - so
  * {@code GpuCheck} measures how far apart the two pictures are instead of hashing them.
  */
-final class GpuWalls {
+final class GpuWalls implements AutoCloseable {
     private static final String VERT = """
             #version 330 core
             void main() {
@@ -29,10 +29,21 @@ final class GpuWalls {
             }
             """;
 
-    private final int program, target, spanTex, countTex, w, h, columns;
+    private final int program, target, frame, spanTex, countTex, w, h, columns;
     private final MemorySegment spanBuf, countBuf, back;
+    private final Arena own;
+
+    /** For a window, which needs the buffers to outlive the call that made them. */
+    GpuWalls(int w, int h, int columns) {
+        this(Arena.ofShared(), w, h, columns, true);
+    }
 
     GpuWalls(Arena arena, int w, int h, int columns) {
+        this(arena, w, h, columns, false);
+    }
+
+    private GpuWalls(Arena arena, int w, int h, int columns, boolean owns) {
+        this.own = owns ? arena : null;
         this.w = w;
         this.h = h;
         this.columns = columns;
@@ -42,7 +53,8 @@ final class GpuWalls {
         Gl.bindTexture(target);
         Gl.texImage(Gl.RGBA8, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE, MemorySegment.NULL);
         Gl.texUnfiltered();
-        Gl.bindFramebuffer(Gl.framebuffer());
+        frame = Gl.framebuffer();
+        Gl.bindFramebuffer(frame);
         Gl.attach(target);
         Gl.bindVertexArray(Gl.vertexArray());
         Gl.viewport(w, h);
@@ -72,6 +84,14 @@ final class GpuWalls {
         back = arena.allocate((long) w * h * 4);
     }
 
+    @Override public void close() {
+        Gl.deleteTexture(target);
+        Gl.deleteTexture(spanTex);
+        Gl.deleteTexture(countTex);
+        Gl.deleteFramebuffer(frame);
+        if (own != null) own.close();
+    }
+
     /** Draw one frame's worth of spans and bring it back. Pixels no span covers stay zero. */
     void draw(GpuSpans spans, int[] into, Renderer.Camera cam, double horizon, double focal, int viewH) {
         MemorySegment.copy(spans.data(), 0, spanBuf, ValueLayout.JAVA_FLOAT, 0, spans.data().length);
@@ -83,6 +103,8 @@ final class GpuWalls {
         Gl.activeTexture(1);
         Gl.bindTexture(countTex);
         Gl.texSubImage(columns, 1, Gl.RGBA, Gl.FLOAT, countBuf);
+        Gl.bindFramebuffer(frame);
+        Gl.viewport(w, h);
         Gl.useProgram(program);
         Gl.uniform(program, "eye", (float) cam.eye);
         Gl.uniform(program, "hz", (float) horizon);

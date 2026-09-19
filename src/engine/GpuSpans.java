@@ -34,6 +34,7 @@ final class GpuSpans {
     private final int[] count;
     private final boolean[] blended;
     private volatile int dropped;
+    private volatile boolean anySkip;
 
     GpuSpans(int columns, int rows) {
         this.columns = columns;
@@ -54,15 +55,23 @@ final class GpuSpans {
      *  mask blended over the finished picture, an image texture, a lightmapped wall. Marking
      *  them is what lets a comparison say "these are not done" instead of counting them as the
      *  GPU getting a wall wrong, and the count going to zero is what finishing looks like. */
-    void skip(int x, int y) { blended[y * columns + x] = true; }
+    void skip(int x, int y) {
+        blended[y * columns + x] = true;
+        anySkip = true;
+    }
 
     boolean skipped(int x, int y) { return blended[y * columns + x]; }
+
+    /** Did this frame paint anything the card was not given? When nothing was, the card's
+     *  picture is the whole frame and it can be read straight into the render buffer. */
+    boolean anySkipped() { return anySkip; }
 
     /** Between frames, on one thread: the renderer is not running. */
     void reset() {
         java.util.Arrays.fill(count, 0);
         java.util.Arrays.fill(blended, false);
         dropped = 0;
+        anySkip = false;
     }
 
     /**
