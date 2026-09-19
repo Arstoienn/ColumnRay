@@ -189,6 +189,11 @@ final class Gl {
         call(READ_PIXELS, 0, 0, w, h, BGRA, UNSIGNED_INT_8_8_8_8_REV, into);
     }
 
+    /** The same, off a float target: four floats a pixel, for checking a shader against Java. */
+    static void readFloats(int w, int h, MemorySegment into) {
+        call(READ_PIXELS, 0, 0, w, h, RGBA, FLOAT, into);
+    }
+
     static int program(String vertex, String fragment) {
         int p = (int) call(CREATE_PROGRAM);
         call(ATTACH, p, shader(VERTEX_SHADER, vertex));
