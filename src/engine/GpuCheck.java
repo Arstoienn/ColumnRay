@@ -72,7 +72,7 @@ final class GpuCheck {
                 cam.dirY = Math.sin(heading);
                 cam.eye = Double.parseDouble(v[4]) + Player.EYE_STAND;
                 renderer.render(cam);
-                walls.draw(spans, gpu, cam, h / 2.0 + cam.pitch, renderer.focal());
+                walls.draw(spans, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);
 
                 // How long each side takes, once both are warm. The CPU figure is a whole frame -
                 // rays, grid, floors, ceilings and walls - and the GPU figure is the wall pass
@@ -84,7 +84,7 @@ final class GpuCheck {
                     long a0 = System.nanoTime();
                     renderer.render(cam);
                     long a1 = System.nanoTime();
-                    walls.draw(spans, gpu, cam, h / 2.0 + cam.pitch, renderer.focal());
+                    walls.draw(spans, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);
                     long a2 = System.nanoTime();
                     cpuMs = Math.min(cpuMs, (a1 - a0) / 1e6);
                     gpuMs = Math.min(gpuMs, (a2 - a1) / 1e6);
@@ -98,33 +98,18 @@ final class GpuCheck {
                 int worst = 0;
                 String worstAt = "";
                 for (int x = 0; x < w; x++) {
-                    for (int s = 0; s < spans.count()[x]; s++) {
-                        int at = (x * GpuSpans.MAX_PER_COLUMN + s) * GpuSpans.FLOATS;
-                        int y0 = (int) spans.data()[at + 1], y1 = (int) spans.data()[at + 2];
-                        for (int y = y0; y < y1; y++) {
-                            if (spans.wasBlended(x, y)) { skipped++; continue; }
-                            int a = cpu[y * w + x], b = gpu[y * w + x];
-                            int d = Math.max(Math.abs((a >> 16 & 255) - (b >> 16 & 255)),
-                                    Math.max(Math.abs((a >> 8 & 255) - (b >> 8 & 255)),
-                                            Math.abs((a & 255) - (b & 255))));
-                            n++;
-                            sum += d;
-                            if (d > worst) {
-                                worst = d;
-                                float[] sp = spans.data();
-                                worstAt = sp[at + 11] == 0
-                                        ? ("    worst at column %d row %d: cpu %06x gpu %06x%n"
-                                                + "      wall  mat %.0f  u %.4f  z %.4f  w %.6f  sq %.4f"
-                                                + "  light %.4f  rgb %06x")
-                                                .formatted(x, y, a & 0xffffff, b & 0xffffff, sp[at + 3], sp[at + 4],
-                                                        cam.eye - (y + 0.5 - (h / 2.0 + cam.pitch)) * sp[at + 8],
-                                                        sp[at + 8], sp[at + 9], sp[at + 7], (int) sp[at + 10])
-                                        : ("    worst at column %d row %d: cpu %06x gpu %06x%n"
-                                                + "      plane mat %.0f  z %.4f  slope %.4f  light %.4f  rgb %06x")
-                                                .formatted(x, y, a & 0xffffff, b & 0xffffff, sp[at + 3], sp[at + 4],
-                                                        sp[at + 5], sp[at + 7], (int) sp[at + 10]);
-                            }
-                            if (d > 2) over++;
+                    for (int y = 0; y < h; y++) {
+                        if (spans.skipped(x, y)) { skipped++; continue; }
+                        int a = cpu[y * w + x], b = gpu[y * w + x];
+                        int d = Math.max(Math.abs((a >> 16 & 255) - (b >> 16 & 255)),
+                                Math.max(Math.abs((a >> 8 & 255) - (b >> 8 & 255)),
+                                        Math.abs((a & 255) - (b & 255))));
+                        n++;
+                        sum += d;
+                        if (d > 2) over++;
+                        if (d > worst) {
+                            worst = d;
+                            worstAt = describe(spans, x, y, a, b, cam, h);
                         }
                     }
                 }
@@ -137,6 +122,28 @@ final class GpuCheck {
             }
             System.out.printf("%nworst channel difference anywhere: %d of 255%n", worstAll);
         }
+    }
+
+    /** What the renderer said about the pixel the two sides disagree on most: which span covers
+     *  it and what that span is made of, or that none does and the two skies differ. */
+    private static String describe(GpuSpans spans, int x, int y, int a, int b,
+                                   Renderer.Camera cam, int h) {
+        String head = "    worst at column %d row %d: cpu %06x gpu %06x%n"
+                .formatted(x, y, a & 0xffffff, b & 0xffffff);
+        float[] sp = spans.data();
+        for (int i = 0; i < spans.count()[x]; i++) {
+            int at = (x * GpuSpans.MAX_PER_COLUMN + i) * GpuSpans.FLOATS;
+            if (y < (int) sp[at + 1] || y >= (int) sp[at + 2]) continue;
+            return head + (sp[at + 11] == 0
+                    ? "      wall  mat %.0f  u %.4f  z %.4f  w %.6f  sq %.4f  light %.4f  rgb %06x"
+                            .formatted(sp[at + 3], sp[at + 4],
+                                    cam.eye - (y + 0.5 - (h / 2.0 + cam.pitch)) * sp[at + 8],
+                                    sp[at + 8], sp[at + 9], sp[at + 7], (int) sp[at + 10])
+                    : "      plane mat %.0f  z %.4f  slope %.4f  light %.4f  rgb %06x"
+                            .formatted(sp[at + 3], sp[at + 4], sp[at + 5], sp[at + 7],
+                                    (int) sp[at + 10]));
+        }
+        return head + "      sky (no span covers this row)";
     }
 
     /** -Dgpucheck.png=DIR writes both pictures, for when the numbers want looking at. */

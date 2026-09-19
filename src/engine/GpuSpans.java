@@ -50,12 +50,13 @@ final class GpuSpans {
 
     int dropped() { return dropped; }
 
-    /** A pixel an alpha-masked surface - a tree, a railing - was mixed over after the walls were
-     *  painted. The card is not given those yet, so a comparison has to leave them out rather
-     *  than count the CPU's foliage as the GPU getting the wall wrong. */
-    void blend(int x, int y) { blended[y * columns + x] = true; }
+    /** A pixel the card was not given: a surface whose shading is not ported yet - an alpha
+     *  mask blended over the finished picture, an image texture, a lightmapped wall. Marking
+     *  them is what lets a comparison say "these are not done" instead of counting them as the
+     *  GPU getting a wall wrong, and the count going to zero is what finishing looks like. */
+    void skip(int x, int y) { blended[y * columns + x] = true; }
 
-    boolean wasBlended(int x, int y) { return blended[y * columns + x]; }
+    boolean skipped(int x, int y) { return blended[y * columns + x]; }
 
     /** Between frames, on one thread: the renderer is not running. */
     void reset() {
