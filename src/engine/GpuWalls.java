@@ -21,6 +21,9 @@ import java.lang.foreign.ValueLayout;
  * {@code GpuCheck} measures how far apart the two pictures are instead of hashing them.
  */
 final class GpuWalls implements AutoCloseable {
+    /** Texture units 0..4 are the spans, the counts, the light atlas and its records, and the
+     *  material table; the image arrays follow. */
+    private static final int FIRST_IMAGE_UNIT = 5;
     private static final String VERT = """
             #version 330 core
             void main() {
@@ -29,7 +32,8 @@ final class GpuWalls implements AutoCloseable {
             }
             """;
 
-    private final int program, target, frame, spanTex, countTex, w, h, columns;
+    private int program;                       // built on the first draw: its text depends on the images
+    private final int target, frame, spanTex, countTex, w, h, columns;
     private final MemorySegment spanBuf, countBuf, back;
     private final Arena own;
 
@@ -39,9 +43,18 @@ final class GpuWalls implements AutoCloseable {
     }
 
     private GpuLights lights;
+    private GpuTextures images;
+    private GpuMaterials mats;
 
     /** The baked lightmaps, or null for the flat model. Spans say which of the two they are. */
     void setLights(GpuLights l) { lights = l; }
+
+    /** The world's images and the records that say how a surface reads them. Both or neither;
+     *  a world with no images needs no arrays and the shader is built without them. */
+    void setImages(GpuTextures t, GpuMaterials m) {
+        images = t;
+        mats = m;
+    }
 
     GpuWalls(Arena arena, int w, int h, int columns) {
         this(arena, w, h, columns, false);
@@ -76,19 +89,25 @@ final class GpuWalls implements AutoCloseable {
         Gl.texImage(Gl.RGBA32F, columns, 1, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
         Gl.texUnfiltered();
 
+
+        spanBuf = arena.allocate((long) columns * GpuSpans.MAX_PER_COLUMN * GpuSpans.FLOATS * Float.BYTES);
+        countBuf = arena.allocate((long) columns * 4 * Float.BYTES);
+        back = arena.allocate((long) w * h * 4);
+    }
+
+    private void link() {
         program = Gl.program(VERT, fragment());
         Gl.useProgram(program);
         Gl.uniform(program, "spans", 0);
         Gl.uniform(program, "counts", 1);
         Gl.uniform(program, "lightAtlas", 2);
         Gl.uniform(program, "lightRecords", 3);
+        Gl.uniform(program, "materials", 4);
+        for (int i = 0; images != null && i < images.banks(); i++)
+            Gl.uniform(program, "images" + i, FIRST_IMAGE_UNIT + i);
         Gl.uniform(program, "height", (float) h);
         Gl.uniform(program, "satBoost", (float) Renderer.satBoost);
         Gl.uniform(program, "lift", (float) Renderer.lift);
-
-        spanBuf = arena.allocate((long) columns * GpuSpans.MAX_PER_COLUMN * GpuSpans.FLOATS * Float.BYTES);
-        countBuf = arena.allocate((long) columns * 4 * Float.BYTES);
-        back = arena.allocate((long) w * h * 4);
     }
 
     @Override public void close() {
@@ -110,7 +129,9 @@ final class GpuWalls implements AutoCloseable {
         Gl.activeTexture(1);
         Gl.bindTexture(countTex);
         Gl.texSubImage(columns, 1, Gl.RGBA, Gl.FLOAT, countBuf);
+        if (program == 0) link();
         if (lights != null) lights.bind();
+        if (mats != null) { mats.bind(); images.bind(FIRST_IMAGE_UNIT); }
         Gl.bindFramebuffer(frame);
         Gl.viewport(w, h);
         Gl.useProgram(program);
@@ -164,9 +185,10 @@ final class GpuWalls implements AutoCloseable {
         return Float.toString((float) hi);                 // faded when 2w/f >= 2, so f = w at the edge
     }
 
-    private static String fragment() {
+    private String fragment() {
         return """
                 #version 330 core
+                %s
                 uniform sampler2D spans;
                 uniform sampler2D counts;
                 uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
@@ -215,6 +237,40 @@ final class GpuWalls implements AutoCloseable {
                     return sum / float(n);
                 }
 
+                #ifdef HAS_IMAGES
+                /** Renderer.sideImg: the strip runs along the surface, as sideTex's does, unless
+                 *  the surface is a slab's edge, which takes one sample where the ray meets it. */
+                vec3 sideImage(int rec, float u, float z, float narrow, float square, float t) {
+                    float along = narrow / square;
+                    if (imageWorldUv(rec))
+                        return imageSample(rec, vec2(camX + rayX * t, camY + rayY * t), along);
+                    int n = int(min(8.0, ceil(along / narrow)));
+                    if (n <= 1) return imageSample(rec, vec2(u, z), narrow);
+                    float stp = along / float(n), w = max(narrow, stp);
+                    vec3 sum = vec3(0.0);
+                    for (int i = 0; i < n; i++)
+                        sum += imageSample(rec, vec2(u + (float(i) + 0.5 - float(n) * 0.5) * stp, z), w);
+                    return sum / float(n);
+                }
+
+                /** Renderer.flatImg: the strip runs away from the eye, walked in distance. */
+                vec3 flatImage(int rec, float t, int row) {
+                    float narrow = t * dk / foc;
+                    float d = abs(float(row) + 0.5 - hz);
+                    float along = d < 1e-6 ? 1e30 : t * dk / d;
+                    int n = int(min(8.0, ceil(along / narrow)));
+                    float w = max(narrow, along / float(n));
+                    if (n <= 1) return imageSample(rec, vec2(camX + rayX * t, camY + rayY * t), w);
+                    float stp = t / (d * float(n));
+                    vec3 sum = vec3(0.0);
+                    for (int i = 0; i < n; i++) {
+                        float tt = t + (float(i) + 0.5 - float(n) * 0.5) * stp;
+                        sum += imageSample(rec, vec2(camX + rayX * tt, camY + rayY * tt), w);
+                    }
+                    return sum / float(n);
+                }
+                #endif
+
                 /** Renderer.tone: the table, as the curve that built it, and truncating like it. */
                 float tone(float v) {
                     float i = floor(clamp(v, 0.0, 2047.0));
@@ -242,6 +298,11 @@ final class GpuWalls implements AutoCloseable {
                 /** Renderer.shadeL: the same, times a coloured level off a baked lightmap. */
                 vec3 shadeL(float packed, float k, vec3 L) { return graded(unpack(packed) * k * L); }
 
+                /** Renderer.shade with an image's RGB multipliers in place of a scalar. */
+                vec3 shadeT(float packed, vec3 tex, float k, vec3 L) {
+                    return graded(unpack(packed) * tex * k * L);
+                }
+
                 /** Renderer.sky: a vertical gradient over the view's own height, which is not the
                  *  buffer's once there is supersampling or overscan above the horizon. Below the
                  *  horizon it is Renderer.fillRest's flat haze, which skips the grade entirely. */
@@ -265,37 +326,52 @@ final class GpuWalls implements AutoCloseable {
                     int row = int(gl_FragCoord.y);
                     int n = int(texelFetch(counts, ivec2(col, 0), 0).r);
                     for (int s = 0; s < n; s++) {
-                        vec4 a = texelFetch(spans, ivec2(s * 3, col), 0);
+                        vec4 a = texelFetch(spans, ivec2(s * 4, col), 0);
                         if (row < int(a.y) || row >= int(a.z)) continue;
-                        vec4 b = texelFetch(spans, ivec2(s * 3 + 1, col), 0);
-                        vec4 c = texelFetch(spans, ivec2(s * 3 + 2, col), 0);
-                        int mat = int(a.w), lm = int(b.z);
+                        vec4 b = texelFetch(spans, ivec2(s * 4 + 1, col), 0);
+                        vec4 c = texelFetch(spans, ivec2(s * 4 + 2, col), 0);
+                        vec4 e = texelFetch(spans, ivec2(s * 4 + 3, col), 0);
+                        int mat = int(a.w), lm = int(b.z), rec = int(e.x);
+                        vec3 L = lm < 0 ? vec3(1.0) : vec3(0.0);
                         if (c.w == 0.0) {
                             float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
-                            float f = sideTex(mat, b.x, z, c.x, c.y);
-                            frag = vec4(lm < 0
-                                    ? shade(c.z, f * b.w)
-                                    : shadeL(c.z, f * b.y, lightAt(lm, b.x, z)), 1.0);
+                            if (lm >= 0) L = lightAt(lm, b.x, z);
+                            float k = lm < 0 ? b.w : b.y;
+                            #ifdef HAS_IMAGES
+                            if (rec >= 0) {
+                                frag = vec4(shadeT(c.z, sideImage(rec, b.x, z, c.x, c.y, c.x * foc / dk),
+                                        k, L), 1.0);
+                                return;
+                            }
+                            #endif
+                            frag = vec4(shadeT(c.z, vec3(sideTex(mat, b.x, z, c.x, c.y)), k, L), 1.0);
                         } else {
                             float t = (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc);
                             if (!(t > 0.0) || t > maxDist) {
                                 frag = vec4(shade(c.z, 0.3 * b.w), 1.0);
                             } else {
                                 float wx = camX + rayX * t, wy = camY + rayY * t, f = fog(t);
-                                if (lm < 0) {
-                                    frag = vec4(shade(c.z, flatTex(mat, t, row) * b.w * f), 1.0);
-                                } else if (emissive(mat, wx, wy)) {
+                                if (lm >= 0 && emissive(mat, wx, wy)) {
                                     frag = vec4(shade(16774374.0, f), 1.0);   // Renderer.EMISSIVE
-                                } else {
-                                    frag = vec4(shadeL(c.z, flatTex(mat, t, row) * f,
-                                            lightAt(lm, wx, wy)), 1.0);
+                                    return;
                                 }
+                                if (lm >= 0) L = lightAt(lm, wx, wy);
+                                float k = lm < 0 ? b.w * f : f;
+                                #ifdef HAS_IMAGES
+                                if (rec >= 0) {
+                                    frag = vec4(shadeT(c.z, flatImage(rec, t, row), k, L), 1.0);
+                                    return;
+                                }
+                                #endif
+                                frag = vec4(shadeT(c.z, vec3(flatTex(mat, t, row)), k, L), 1.0);
                             }
                         }
                         return;
                     }
                     frag = vec4(sky(row), 1.0);        // no span reaches this row: Renderer.fillRest
                 }
-                """.formatted(GlMaterials.SIDE, GlMaterials.FLAT, tables() + GpuLights.GLSL);
+                """.formatted(images == null ? "" : "#define HAS_IMAGES 1", GlMaterials.SIDE, GlMaterials.FLAT,
+                        tables() + GpuLights.GLSL
+                                + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + GpuMaterials.GLSL));
     }
 }

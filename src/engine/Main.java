@@ -98,6 +98,8 @@ public final class Main {
     private GpuWalls gpu;
     private GpuSpans spans;
     private GpuLights gpuLights;
+    private GpuTextures gpuImages;
+    private GpuMaterials gpuMaterials;
     private int[] gpuPixels;                                     // only when part of the frame is not ported
     private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
     private final int baseW, baseH;                              // the resolution --size asked for
@@ -482,6 +484,14 @@ public final class Main {
                 if (gpuLights == null) gpuLights = new GpuLights(lighting);
                 gpu.setLights(gpuLights);
             }
+            if (gpuImages == null) {
+                java.util.List<Materials.Texture> imgs = GpuTextures.of(world);
+                if (!imgs.isEmpty()) {
+                    gpuImages = new GpuTextures(imgs);
+                    gpuMaterials = new GpuMaterials(world, gpuImages);
+                }
+            }
+            if (gpuImages != null) gpu.setImages(gpuImages, gpuMaterials);
             spans = new GpuSpans(srcW, srcH);
             gpuPixels = null;
             renderer.captureSpans(spans);
