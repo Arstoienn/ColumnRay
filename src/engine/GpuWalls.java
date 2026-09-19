@@ -22,8 +22,11 @@ import java.lang.foreign.ValueLayout;
  */
 final class GpuWalls implements AutoCloseable {
     /** Texture units 0..4 are the spans, the counts, the light atlas and its records, and the
-     *  material table; the image arrays follow. */
+     *  material table; the ten image arrays follow, and the masked surfaces take the sixteenth
+     *  and last unit a fragment shader is promised. The mask count shares the counts texture's
+     *  second channel rather than asking for a seventeenth. */
     private static final int FIRST_IMAGE_UNIT = 5;
+    private static final int MASK_UNIT = 15;
     private static final String VERT = """
             #version 330 core
             void main() {
@@ -33,8 +36,8 @@ final class GpuWalls implements AutoCloseable {
             """;
 
     private int program;                       // built on the first draw: its text depends on the images
-    private final int target, frame, spanTex, countTex, w, h, columns;
-    private final MemorySegment spanBuf, countBuf, back;
+    private final int target, frame, spanTex, countTex, maskTex, w, h, columns;
+    private final MemorySegment spanBuf, countBuf, maskBuf, back;
     private final Arena own;
 
     /** For a window, which needs the buffers to outlive the call that made them. */
@@ -88,9 +91,16 @@ final class GpuWalls implements AutoCloseable {
         Gl.bindTexture(countTex);
         Gl.texImage(Gl.RGBA32F, columns, 1, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
         Gl.texUnfiltered();
+        maskTex = Gl.texture();
+        Gl.activeTexture(MASK_UNIT);
+        Gl.bindTexture(maskTex);
+        Gl.texImage(Gl.RGBA32F, GpuMasks.MAX_PER_COLUMN * GpuMasks.TEXELS, columns,
+                Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
+        Gl.texUnfiltered();
 
 
         spanBuf = arena.allocate((long) columns * GpuSpans.MAX_PER_COLUMN * GpuSpans.FLOATS * Float.BYTES);
+        maskBuf = arena.allocate((long) columns * GpuMasks.MAX_PER_COLUMN * GpuMasks.FLOATS * Float.BYTES);
         countBuf = arena.allocate((long) columns * 4 * Float.BYTES);
         back = arena.allocate((long) w * h * 4);
     }
@@ -103,6 +113,7 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "lightAtlas", 2);
         Gl.uniform(program, "lightRecords", 3);
         Gl.uniform(program, "materials", 4);
+        Gl.uniform(program, "masks", MASK_UNIT);
         for (int i = 0; images != null && i < images.banks(); i++)
             Gl.uniform(program, "images" + i, FIRST_IMAGE_UNIT + i);
         Gl.uniform(program, "height", (float) h);
@@ -114,18 +125,28 @@ final class GpuWalls implements AutoCloseable {
         Gl.deleteTexture(target);
         Gl.deleteTexture(spanTex);
         Gl.deleteTexture(countTex);
+        Gl.deleteTexture(maskTex);
         Gl.deleteFramebuffer(frame);
         if (own != null) own.close();
     }
 
-    /** Draw one frame's worth of spans and bring it back. Pixels no span covers stay zero. */
-    void draw(GpuSpans spans, int[] into, Renderer.Camera cam, double horizon, double focal, int viewH) {
+    /** Draw one frame's worth of spans and the masked surfaces over them, and bring it back.
+     *  Pixels no span covers are the sky, exactly as Renderer.fillRest leaves them. */
+    void draw(GpuSpans spans, GpuMasks masks, int[] into, Renderer.Camera cam, double horizon,
+              double focal, int viewH) {
         MemorySegment.copy(spans.data(), 0, spanBuf, ValueLayout.JAVA_FLOAT, 0, spans.data().length);
-        int[] count = spans.count();
-        for (int x = 0; x < columns; x++) countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4, count[x]);
+        MemorySegment.copy(masks.data(), 0, maskBuf, ValueLayout.JAVA_FLOAT, 0, masks.data().length);
+        int[] count = spans.count(), maskCount = masks.count();
+        for (int x = 0; x < columns; x++) {
+            countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4, count[x]);
+            countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4 + 1, maskCount[x]);
+        }
         Gl.activeTexture(0);
         Gl.bindTexture(spanTex);
         Gl.texSubImage(GpuSpans.MAX_PER_COLUMN * GpuSpans.TEXELS, columns, Gl.RGBA, Gl.FLOAT, spanBuf);
+        Gl.activeTexture(MASK_UNIT);
+        Gl.bindTexture(maskTex);
+        Gl.texSubImage(GpuMasks.MAX_PER_COLUMN * GpuMasks.TEXELS, columns, Gl.RGBA, Gl.FLOAT, maskBuf);
         Gl.activeTexture(1);
         Gl.bindTexture(countTex);
         Gl.texSubImage(columns, 1, Gl.RGBA, Gl.FLOAT, countBuf);
@@ -190,7 +211,7 @@ final class GpuWalls implements AutoCloseable {
                 #version 330 core
                 %s
                 uniform sampler2D spans;
-                uniform sampler2D counts;
+                uniform sampler2D counts;                 // per column: spans in r, masks in g
                 uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
                 uniform float fogOn, maxDist;
                 float rayX, rayY, dk;
@@ -285,7 +306,7 @@ final class GpuWalls implements AutoCloseable {
                         c = y + (c - y) * satBoost;
                     }
                     if (lift != 0.0) c = lift * 255.0 + c * (1.0 - lift);
-                    return vec3(tone(c.r), tone(c.g), tone(c.b)) / 255.0;
+                    return vec3(tone(c.r), tone(c.g), tone(c.b));
                 }
 
                 vec3 unpack(float packed) {
@@ -305,9 +326,13 @@ final class GpuWalls implements AutoCloseable {
 
                 /** Renderer.sky: a vertical gradient over the view's own height, which is not the
                  *  buffer's once there is supersampling or overscan above the horizon. Below the
-                 *  horizon it is Renderer.fillRest's flat haze, which skips the grade entirely. */
+                 *  horizon it is Renderer.fillRest's flat haze, which skips the grade entirely.
+                 *  Levels, 0 to 255, like everything from graded(): a mask blends over the
+                 *  finished pixel with Renderer.mix's byte arithmetic, so the whole of a frame is
+                 *  carried at that scale and divided once at the end. */
+                %s
                 vec3 sky(int row) {
-                    if (float(row) >= hz) return vec3(58.0, 60.0, 64.0) / 255.0;
+                    if (float(row) >= hz) return vec3(58.0, 60.0, 64.0);
                     float s = clamp((hz - float(row)) / (viewH * 0.9), 0.0, 1.0);
                     return graded(vec3(205.0 - 125.0 * s, 222.0 - 87.0 * s, 238.0 - 28.0 * s));
                 }
@@ -324,7 +349,9 @@ final class GpuWalls implements AutoCloseable {
                     // the top one, so the two flips cancel: shade framebuffer row j as row j and
                     // the array that comes back is already the right way up.
                     int row = int(gl_FragCoord.y);
-                    int n = int(texelFetch(counts, ivec2(col, 0), 0).r);
+                    vec2 have = texelFetch(counts, ivec2(col, 0), 0).rg;
+                    int n = int(have.x);
+                    vec3 colour = vec3(-1.0);          // nothing has claimed this row yet
                     for (int s = 0; s < n; s++) {
                         vec4 a = texelFetch(spans, ivec2(s * 4, col), 0);
                         if (row < int(a.y) || row >= int(a.z)) continue;
@@ -339,39 +366,43 @@ final class GpuWalls implements AutoCloseable {
                             float k = lm < 0 ? b.w : b.y;
                             #ifdef HAS_IMAGES
                             if (rec >= 0) {
-                                frag = vec4(shadeT(c.z, sideImage(rec, b.x, z, c.x, c.y, c.x * foc / dk),
-                                        k, L), 1.0);
-                                return;
+                                colour = shadeT(c.z, sideImage(rec, b.x, z, c.x, c.y, c.x * foc / dk),
+                                        k, L);
+                                break;
                             }
                             #endif
-                            frag = vec4(shadeT(c.z, vec3(sideTex(mat, b.x, z, c.x, c.y)), k, L), 1.0);
+                            colour = shadeT(c.z, vec3(sideTex(mat, b.x, z, c.x, c.y)), k, L);
                         } else {
                             float t = (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc);
                             if (!(t > 0.0) || t > maxDist) {
-                                frag = vec4(shade(c.z, 0.3 * b.w), 1.0);
+                                colour = shade(c.z, 0.3 * b.w);
                             } else {
                                 float wx = camX + rayX * t, wy = camY + rayY * t, f = fog(t);
                                 if (lm >= 0 && emissive(mat, wx, wy)) {
-                                    frag = vec4(shade(16774374.0, f), 1.0);   // Renderer.EMISSIVE
-                                    return;
+                                    colour = shade(16774374.0, f);   // Renderer.EMISSIVE
+                                    break;
                                 }
                                 if (lm >= 0) L = lightAt(lm, wx, wy);
                                 float k = lm < 0 ? b.w * f : f;
                                 #ifdef HAS_IMAGES
                                 if (rec >= 0) {
-                                    frag = vec4(shadeT(c.z, flatImage(rec, t, row), k, L), 1.0);
-                                    return;
+                                    colour = shadeT(c.z, flatImage(rec, t, row), k, L);
+                                    break;
                                 }
                                 #endif
-                                frag = vec4(shadeT(c.z, vec3(flatTex(mat, t, row)), k, L), 1.0);
+                                colour = shadeT(c.z, vec3(flatTex(mat, t, row)), k, L);
                             }
                         }
-                        return;
+                        break;
                     }
-                    frag = vec4(sky(row), 1.0);        // no span reaches this row: Renderer.fillRest
+                    if (colour.r < 0.0) colour = sky(row);   // Renderer.fillRest
+                    // Renderer.blendMasked, in the same place: over the finished column.
+                    colour = blendMasks(col, row, int(have.y), colour);
+                    frag = vec4(colour / 255.0, 1.0);
                 }
                 """.formatted(images == null ? "" : "#define HAS_IMAGES 1", GlMaterials.SIDE, GlMaterials.FLAT,
                         tables() + (lights == null ? GpuLights.absent() : lights.glsl())
-                                + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + mats.glsl()));
+                                + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + mats.glsl()),
+                        GlMaterials.MASK + GpuMasks.GLSL);
     }
 }

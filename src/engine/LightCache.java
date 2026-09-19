@@ -70,7 +70,7 @@ final class LightCache {
             "Main", "Options", "Renderer", "Warp", "Player", "Hud", "Capture",
             "Minimap", "RayView", "DynamicResolution", "Keys", "LightCache", "Hash",
             "Gl", "GlMaterials", "GpuSpike", "GpuMatCheck", "GpuCheck", "GpuSpans", "GpuWalls",
-            "GpuLights", "GpuTextures", "GpuMaterials", "GpuTable");
+            "GpuLights", "GpuTextures", "GpuMaterials", "GpuTable", "GpuMasks");
 
     private LightCache() {}
 
