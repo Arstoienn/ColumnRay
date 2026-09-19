@@ -828,7 +828,6 @@ final class Renderer {
             nextCross(t);
         }
 
-        /** One solid band of the far side, seen through an opening on the near side. */
         /** How wide one pixel is, in metres, on a surface square to the eye at distance t. */
         private double pixelSize(double t) { return t * dk / F; }
 
@@ -1034,6 +1033,7 @@ final class Renderer {
             T[0] = r / n; T[1] = g / n; T[2] = b / n;
         }
 
+        /** One solid band of the far side, seen through an opening on the near side. */
         private int wallBand(double zLo, double zHi, double t, double u, double lam, double sq,
                              Region skin, Lighting.LightMap em) {
             if (!(zHi > zLo) || skin == null) return 0;

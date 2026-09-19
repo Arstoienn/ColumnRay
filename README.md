@@ -192,11 +192,17 @@ how many rows it filled.
 | `src/engine/Lighting.java` | Lightmap bake |
 | `src/engine/LightCache.java` | Baked lightmaps on disk, keyed by the map, settings and bake code |
 | `src/engine/Occluder.java` | Line of sight and nearest-hit queries |
-| `src/engine/Main.java` | Window, input, player physics, HUD, command line |
+| `src/engine/Main.java` | Window, frame loop and buffers |
+| `src/engine/Options.java` | Command line |
+| `src/engine/Player.java` | Movement, gravity and collision |
+| `src/engine/Warp.java` | The pitch warp |
+| `src/engine/Hud.java` | Overlay text and minimap drawing |
+| `src/engine/Capture.java` | Headless modes: `--bench`, `--shot`, `--shots`, `--verify` |
 | `src/engine/DynamicResolution.java` | Frame-time-driven render scaling |
 | `src/engine/Minimap.java` | Minimap |
 | `src/engine/RayView.java` | Top-down ray debug view |
 | `src/engine/Keys.java` | Physical key state |
+| `src/engine/Hash.java` | Digests for the golden test |
 | `src/engine/Json.java` | JSON parser (supports `//` comments) |
 | `maps/school.json` | Demo map |
 | `maps/haven/` | Submodule: the Haven map, in [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven) |
