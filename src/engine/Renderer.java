@@ -298,7 +298,7 @@ final class Renderer {
          */
         private static final class Plane {
             double gk0;
-            int gmat, grgb, glm;
+            int gmat, grgb, glm, gtex;
             boolean ggpu;
             boolean top, inside;
             boolean masked;                    // a cut-out's: recorded and blended in, never takes a row
@@ -319,7 +319,7 @@ final class Renderer {
         private static final class Cand {
             double lo, hi, z, slope;
             double gk0;                        // the GPU path: the plane's light, material, colour and
-            int gmat, grgb, glm;               // lightmap, which its IntUnaryOperator has hidden in a closure
+            int gmat, grgb, glm, gtex;         // lightmap and texture, which its IntUnaryOperator hides
             boolean ggpu;                      // false for a lightmapped or image-textured plane
             int ia, ib, base;
             IntUnaryOperator color;
@@ -359,7 +359,7 @@ final class Renderer {
         private GpuSpans sink;
         private int spanKind;                   // 0 nothing, 1 a wall, 2 a plane
         private double spanU, spanW, spanSq, spanLight, spanZ, spanSlope, spanFog;
-        private int spanMat, spanRgb, spanLm;
+        private int spanMat, spanRgb, spanLm, spanTex;
 
         private Trace tr;
         private double endT, lastT;
@@ -739,8 +739,8 @@ final class Renderer {
                 double u = h.u;
                 Lighting.LightMap lm = baked ? lit.side(s, h.face) : null;
                 double sq = square(h.nx, h.ny);
-                if (sink != null && s.img == null && s.tex == null
-                        && (lm == null || lm.gpuIndex >= 0)) {
+                if (sink != null && (lm == null || lm.gpuIndex >= 0)
+                        && ((s.img == null && s.tex == null) || s.gpuSide >= 0)) {
                     double c = t1 * dk / F;
                     spanKind = 1;
                     spanU = u;
@@ -749,6 +749,7 @@ final class Renderer {
                     spanLight = lambert(h.nx, h.ny) * fog(t1) * light;
                     spanFog = fog(t1);
                     spanLm = lm == null ? -1 : lm.gpuIndex;
+                    spanTex = s.img != null || s.tex != null ? s.gpuSide : -1;
                     spanMat = s.mat;
                     spanRgb = s.color;
                 }
@@ -781,18 +782,20 @@ final class Renderer {
                 Lighting.LightMap lm = baked ? lit.top(s) : null;
                 addPlane(s, h, true, atEye, slope, ev, rows, label,
                         flat(atEye, slope, s.topMat, s.color, light, lm, s.topTex, s.topTs, s),
-                        s.topMat, light, s.topTex == null && s.img == null, lm);
+                        s.topMat, light, (s.topTex == null && s.img == null) || s.gpuTop >= 0, lm,
+                        s.topTex != null || s.img != null ? s.gpuTop : -1);
             }
             if (eye < bEye) {
                 Lighting.LightMap lm = baked ? lit.bottom(s) : null;
                 addPlane(s, h, false, bEye, bSlope, ev, rows, label,
                         flat(bEye, bSlope, s.mat, s.color, 0.45 * light, lm, s.tex, s.ts, s),
-                        s.mat, 0.45 * light, s.tex == null && s.img == null, lm);
+                        s.mat, 0.45 * light, (s.tex == null && s.img == null) || s.gpuBottom >= 0, lm,
+                        s.tex != null || s.img != null ? s.gpuBottom : -1);
             }
         }
 
         private void addPlane(Shape s, Hit h, boolean top, double z, double slope, int ev, int[] rows, String label,
-                              IntUnaryOperator color, int mat, double k0, boolean gpu, Lighting.LightMap lm) {
+                              IntUnaryOperator color, int mat, double k0, boolean gpu, Lighting.LightMap lm, int tex) {
             if (planeN == planes.size()) planes.add(new Plane());
             Plane p = planes.get(planeN++);
             p.top = top;
@@ -809,6 +812,7 @@ final class Renderer {
             p.grgb = s.color;
             p.gk0 = k0;
             p.glm = lm == null ? -1 : lm.gpuIndex;
+            p.gtex = tex;
             p.ggpu = gpu && (lm == null || lm.gpuIndex >= 0);
             p.ev = ev;
             p.which = top ? 1 : 2;
@@ -1106,6 +1110,7 @@ final class Renderer {
                 spanLight = lam * skin.light;           // the flat model's scalar; fog alone when lit
                 spanFog = fog(t);
                 spanLm = em == null ? -1 : em.gpuIndex;
+                spanTex = -1;
                 spanMat = skin.wallMat;
                 spanRgb = skin.wallColor;
             }
@@ -1303,7 +1308,7 @@ final class Renderer {
                 Lighting.LightMap lm = baked ? lit.floor(r) : null;
                 describe(cand(rowZ(r.floor, tb), rowZ(r.floor, ta), r.floor, 0, r.floorColor,
                         flat(r.floor, r.floorMat, r.floorColor, r.light, lm), null, r, EventKind.FLOOR),
-                        r.floorMat, r.floorColor, r.light, true, lm);
+                        r.floorMat, r.floorColor, r.light, true, lm, -1);
             }
             for (int i = 0; i < stackN; i++) {
                 Region r = stack[i];
@@ -1311,7 +1316,7 @@ final class Renderer {
                 Lighting.LightMap lm = baked ? lit.ceil(r) : null;
                 describe(cand(rowZ(r.ceil, ta), rowZ(r.ceil, tb), r.ceil, 0, r.ceilColor,
                         flat(r.ceil, r.ceilMat, r.ceilColor, r.light, lm), null, r, EventKind.CEILING),
-                        r.ceilMat, r.ceilColor, r.light, true, lm);
+                        r.ceilMat, r.ceilColor, r.light, true, lm, -1);
             }
             for (int i = 0; i < planeN; i++) addPiece(planes.get(i), ta, tb);
             paintCands(ta, tb);
@@ -1342,15 +1347,17 @@ final class Renderer {
             c.grgb = p.grgb;
             c.gk0 = p.gk0;
             c.glm = p.glm;
+            c.gtex = p.gtex;
             c.ggpu = p.ggpu;
         }
 
         /** What the candidate's colour operator is made of, for the GPU path to rebuild in a
          *  shader. Only the procedural, unlit path is on the card; the rest says so with ggpu. */
-        private void describe(Cand c, int mat, int rgb, double k0, boolean gpu, Lighting.LightMap lm) {
+        private void describe(Cand c, int mat, int rgb, double k0, boolean gpu, Lighting.LightMap lm, int tex) {
             c.gmat = mat;
             c.grgb = rgb;
             c.gk0 = k0;
+            c.gtex = tex;
             c.glm = lm == null ? -1 : lm.gpuIndex;
             c.ggpu = gpu && c.glm >= (lm == null ? -1 : 0);
         }
@@ -1400,6 +1407,7 @@ final class Renderer {
                     spanSlope = c.slope;
                     spanLight = c.gk0;
                     spanLm = c.glm;
+                    spanTex = c.gtex;
                     spanMat = c.gmat;
                     spanRgb = c.grgb;
                 }
@@ -1579,8 +1587,8 @@ final class Renderer {
                     }
                 }
                 if (!note) { /* nothing to record */ }
-                else if (spanKind == 1) sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq, spanMat, spanRgb, spanFog, spanLm);
-                else if (spanKind == 2) sink.addPlane(x, s0, s1, spanZ, spanSlope, spanLight, spanMat, spanRgb, spanLm);
+                else if (spanKind == 1) sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq, spanMat, spanRgb, spanFog, spanLm, spanTex);
+                else if (spanKind == 2) sink.addPlane(x, s0, s1, spanZ, spanSlope, spanLight, spanMat, spanRgb, spanLm, spanTex);
                 else for (int y = s0; y < s1; y++) sink.skip(x, y);
                 filled += s1 - s0;
                 if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above

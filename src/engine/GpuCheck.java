@@ -29,6 +29,16 @@ final class GpuCheck {
         {"shaft-corner", "2", "2", "45", "25"},
     };
 
+    /** The Haven cameras of tests/views/haven.txt, where the images are. */
+    private static final String[][] HAVEN = {
+        {"spot4", "95.2", "122.8", "180", "3.00"},
+        {"spot6", "71.8", "49.2", "330", "3.00"},
+        {"spot7", "69.2", "124.2", "255", "1.00"},
+        {"spot8", "65.8", "84.8", "180", "1.00"},
+        {"spot9", "34.8", "120.2", "270", "1.50"},
+        {"spot10", "34.8", "80.8", "90", "2.00"},
+    };
+
     /** name, x, y, heading, feet - the school cameras, at the heights they stand at. */
     private static final String[][] VIEWS = {
         {"classroom", "13", "4", "90", "0"},
@@ -59,12 +69,19 @@ final class GpuCheck {
         try (Arena arena = Arena.ofConfined()) {
             GpuWalls walls = new GpuWalls(arena, w, h, w);
             if (lighting != null) walls.setLights(new GpuLights(lighting));
+            java.util.List<Materials.Texture> imgs = GpuTextures.of(world);
+            if (!imgs.isEmpty()) {
+                GpuTextures textures = new GpuTextures(imgs);
+                walls.setImages(textures, new GpuMaterials(world, textures));
+                System.out.printf("%d images in %d array textures%n", imgs.size(), textures.banks());
+            }
             System.out.printf("GL %s on %s%n", Gl.version(), Gl.device());
             System.out.printf("%s at %dx%d, %s%n%n", map, w, h, lit ? "baked lighting" : "flat shading");
             System.out.printf("%-12s %8s %8s %8s %8s %8s %8s %8s%n",
                     "view", "pixels", "worst", "mean", "over 2", "masked", "cpu ms", "gpu ms");
             int worstAll = 0;
-            String[][] views = map.getFileName().toString().contains("walls") ? WALLS_ONLY : VIEWS;
+            String name = map.getFileName().toString();
+            String[][] views = name.contains("walls") ? WALLS_ONLY : name.contains("haven") ? HAVEN : VIEWS;
             for (String[] v : views) {
                 spans.reset();
                 Arrays.fill(cpu, 0);

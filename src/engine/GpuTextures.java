@@ -37,14 +37,29 @@ final class GpuTextures {
     private final List<Bank> banks = new ArrayList<>();
     private final IdentityHashMap<Materials.Texture, int[]> where = new IdentityHashMap<>();
 
+    /**
+     * A fragment shader may use sixteen samplers in all and the frame already spends five on the
+     * spans, the lightmaps and the material table, so there is room for ten arrays. Haven's
+     * images come in fifteen sizes, but the sizes are not evenly used - 512 square alone accounts
+     * for half of them - so the ten largest groups are taken and the stragglers are left to the
+     * CPU, where the skip mask counts them rather than letting them draw wrong.
+     */
+    static final int MAX_BANKS = 10;
+
+    private int leftToCpu;
+
+    int leftToCpu() { return leftToCpu; }
+
     GpuTextures(List<Materials.Texture> textures) {
         Map<Long, List<Materials.Texture>> bySize = new LinkedHashMap<>();
         for (Materials.Texture t : textures)
             bySize.computeIfAbsent(((long) t.levelW(0) << 32) | t.levelH(0), k -> new ArrayList<>()).add(t);
+        List<List<Materials.Texture>> groups = new ArrayList<>(bySize.values());
+        groups.sort((x, y) -> y.size() - x.size());
+        for (int i = MAX_BANKS; i < groups.size(); i++) leftToCpu += groups.get(i).size();
 
         Gl.context();
-        for (Map.Entry<Long, List<Materials.Texture>> e : bySize.entrySet()) {
-            List<Materials.Texture> group = e.getValue();
+        for (List<Materials.Texture> group : groups.subList(0, Math.min(MAX_BANKS, groups.size()))) {
             Materials.Texture first = group.get(0);
             int w = first.levelW(0), h = first.levelH(0), n = group.size();
             int name = Gl.texture();
