@@ -1167,7 +1167,7 @@ final class Renderer {
                     } else {
                         c = sideColor(s, m.u, z, m.t, m.sq, m.f, null);
                     }
-                    if (sink != null) sink.blend(x, y);
+                    if (sink != null) sink.skip(x, y);
                     int p = y * W + x;
                     pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
                     // A blended pixel has several surfaces; keep the nearest one that contributes.
@@ -1213,7 +1213,7 @@ final class Renderer {
 
         /** Write one blended pixel of a cut-out, and its albedo and depth for a screenshot. */
         private void blendPixel(int y, int c, double a, double t, Shape s) {
-            if (sink != null) sink.blend(x, y);
+            if (sink != null) sink.skip(x, y);
             int p = y * W + x;
             pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
             if (depth != null) {
@@ -1548,6 +1548,7 @@ final class Renderer {
             int ia = clampRow(a), ib = clampRow(b);
             if (ib <= ia) return 0;
             int m = 0, filled = 0;
+            boolean note = sink != null;                      // the GPU path is watching what is drawn
             for (int k = 0; k < open; k++) {
                 int s0 = Math.max(o0[k], ia), s1 = Math.min(o1[k], ib);
                 if (s1 <= s0) { n0[m] = o0[k]; n1[m++] = o1[k]; continue; }
@@ -1568,8 +1569,10 @@ final class Renderer {
                         }
                     }
                 }
-                if (spanKind == 1) sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq, spanMat, spanRgb);
+                if (!note) { /* nothing to record */ }
+                else if (spanKind == 1) sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq, spanMat, spanRgb);
                 else if (spanKind == 2) sink.addPlane(x, s0, s1, spanZ, spanSlope, spanLight, spanMat, spanRgb);
+                else for (int y = s0; y < s1; y++) sink.skip(x, y);
                 filled += s1 - s0;
                 if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above
                 if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // leftover below

@@ -73,7 +73,7 @@ final class GpuWalls {
     }
 
     /** Draw one frame's worth of spans and bring it back. Pixels no span covers stay zero. */
-    void draw(GpuSpans spans, int[] into, Renderer.Camera cam, double horizon, double focal) {
+    void draw(GpuSpans spans, int[] into, Renderer.Camera cam, double horizon, double focal, int viewH) {
         MemorySegment.copy(spans.data(), 0, spanBuf, ValueLayout.JAVA_FLOAT, 0, spans.data().length);
         int[] count = spans.count();
         for (int x = 0; x < columns; x++) countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4, count[x]);
@@ -86,6 +86,7 @@ final class GpuWalls {
         Gl.useProgram(program);
         Gl.uniform(program, "eye", (float) cam.eye);
         Gl.uniform(program, "hz", (float) horizon);
+        Gl.uniform(program, "viewH", (float) viewH);
         Gl.uniform(program, "foc", (float) focal);
         Gl.uniform(program, "halfW", w / 2.0f);
         Gl.uniform(program, "camX", (float) cam.x);
@@ -138,7 +139,7 @@ final class GpuWalls {
                 #version 330 core
                 uniform sampler2D spans;
                 uniform sampler2D counts;
-                uniform float height, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
+                uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
                 uniform float fogOn, maxDist;
                 float rayX, rayY, dk;
                 out vec4 frag;
@@ -191,17 +192,30 @@ final class GpuWalls {
                     return floor(200.0 + 55.0 * (1.0 - exp(-(i - 200.0) / 55.0)) + 0.5);
                 }
 
-                /** Renderer.shade and the grade in Renderer.rgb, in that order. */
-                vec3 shade(float packed, float k) {
-                    vec3 c = vec3(floor(packed / 65536.0),
-                                  floor(mod(packed / 256.0, 256.0)),
-                                  mod(packed, 256.0)) * k;
+                /** Renderer.rgb: the grade, then the tone curve. */
+                vec3 graded(vec3 c) {
                     if (satBoost != 1.0) {
                         float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
                         c = y + (c - y) * satBoost;
                     }
                     if (lift != 0.0) c = lift * 255.0 + c * (1.0 - lift);
                     return vec3(tone(c.r), tone(c.g), tone(c.b)) / 255.0;
+                }
+
+                /** Renderer.shade: the surface's colour times a shading factor, then the grade. */
+                vec3 shade(float packed, float k) {
+                    return graded(vec3(floor(packed / 65536.0),
+                                       floor(mod(packed / 256.0, 256.0)),
+                                       mod(packed, 256.0)) * k);
+                }
+
+                /** Renderer.sky: a vertical gradient over the view's own height, which is not the
+                 *  buffer's once there is supersampling or overscan above the horizon. Below the
+                 *  horizon it is Renderer.fillRest's flat haze, which skips the grade entirely. */
+                vec3 sky(int row) {
+                    if (float(row) >= hz) return vec3(58.0, 60.0, 64.0) / 255.0;
+                    float s = clamp((hz - float(row)) / (viewH * 0.9), 0.0, 1.0);
+                    return graded(vec3(205.0 - 125.0 * s, 222.0 - 87.0 * s, 238.0 - 28.0 * s));
                 }
 
                 void main() {
@@ -233,7 +247,7 @@ final class GpuWalls {
                         }
                         return;
                     }
-                    discard;
+                    frag = vec4(sky(row), 1.0);        // no span reaches this row: Renderer.fillRest
                 }
                 """.formatted(GlMaterials.SIDE, GlMaterials.FLAT, tables());
     }
