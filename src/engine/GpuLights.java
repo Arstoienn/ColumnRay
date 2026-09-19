@@ -3,6 +3,7 @@ package engine;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -34,35 +35,35 @@ final class GpuLights {
     private final int side;
     private final GpuTable table;
 
-    /** Pack every map in the bake's own order - the order {@link LightCache} serialises in, which
-     *  is proof enough that a flat layout of them round-trips. */
+    /** Pack every map into one atlas, tallest first, and record where each one landed. */
     GpuLights(Lighting lighting) {
+        Gl.context();
         List<Lighting.LightMap> maps = lighting.maps();
         count = maps.size();
-        // A shelf packer: maps in the order they come, a new shelf when the row is full. The
-        // gutter is one texel, because the shader's own clamp keeps every fetch inside a map and
-        // a neighbour's texel can never be read.
-        int want = 1;
-        long area = 0;
-        for (Lighting.LightMap m : maps) area += (long) (m.w + 1) * (m.h + 1);
-        while ((long) want * want < area * 2 && want < 16384) want *= 2;
-        int x = 0, y = 0, shelf = 0;
+        for (int i = 0; i < count; i++) maps.get(i).gpuIndex = i;
+
+        // Tallest first. A shelf is as tall as the tallest map on it, so one large map among the
+        // small ones wastes the whole width of a shelf, and Haven's 3.8 million maps are mostly
+        // at the 2x2 floor with a few large ones scattered through them: in the bake's own order
+        // that waste alone overflowed a 16384 square, which is the largest a card will allocate.
+        long[] order = new long[count];
+        for (int i = 0; i < count; i++)
+            order[i] = ((long) (Integer.MAX_VALUE - maps.get(i).h) << 32) | i;
+        Arrays.sort(order);
+
+        // Then simply try each square until one holds them, rather than guessing the size from
+        // the area and a fudge factor for the waste: the packer itself is the only honest answer
+        // to how much room the waste needs, and it runs in a few million steps.
         int[] px = new int[count], py = new int[count];
-        for (int i = 0; i < count; i++) {
-            Lighting.LightMap m = maps.get(i);
-            if (x + m.w > want) { x = 0; y += shelf + 1; shelf = 0; }
-            if (y + m.h > want)
-                throw new IllegalStateException("the lightmaps do not fit a " + want + " square atlas; "
-                        + "raise lighting.texel or pack them across several");
-            px[i] = x;
-            py[i] = y;
-            m.gpuIndex = i;
-            x += m.w + 1;
-            shelf = Math.max(shelf, m.h);
+        int want = 64, most = Gl.maxTextureSize();
+        while (!packs(maps, order, px, py, want)) {
+            if (want >= most)
+                throw new IllegalStateException("the lightmaps do not fit a " + most
+                        + " square atlas; raise lighting.texel or pack them across several");
+            want = Math.min(most, want * 2);
         }
         side = want;
 
-        Gl.context();
         atlas = Gl.texture();
         Gl.activeTexture(2);
         Gl.bindTexture(atlas);
@@ -100,6 +101,26 @@ final class GpuLights {
             Gl.texUnfiltered();
             Gl.check("the lightmap records, %dx%d".formatted(table.width(), table.rows()));
         }
+    }
+
+    /**
+     * Shelf-pack the maps into a square of this side, in the given order, and say whether they
+     * fit. The gutter is one texel, because the shader's own clamp keeps every fetch inside a
+     * map and a neighbour's texel can never be read.
+     */
+    private static boolean packs(List<Lighting.LightMap> maps, long[] order, int[] px, int[] py, int side) {
+        int x = 0, y = 0, shelf = 0;
+        for (long o : order) {
+            int i = (int) o;
+            Lighting.LightMap m = maps.get(i);
+            if (x + m.w > side) { x = 0; y += shelf + 1; shelf = 0; }
+            if (y + m.h > side || m.w > side) return false;
+            px[i] = x;
+            py[i] = y;
+            x += m.w + 1;
+            shelf = Math.max(shelf, m.h);
+        }
+        return true;
     }
 
     int maps() { return count; }
