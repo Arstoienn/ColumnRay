@@ -156,8 +156,18 @@ public final class Main {
         if (Options.headless(args)) System.setProperty("java.awt.headless", "true");
         // Before AWT. A context asked for after the toolkit has started gets no accelerated
         // pixel format on macOS - the same ordering trap that once left the window taking no
-        // keys, in the other direction.
-        if (o.gpu) Gl.context();
+        // keys, in the other direction. A platform with no backend says so in a sentence and
+        // carries on with the CPU renderer, which runs anywhere; asking GlPlatform rather than
+        // Gl is deliberate, because loading Gl is what fails.
+        if (o.gpu) {
+            String why = GlPlatform.missing();
+            if (why != null) {
+                System.err.println(why);
+                o.gpu = false;
+            } else {
+                Gl.context();
+            }
+        }
 
         Main game = new Main(World.load(Path.of(o.map)), o.w, o.h, o.ss);
         game.winW = o.winW;

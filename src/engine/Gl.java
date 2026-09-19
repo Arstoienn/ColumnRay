@@ -12,11 +12,11 @@ import java.lang.invoke.MethodHandle;
 /**
  * The engine's only door to the graphics card.
  *
- * It links against OpenGL.framework through the FFM API, the same way {@link Keys} reaches the
- * keyboard: a C ABI needs no more than a symbol lookup, where Metal would put an objc_msgSend
- * under every call. OpenGL is deprecated on macOS and capped at 4.1, but the hybrid renderer
- * asks for nothing newer than a full-screen pass over a mipmapped texture, and this file is the
- * only place that would have to change if Apple ever removes it.
+ * It links against the platform's OpenGL library through the FFM API, the same way {@link Keys}
+ * reaches the keyboard: a C ABI needs no more than a symbol lookup, where Metal would put an
+ * objc_msgSend under every call. Which library that is, and how to get a context out of it, is
+ * the one part that differs between operating systems, and it lives in {@link GlPlatform}; every
+ * entry point below is the same C function wherever it is found.
  *
  * {@link #context} makes a context with no window behind it. Rendering goes into a framebuffer
  * and comes back through {@link #readPixels}, so the window stays the Swing window the engine
@@ -41,20 +41,16 @@ final class Gl {
             VERSION = 0x1F02, TEXTURE_2D_ARRAY = 0x8C1A, TEXTURE_MAX_LEVEL = 0x813D,
             RGB8 = 0x8051, UNPACK_ALIGNMENT = 0x0CF5, MAX_TEXTURE_SIZE = 0x0D33;
 
-    /** CGL pixel format attributes: a core profile, accelerated, and no drawable at all. */
-    private static final int PFA_ACCELERATED = 73, PFA_PROFILE = 99,
-            PROFILE_4_1_CORE = 0x4100, PROFILE_3_2_CORE = 0x3200;
-
     private static final ValueLayout.OfInt I32 = ValueLayout.JAVA_INT;
     private static final AddressLayout PTR = ValueLayout.ADDRESS;
 
-    private static final SymbolLookup LIB = SymbolLookup.libraryLookup(
-            "/System/Library/Frameworks/OpenGL.framework/OpenGL", Arena.global());
+    private static final GlPlatform PLATFORM = GlPlatform.get();
+    private static final SymbolLookup LIB = PLATFORM.library();
     private static final Linker LINKER = Linker.nativeLinker();
 
     private static MethodHandle fn(String name, FunctionDescriptor sig) {
         return LINKER.downcallHandle(LIB.find(name).orElseThrow(
-                () -> new IllegalStateException("OpenGL.framework has no " + name)), sig);
+                () -> new IllegalStateException(PLATFORM.name() + "'s OpenGL has no " + name)), sig);
     }
 
     private static Object call(MethodHandle h, Object... args) {
@@ -66,9 +62,6 @@ final class Gl {
         }
     }
 
-    private static final MethodHandle CHOOSE_PF = fn("CGLChoosePixelFormat", FunctionDescriptor.of(I32, PTR, PTR, PTR));
-    private static final MethodHandle CREATE_CTX = fn("CGLCreateContext", FunctionDescriptor.of(I32, PTR, PTR, PTR));
-    private static final MethodHandle SET_CTX = fn("CGLSetCurrentContext", FunctionDescriptor.of(I32, PTR));
 
     private static final MethodHandle GEN_TEXTURES = fn("glGenTextures", FunctionDescriptor.ofVoid(I32, PTR));
     private static final MethodHandle BIND_TEXTURE = fn("glBindTexture", FunctionDescriptor.ofVoid(I32, I32));
@@ -121,22 +114,12 @@ final class Gl {
 
     private static boolean current;
 
-    /** A 4.1 core context, or a 3.2 one if the machine will not give 4.1. Neither has a window.
+    /** A context with no window behind it, made the way this platform makes one.
      *  Idempotent: a second context would leave the first one's textures unreachable. */
     static void context() {
         if (current) return;
         current = true;
-        try (Arena arena = Arena.ofConfined()) {
-            for (int profile : new int[] {PROFILE_4_1_CORE, PROFILE_3_2_CORE}) {
-                MemorySegment attrs = arena.allocateFrom(I32, PFA_PROFILE, profile, PFA_ACCELERATED, 0);
-                MemorySegment pf = arena.allocate(PTR), n = arena.allocate(I32), ctx = arena.allocate(PTR);
-                if ((int) call(CHOOSE_PF, attrs, pf, n) != 0 || pf.get(PTR, 0).equals(MemorySegment.NULL)) continue;
-                // The context outlives this arena: CGL owns it, the arena only held the out-parameter.
-                if ((int) call(CREATE_CTX, pf.get(PTR, 0), MemorySegment.NULL, ctx) != 0) continue;
-                if ((int) call(SET_CTX, ctx.get(PTR, 0)) == 0) return;
-            }
-        }
-        throw new IllegalStateException("no offscreen OpenGL context");
+        PLATFORM.makeCurrent();
     }
 
     static int texture() { return name(GEN_TEXTURES); }
