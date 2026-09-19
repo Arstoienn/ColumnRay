@@ -371,7 +371,7 @@ final class GpuWalls implements AutoCloseable {
                     frag = vec4(sky(row), 1.0);        // no span reaches this row: Renderer.fillRest
                 }
                 """.formatted(images == null ? "" : "#define HAS_IMAGES 1", GlMaterials.SIDE, GlMaterials.FLAT,
-                        tables() + GpuLights.GLSL
-                                + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + GpuMaterials.GLSL));
+                        tables() + (lights == null ? GpuLights.absent() : lights.glsl())
+                                + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + mats.glsl()));
     }
 }

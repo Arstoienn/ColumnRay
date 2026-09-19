@@ -27,20 +27,10 @@ final class GpuMaterials {
     private final List<float[]> records = new ArrayList<>();
     private int texture = -1;
 
-    /** A record, or -1 when this surface is not one the card can draw. */
-    /**
-     * Off by default, because it does not match yet.
-     *
-     * The table, the array textures and the shader's strips are all here and school - which has
-     * no images at all - is unaffected either way, but on Haven the sampled colour is wrong by
-     * up to 206 of 255 over most of the frame. Until that is found, an image-textured surface
-     * keeps the CPU's pixels and the comparison counts it as not done. Turn it on with
-     * -Dgpu.images=true to work on it.
-     */
-    static final boolean ENABLED = Boolean.getBoolean("gpu.images");
+    private final GpuTable table;
 
     private int record(GpuTextures images, Materials.Texture tex, double[] uv, double ts, boolean worldUv) {
-        if (tex == null || !ENABLED) return -1;
+        if (tex == null) return -1;
         int[] at = images.at(tex);
         if (at == null) return -1;
         double[] m = uv != null ? uv : new double[] {1 / ts, 0, 0, 0, 1 / ts, 0};
@@ -64,6 +54,7 @@ final class GpuMaterials {
      * pixels and the comparison counts them as not done rather than as wrong.
      */
     GpuMaterials(World world, GpuTextures images) {
+        Gl.context();
         for (World.Shape s : world.shapes) {
             if (s.imgB != null || s.vc != null) continue;
             boolean worldUv = s.img != null && s.kind != World.Kind.SEG;
@@ -74,25 +65,25 @@ final class GpuMaterials {
             s.gpuBottom = s.img != null ? record(images, s.img, s.uv, 0, false)
                     : record(images, s.tex, null, s.ts, false);
         }
+        table = new GpuTable(TEXELS, records.size());
         upload();
     }
 
     private void upload() {
-        Gl.context();
         texture = Gl.texture();
         Gl.activeTexture(4);
         Gl.bindTexture(texture);
-        int n = Math.max(1, records.size());
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment buf = arena.allocate((long) TEXELS * n * 4 * Float.BYTES);
+            MemorySegment buf = arena.allocate((long) table.width() * table.rows() * 4 * Float.BYTES);
             for (int i = 0; i < records.size(); i++) {
                 float[] r = records.get(i);
                 for (int k = 0; k < r.length; k++)
-                    buf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) i * TEXELS * 4 + k, r[k]);
+                    buf.setAtIndex(ValueLayout.JAVA_FLOAT, table.at(i) + k, r[k]);
             }
-            Gl.texImage(Gl.RGBA32F, TEXELS, n, Gl.RGBA, Gl.FLOAT, buf);
+            Gl.texImage(Gl.RGBA32F, table.width(), table.rows(), Gl.RGBA, Gl.FLOAT, buf);
             Gl.texUnfiltered();
         }
+        Gl.check("the material table, %dx%d".formatted(table.width(), table.rows()));
     }
 
     int count() { return records.size(); }
@@ -104,23 +95,27 @@ final class GpuMaterials {
 
     void close() { Gl.deleteTexture(texture); }
 
-    static final String GLSL = """
-            uniform sampler2D materials;
+    /** The four texels of a record and what they mean. */
+    String glsl() {
+        return "uniform sampler2D materials;\n" + table.glsl("materialAt") + """
 
             /** One image sample as a multiplier on the shape's colour: Materials.Texture.sampleAt,
              *  with the level pair and the wrap left to the hardware and the lod given explicitly,
              *  because the card's own derivative lod is not the one a strip of samples shares. */
             vec3 imageSample(int rec, vec2 pq, float wRep) {
-                vec4 a = texelFetch(materials, ivec2(0, rec), 0);
-                vec4 b = texelFetch(materials, ivec2(1, rec), 0);
-                vec4 c = texelFetch(materials, ivec2(2, rec), 0);
-                vec4 d = texelFetch(materials, ivec2(3, rec), 0);
+                ivec2 m = materialAt(rec);
+                vec4 a = texelFetch(materials, m, 0);
+                vec4 b = texelFetch(materials, m + ivec2(1, 0), 0);
+                vec4 c = texelFetch(materials, m + ivec2(2, 0), 0);
+                vec4 d = texelFetch(materials, m + ivec2(3, 0), 0);
                 vec2 uv = vec2(c.x * pq.x + c.y * pq.y + c.z, c.w * pq.x + d.x * pq.y + d.y);
                 float lod = min(a.z - 1.0, log2(max(1.0, wRep * b.w * a.w)));
-                vec3 texel = imageAt(int(a.x), int(a.y), uv, lod) ;
-                return asMultiplier(texel, b.rgb);
+                return asMultiplier(imageAt(int(a.x), int(a.y), uv, lod), b.rgb);
             }
 
-            bool imageWorldUv(int rec) { return texelFetch(materials, ivec2(3, rec), 0).z != 0.0; }
+            bool imageWorldUv(int rec) {
+                return texelFetch(materials, materialAt(rec) + ivec2(3, 0), 0).z != 0.0;
+            }
             """;
+    }
 }
