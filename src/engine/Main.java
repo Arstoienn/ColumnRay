@@ -97,6 +97,7 @@ public final class Main {
     volatile boolean useGpu;
     private GpuWalls gpu;
     private GpuSpans spans;
+    private GpuMasks masks;
     private GpuLights gpuLights;
     private GpuTextures gpuImages;
     private GpuMaterials gpuMaterials;
@@ -428,6 +429,7 @@ public final class Main {
         renderer.traceColumn = rayView.visible() || c.captureDepth
                 ? warp.sourceColumn(traceI >= 0 ? traceI : RW / 2, traceJ >= 0 ? traceJ : RH / 2) : -1;
         if (spans != null) spans.reset();
+        if (masks != null) masks.reset();
         renderer.render(c);
         if (gpu != null) shadeOnGpu(c);
         if (c.captureDepth) {
@@ -455,11 +457,11 @@ public final class Main {
     private void shadeOnGpu(Renderer.Camera c) {
         double horizon = srcH / 2.0 + c.pitch;
         if (!spans.anySkipped()) {
-            gpu.draw(spans, src, c, horizon, renderer.focal(), RH);
+            gpu.draw(spans, masks, src, c, horizon, renderer.focal(), RH);
             return;
         }
         if (gpuPixels == null || gpuPixels.length != src.length) gpuPixels = new int[src.length];
-        gpu.draw(spans, gpuPixels, c, horizon, renderer.focal(), RH);
+        gpu.draw(spans, masks, gpuPixels, c, horizon, renderer.focal(), RH);
         IntStream.range(0, srcH).parallel().forEach(y -> {
             int row = y * srcW;
             for (int x = 0; x < srcW; x++) if (!spans.skipped(x, y)) src[row + x] = gpuPixels[row + x];
@@ -493,8 +495,10 @@ public final class Main {
             }
             if (gpuImages != null) gpu.setImages(gpuImages, gpuMaterials);
             spans = new GpuSpans(srcW, srcH);
+            masks = new GpuMasks(srcW);
             gpuPixels = null;
             renderer.captureSpans(spans);
+            renderer.captureMasks(masks);
         }
     }
 

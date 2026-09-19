@@ -151,4 +151,39 @@ final class GlMaterials {
                 return side(m, x, y, w);
             }
             """;
+
+    /**
+     * {@code Materials.mask}: how much of a masked quad is really there at (s, t).
+     *
+     * A tree is not geometry here - it is a shape cut out of a flat surface - so this is the
+     * function that decides where the sky shows through it. GLSL's own {@code smoothstep} is
+     * defined as {@code Materials.step} is written, clamp and then {@code k*k*(3-2k)}, so the
+     * ports of the two are the same expression.
+     */
+    static final String MASK = """
+            float maskAt(int kind, float s, float t, float w) {
+                if (kind == 0) {                                   // Materials.CANOPY
+                    float dx = (s - 0.5) * 2.1, dy = (t - 0.54) * 2.15;
+                    float r = sqrt(dx * dx + dy * dy);
+                    float lobes = 0.40 * (noiseAt(s, t, 2.7, w) - 0.5)
+                            + 0.26 * (noiseAt(s + 5.0, t + 2.0, 7.0, w) - 0.5);
+                    float a = smoothstep(0.0, 0.09, 1.0 + lobes - r);
+                    float holes = noiseAt(s + 31.0, t + 17.0, 15.0, w) + 0.30 * (1.0 - r);
+                    return a * smoothstep(0.30, 0.52, holes);
+                }
+                if (kind == 1) {                                   // Materials.FERN
+                    float dx = (s - 0.5) * 2.3, dy = (t - 0.35) * 1.9;
+                    float r = sqrt(dx * dx + dy * dy);
+                    float fronds = 0.45 * (noiseAt(s + 7.0, t + 13.0, 5.0, w) - 0.5);
+                    float a = smoothstep(0.0, 0.14, 1.0 + fronds - r);
+                    return a * smoothstep(0.34, 0.56,
+                            noiseAt(s + 3.0, t + 23.0, 11.0, w) + 0.22 * (1.0 - r));
+                }
+                if (kind == 2) {                                   // Materials.TUFT
+                    float blades = noiseAt(s + 19.0, t * 0.25 + 41.0, 26.0, w);
+                    return smoothstep(0.34, 0.5, blades + 0.55 * (1.0 - t) - 0.22);
+                }
+                return 1.0;
+            }
+            """;
 }

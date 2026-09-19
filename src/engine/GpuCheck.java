@@ -64,7 +64,9 @@ final class GpuCheck {
         Renderer renderer = new Renderer(world, w, h, cpu);
         if (lighting != null) renderer.setLighting(lighting);
         GpuSpans spans = new GpuSpans(w, h);
+        GpuMasks masks = new GpuMasks(w);
         renderer.captureSpans(spans);
+        renderer.captureMasks(masks);
 
         try (Arena arena = Arena.ofConfined()) {
             GpuWalls walls = new GpuWalls(arena, w, h, w);
@@ -88,6 +90,7 @@ final class GpuCheck {
             String[][] views = name.contains("walls") ? WALLS_ONLY : name.contains("haven") ? HAVEN : VIEWS;
             for (String[] v : views) {
                 spans.reset();
+                masks.reset();
                 Arrays.fill(cpu, 0);
                 Renderer.Camera cam = new Renderer.Camera();
                 cam.x = Double.parseDouble(v[1]);
@@ -98,7 +101,7 @@ final class GpuCheck {
                 cam.eye = Double.parseDouble(v[4]) + Player.EYE_STAND;
                 cam.baked = lighting != null;
                 renderer.render(cam);
-                walls.draw(spans, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);
+                walls.draw(spans, masks, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);
 
                 // How long each side takes, once both are warm. The CPU figure is a whole frame -
                 // rays, grid, floors, ceilings and walls - and the GPU figure is the wall pass
@@ -107,10 +110,11 @@ final class GpuCheck {
                 double cpuMs = Double.MAX_VALUE, gpuMs = Double.MAX_VALUE;
                 for (int r = 0; r < 12; r++) {
                     spans.reset();
+                    masks.reset();
                     long a0 = System.nanoTime();
                     renderer.render(cam);
                     long a1 = System.nanoTime();
-                    walls.draw(spans, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);
+                    walls.draw(spans, masks, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);
                     long a2 = System.nanoTime();
                     cpuMs = Math.min(cpuMs, (a1 - a0) / 1e6);
                     gpuMs = Math.min(gpuMs, (a2 - a1) / 1e6);
@@ -145,6 +149,7 @@ final class GpuCheck {
                         n == 0 ? 0 : 100.0 * over / n, skipped, cpuMs, gpuMs);
                 if (worst > 2) System.out.println(worstAt);
                 if (spans.dropped() > 0) System.out.printf("  %d spans dropped%n", spans.dropped());
+                if (masks.dropped() > 0) System.out.printf("  %d masks dropped%n", masks.dropped());
             }
             System.out.printf("%nworst channel difference anywhere: %d of 255%n", worstAll);
         }

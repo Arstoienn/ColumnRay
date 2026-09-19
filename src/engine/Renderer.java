@@ -115,9 +115,17 @@ final class Renderer {
      *  Null - which it is unless something asks otherwise - costs one null test an interval. */
     private volatile GpuSpans spanSink;
 
+    /** The same, for the masked surfaces blended over the finished column. */
+    private volatile GpuMasks maskSink;
+
     void captureSpans(GpuSpans s) {
         betweenFrames("captureSpans");
         spanSink = s;
+    }
+
+    void captureMasks(GpuMasks m) {
+        betweenFrames("captureMasks");
+        maskSink = m;
     }
 
     void setLighting(Lighting l) {
@@ -282,6 +290,9 @@ final class Renderer {
             boolean plane;
             double z, slope;
             IntUnaryOperator color;
+            /** Given to the card, so the CPU's own blend of it is not counted as a pixel the
+             *  card was never shown. */
+            boolean gpu;
         }
 
         private final double[] A = new double[6];          // an alpha sample; T is the colour's
@@ -357,6 +368,7 @@ final class Renderer {
         // Statistics and recording
         /** The GPU path: where wall intervals go, and the wall currently being painted. */
         private GpuSpans sink;
+        private GpuMasks maskOut;
         private int spanKind;                   // 0 nothing, 1 a wall, 2 a plane
         private double spanU, spanW, spanSq, spanLight, spanZ, spanSlope, spanFog;
         private int spanMat, spanRgb, spanLm, spanTex;
@@ -369,6 +381,7 @@ final class Renderer {
         void render(int x, Camera cam) {
             this.x = x;
             sink = spanSink;
+            maskOut = maskSink;
             px = cam.x;
             py = cam.y;
             eye = cam.eye;
@@ -1140,6 +1153,13 @@ final class Renderer {
                 m.y0 = y0;
                 m.y1 = y1;
                 m.plane = false;
+                m.gpu = maskOut != null && s.mask >= 0 && s.amap == null
+                        && ((s.img == null && s.tex == null) || s.gpuSide >= 0)
+                        && (m.lm == null || m.lm.gpuIndex >= 0)
+                        && maskOut.add(x, y0, y1, s.mask, h.u, t, m.w, m.sq, m.f,
+                                m.lm == null ? -1 : m.lm.gpuIndex, s.color, s.mat,
+                                1 / s.len, 1 / (s.h - s.z0), s.z0,
+                                s.img != null || s.tex != null ? s.gpuSide : -1);
                 rows += y1 - y0;
             }
             if (tr != null) note(EventKind.SHAPE, t, s.label + " (masked, " + rows + " rows blended)", 0);
@@ -1175,7 +1195,7 @@ final class Renderer {
                     } else {
                         c = sideColor(s, m.u, z, m.t, m.sq, m.f, null);
                     }
-                    if (sink != null) sink.skip(x, y);
+                    if (sink != null && !m.gpu) sink.skip(x, y);
                     int p = y * W + x;
                     pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
                     // A blended pixel has several surfaces; keep the nearest one that contributes.
@@ -1207,6 +1227,7 @@ final class Renderer {
                         m.color = c.color;
                         m.y0 = run;
                         m.y1 = y;
+                        m.gpu = false;                    // a cut-out's plane is not ported yet
                         run = -1;
                     }
                 }
