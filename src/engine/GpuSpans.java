@@ -85,13 +85,14 @@ final class GpuSpans {
     }
 
     /**
-     * One wall interval. Called from the column's own thread while it paints, so the only shared
+     * One wall interval, or false when the column had no room for it and its rows were handed
+     * back to the CPU. Called from the column's own thread while it paints, so the only shared
      * thing it touches is the drop counter, and that is only ever a count of something going wrong.
      */
-    void add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb,
-             double fog, int lm, int tex) {
+    boolean add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb,
+                double fog, int lm, int tex) {
         int at = slot(x, y0, y1);
-        if (at < 0) return;
+        if (at < 0) return false;
         data[at + 4] = (float) u;
         data[at + 5] = (float) fog;
         data[at + 6] = lm;
@@ -99,17 +100,20 @@ final class GpuSpans {
         data[at + 9] = (float) sq;
         data[at + 12] = tex;
         head(at, x, y0, y1, mat, light, rgb, 0);
+        return true;
     }
 
     /** One stretch of a floor, a ceiling or a shape's top or bottom. */
-    void addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb, int lm, int tex) {
+    boolean addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb,
+                     int lm, int tex) {
         int at = slot(x, y0, y1);
-        if (at < 0) return;
+        if (at < 0) return false;
         data[at + 4] = (float) z;
         data[at + 5] = (float) slope;
         data[at + 6] = lm;
         data[at + 12] = tex;
         head(at, x, y0, y1, mat, light, rgb, 1);
+        return true;
     }
 
     /** Floors are painted a grid cell at a time, so one floor arrives as a run of short spans
