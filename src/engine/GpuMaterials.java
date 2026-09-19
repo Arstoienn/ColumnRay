@@ -4,6 +4,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -26,6 +27,17 @@ final class GpuMaterials {
 
     private final List<float[]> records = new ArrayList<>();
     private int texture = -1;
+
+    /**
+     * Which record each face of each shape uses, by {@code World.Shape.id}.
+     *
+     * These lived on {@code World.Shape} itself, which was three fields and a good deal of
+     * trouble: {@code World} is one of the classes whose code decides a texel, so
+     * {@link LightCache} rightly threw away every cached bake whenever one of them changed -
+     * half an hour of Haven's light, thrown away by a field that cannot move a texel. Kept here
+     * instead, the whole of the card's side of the engine can change without a bake noticing.
+     */
+    private final int[] sideRec, topRec, bottomRec, alphaRec;
 
     private final GpuTable table;
 
@@ -63,19 +75,28 @@ final class GpuMaterials {
      */
     GpuMaterials(World world, GpuTextures images) {
         Gl.context();
+        int n = world.shapes.length;
+        sideRec = new int[n];
+        topRec = new int[n];
+        bottomRec = new int[n];
+        alphaRec = new int[n];
+        Arrays.fill(sideRec, -1);
+        Arrays.fill(topRec, -1);
+        Arrays.fill(bottomRec, -1);
+        Arrays.fill(alphaRec, -1);
         for (World.Shape s : world.shapes) {
             if (s.imgB != null || s.vc != null) continue;
             // A cut-out's alpha is an image like any other, read for its first channel alone.
-            s.gpuAlpha = record(images, s.amap, s.uv, 0, false);
+            alphaRec[s.id] = record(images, s.amap, s.uv, 0, false);
             if (s.img != null) {
-                s.gpuSide = s.gpuTop = s.gpuBottom =
+                sideRec[s.id] = topRec[s.id] = bottomRec[s.id] =
                         record(images, s.img, s.uv, 0, s.kind != World.Kind.SEG);
             } else {
-                int side = record(images, s.tex, null, s.ts, false);
-                s.gpuSide = side;
-                s.gpuBottom = side;
-                s.gpuTop = s.topTex == s.tex && s.topTs == s.ts
-                        ? side : record(images, s.topTex, null, s.topTs, false);
+                int rec = record(images, s.tex, null, s.ts, false);
+                sideRec[s.id] = rec;
+                bottomRec[s.id] = rec;
+                topRec[s.id] = s.topTex == s.tex && s.topTs == s.ts
+                        ? rec : record(images, s.topTex, null, s.topTs, false);
             }
         }
         table = new GpuTable(TEXELS, records.size());
@@ -100,6 +121,15 @@ final class GpuMaterials {
     }
 
     int count() { return records.size(); }
+
+    /** The record a face reads, or -1 when the card cannot draw it. */
+    int side(World.Shape s) { return sideRec[s.id]; }
+
+    int top(World.Shape s) { return topRec[s.id]; }
+
+    int bottom(World.Shape s) { return bottomRec[s.id]; }
+
+    int alpha(World.Shape s) { return alphaRec[s.id]; }
 
     void bind() {
         Gl.activeTexture(4);

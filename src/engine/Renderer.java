@@ -128,6 +128,15 @@ final class Renderer {
         maskSink = m;
     }
 
+    /** Which record on the card each of a shape's faces reads, for the span to carry. Null when
+     *  the world has no images, and then no surface has one. */
+    private volatile GpuMaterials cardMats;
+
+    void setMaterials(GpuMaterials m) {
+        betweenFrames("setMaterials");
+        cardMats = m;
+    }
+
     void setLighting(Lighting l) {
         betweenFrames("setLighting");
         lighting = l;
@@ -369,6 +378,7 @@ final class Renderer {
         /** The GPU path: where wall intervals go, and the wall currently being painted. */
         private GpuSpans sink;
         private GpuMasks maskOut;
+        private GpuMaterials mats;
         private int spanKind;                   // 0 nothing, 1 a wall, 2 a plane
         private double spanU, spanW, spanSq, spanLight, spanZ, spanSlope, spanFog;
         private int spanMat, spanRgb, spanLm, spanTex;
@@ -382,6 +392,7 @@ final class Renderer {
             this.x = x;
             sink = spanSink;
             maskOut = maskSink;
+            mats = cardMats;
             px = cam.x;
             py = cam.y;
             eye = cam.eye;
@@ -753,7 +764,7 @@ final class Renderer {
                 Lighting.LightMap lm = baked ? lit.side(s, h.face) : null;
                 double sq = square(h.nx, h.ny);
                 if (sink != null && (lm == null || lm.gpuIndex >= 0)
-                        && ((s.img == null && s.tex == null) || s.gpuSide >= 0)) {
+                        && ((s.img == null && s.tex == null) || recSide(s) >= 0)) {
                     double c = t1 * dk / F;
                     spanKind = 1;
                     spanU = u;
@@ -762,7 +773,7 @@ final class Renderer {
                     spanLight = lambert(h.nx, h.ny) * fog(t1) * light;
                     spanFog = fog(t1);
                     spanLm = lm == null ? -1 : lm.gpuIndex;
-                    spanTex = s.img != null || s.tex != null ? s.gpuSide : -1;
+                    spanTex = s.img != null || s.tex != null ? recSide(s) : -1;
                     spanMat = s.mat;
                     spanRgb = s.color;
                 }
@@ -795,15 +806,15 @@ final class Renderer {
                 Lighting.LightMap lm = baked ? lit.top(s) : null;
                 addPlane(s, h, true, atEye, slope, ev, rows, label,
                         flat(atEye, slope, s.topMat, s.color, light, lm, s.topTex, s.topTs, s),
-                        s.topMat, light, (s.topTex == null && s.img == null) || s.gpuTop >= 0, lm,
-                        s.topTex != null || s.img != null ? s.gpuTop : -1);
+                        s.topMat, light, (s.topTex == null && s.img == null) || recTop(s) >= 0, lm,
+                        s.topTex != null || s.img != null ? recTop(s) : -1);
             }
             if (eye < bEye) {
                 Lighting.LightMap lm = baked ? lit.bottom(s) : null;
                 addPlane(s, h, false, bEye, bSlope, ev, rows, label,
                         flat(bEye, bSlope, s.mat, s.color, 0.45 * light, lm, s.tex, s.ts, s),
-                        s.mat, 0.45 * light, (s.tex == null && s.img == null) || s.gpuBottom >= 0, lm,
-                        s.tex != null || s.img != null ? s.gpuBottom : -1);
+                        s.mat, 0.45 * light, (s.tex == null && s.img == null) || recBottom(s) >= 0, lm,
+                        s.tex != null || s.img != null ? recBottom(s) : -1);
             }
         }
 
@@ -1132,6 +1143,14 @@ final class Renderer {
             return rows;
         }
 
+        private int recSide(Shape s) { return mats == null ? -1 : mats.side(s); }
+
+        private int recTop(Shape s) { return mats == null ? -1 : mats.top(s); }
+
+        private int recBottom(Shape s) { return mats == null ? -1 : mats.bottom(s); }
+
+        private int recAlpha(Shape s) { return mats == null ? -1 : mats.alpha(s); }
+
         /** Note the rows a masked surface could cover, clipped to the ones still open. */
         private void record(Shape s, Hit h, double t, double yTop, double yBot, Region in) {
             int ia = clampRow(yTop), ib = clampRow(yBot);
@@ -1155,13 +1174,13 @@ final class Renderer {
                 m.plane = false;
                 boolean cut = s.amap != null;             // a slab sawn out of a mesh, not a tree
                 m.gpu = maskOut != null
-                        && (cut ? s.gpuAlpha >= 0 : s.mask >= 0)
-                        && ((s.img == null && s.tex == null) || s.gpuSide >= 0)
+                        && (cut ? recAlpha(s) >= 0 : s.mask >= 0)
+                        && ((s.img == null && s.tex == null) || recSide(s) >= 0)
                         && (m.lm == null || m.lm.gpuIndex >= 0)
                         && maskOut.addSide(x, y0, y1, cut ? -1 : s.mask, h.u, t, m.w, m.sq, m.f,
                                 m.lm == null ? -1 : m.lm.gpuIndex, s.color, s.mat,
                                 1 / s.len, 1 / (s.h - s.z0), s.z0,
-                                s.img != null || s.tex != null ? s.gpuSide : -1, s.gpuAlpha);
+                                s.img != null || s.tex != null ? recSide(s) : -1, recAlpha(s));
                 rows += y1 - y0;
             }
             if (tr != null) note(EventKind.SHAPE, t, s.label + " (masked, " + rows + " rows blended)", 0);
@@ -1229,9 +1248,9 @@ final class Renderer {
                         m.color = c.color;
                         m.y0 = run;
                         m.y1 = y;
-                        m.gpu = maskOut != null && c.ggpu && m.s.gpuAlpha >= 0
+                        m.gpu = maskOut != null && c.ggpu && recAlpha(m.s) >= 0
                                 && maskOut.addPlane(x, run, y, c.z, c.slope, c.gk0, c.glm,
-                                        c.grgb, c.gmat, c.gtex, m.s.gpuAlpha);
+                                        c.grgb, c.gmat, c.gtex, recAlpha(m.s));
                         run = -1;
                     }
                 }
