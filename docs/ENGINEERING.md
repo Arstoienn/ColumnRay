@@ -150,6 +150,128 @@ engine, so it now starts closed and `R` opens it. What made it expensive was red
 frame; the grid, regions and shape footprints never move, so they are now drawn once into an image
 (rebuilt only when you zoom) and blitted with the view transform.
 
+## Shading on the card (`--gpu`)
+
+`--gpu` moves the *shading* of a frame to the graphics card and leaves everything else exactly
+where it was. The CPU still casts one ray per screen column, still walks the acceleration grid,
+still tests the shapes and still decides what is visible; what it hands over is the answer - a
+handful of row intervals per column - and the card colours them in. The column constraint is not
+weakened by this. It is the reason the thing works at all: a column renderer's output is a few
+hundred kilobytes of intervals, which is a tiny amount to hand a card, where a triangle renderer
+would have to hand it the world.
+
+### What crosses the bus
+
+Two per-column lists and four tables that never change:
+
+| | what it is |
+|---|---|
+| spans | the wall and plane intervals a column painted, with the few numbers a strip needs |
+| masks | the masked surfaces blended over the finished column: trees, and cut-outs sawn from a mesh |
+| materials | one record per surface: which image, its mean, and the map from the world to it |
+| blends | a second layer, its height map and the mesh's vertex colour, for the few surfaces with them |
+| lightmaps | every baked map shelf-packed into one float atlas, with a record saying where each landed |
+| images | every image the map uses, as array textures grouped by size |
+
+The lists are held at their worst case - a few hundred entries a column - and a frame uses a
+handful of that, so only the part each frame really fills is uploaded (`GpuWalls.pack`). Sending
+the whole array was forty megabytes a frame of mostly nothing and measured as most of the pass.
+
+### Sixteen samplers, and what that forced
+
+A fragment shader is promised sixteen texture units and no more. Six are spoken for - spans,
+blends, the light atlas, its records, the material table and the masks - which leaves ten for
+images. Haven's 452 images come in fifteen distinct sizes, so one array per size does not fit.
+
+An array layer's levels are a mip chain, and a smaller image of the same shape is exactly what
+some level of a bigger one looks like, so a 512 square image can live in levels 1 and down of a
+1024 square layer and be sampled by asking for a level one deeper. Wrapping still works, because
+wrapping happens in normalised coordinates and those do not know which level answered. The cost
+is the levels above it, allocated and never read, so a size is folded into a bigger bank only
+when the waste of doing so stays under a budget: the 222 images at 512 square would waste 700 MB
+in a 1024 square bank and keep their own, the 51 at 128 square waste ten megabytes and do not.
+Fifteen sizes become seven banks for about thirty megabytes, and nothing is left behind.
+
+### Proving it draws the same picture
+
+The golden frames cannot answer this. They hash the renderer's own arrays, and a card works in
+float where the renderer works in double, so the two will never hash the same. What can be asked
+is how far apart the two pictures are, and `engine.GpuCheck` asks it: for each camera it renders
+the frame on the CPU with the spans recorded, draws those same spans on the card, and compares
+every pixel.
+
+```
+./build.sh && java --enable-native-access=ALL-UNNAMED -cp out engine.GpuCheck [map.json] [WxH]
+```
+
+| column | what it means |
+|---|---|
+| `masked` | pixels the card was not given, because something on them is not ported |
+| `worst` | the largest single-channel difference anywhere in the frame |
+| `over 2` | how much of the frame differs by more than a byte can hide |
+| `merged` | the same, for the frame the game actually shows (see below) |
+
+`masked` going to zero is what finishing looks like. It is zero on school and on all six Haven
+cameras, and the worst difference is 1 to 3 of 255 with fewer than two pixels in five million
+over 2.
+
+### Why the CPU stops shading, and how that is checked
+
+Moving a surface to the card saves nothing on its own: the CPU was still colouring every pixel
+and the card's work was added to it, not substituted for it. The saving arrives when the CPU
+stops. It cannot simply stop, because a masked surface the card was not given is blended over
+whatever the CPU painted underneath and needs something to blend with. So rows the card has are
+skipped and rows anything unported will be blended over are not, which a column works out as it
+goes (`Renderer.cpuUnder`), and a screenshot still shades everything because its albedo and depth
+come from the CPU.
+
+That is a saving that could hide a mistake - a row the CPU skipped that the card turns out not to
+have drawn would come back black - so `GpuCheck` renders every camera a second time with the
+shading off, merges the two the way `Main` does, and compares that against the CPU-only frame.
+That is the `merged` column, and it has to equal `worst`: a difference of two hundred and not of
+two is what a mistake about which rows those are would look like.
+
+### Where the time goes
+
+`-Dgpu.stats=true` with `--bench` prints the card's share of a frame. Measured on an M3 at
+1280x720, pitch 0, baked lighting:
+
+| | school | Haven |
+|---|---|---|
+| pack the lists | 0.22 ms | 0.50 ms |
+| upload | 0.26 ms | 0.87 ms |
+| draw | 2.09 ms | 5.02 ms |
+| read the picture back | 0.96 ms | 1.07 ms |
+| everything else (rays, grid, visibility, warp, HUD) | ~1.0 ms | ~3.3 ms |
+
+The readback is a stall by construction: the CPU waits for a frame it cannot start the next one
+without. It is the obvious next thing to attack, by drawing into a texture the window can present
+rather than pulling the pixels back through the bus.
+
+### The two things to know before trusting a number
+
+**An odd buffer height makes the two pictures disagree more.** With an even height the horizon
+sits on an integer row and a pixel's height is a half-integer number of pixel-sizes above it;
+with an odd height it is a whole number, and whole numbers land exactly on the boundaries of the
+procedural materials - plank lines every sixth of a metre, brick courses every quarter. Exactly
+on a boundary, float and double fall on opposite sides. School's worst difference is 11 of 255 at
+720 and 37 at 719 or 721; Haven's is 3 and 74. The overscan buffer the pitch warp asks for is an
+arbitrary integer, so this is reachable in the game and not only in the test. Rounding the
+overscan up to an even number of rows would avoid it, at the price of new golden frames, because
+the buffer height is what sets the horizon.
+
+**The frame-time tail on Haven is garbage collection, not the renderer.** The median frame is
+8 to 12 ms and p99 is 32 to 37; `-Xlog:gc` shows G1 mixed pauses of 40 to 174 ms on a live heap
+of 5 to 9 GB. That is the size of the map, not the cost of a frame.
+
+### Platform
+
+The GL entry points are the same C functions everywhere. Two things are not - which library holds
+them, and how to get a context with no window behind it - and those are `GlPlatform`. Only the
+macOS backend (`GlCgl`, which is CGL) is written; on anything else `--gpu` prints one sentence and
+the CPU renderer carries on, which is the whole engine. `-Dgl.platform=none` forces that path so
+the sentence can be tested on a machine that does have a backend.
+
 ## Anti-aliasing (`--ss`)
 
 `--ss N` renders at N times the output size in both axes and box-filters each N x N block down to
@@ -286,6 +408,18 @@ vertical line in the world, so it converges like every other vertical.
 | `src/engine/Keys.java` | physical key state: the controls go by where a key sits, not by its letter |
 | `src/engine/Hash.java` | digests of a frame and of a bake, for the golden test |
 | `src/engine/Json.java` | minimal JSON parser (`//` comments allowed) |
+| `src/engine/Gl.java` | the OpenGL entry points, one line each |
+| `src/engine/GlPlatform.java` | which library holds them and how to get a context; the only per-OS part |
+| `src/engine/GlCgl.java` | the macOS backend: OpenGL.framework and CGL |
+| `src/engine/GlMaterials.java` | `Materials`' procedural detail and masks, in GLSL |
+| `src/engine/GpuWalls.java` | the card's pass: the shader, the uploads and the readback |
+| `src/engine/GpuSpans.java` | the renderer's intervals, per column, as a card can read them |
+| `src/engine/GpuMasks.java` | the masked surfaces blended over a finished column |
+| `src/engine/GpuMaterials.java` | one record per surface, and a second table for blends and vertex colour |
+| `src/engine/GpuTextures.java` | every image of a map, as array textures grouped by size |
+| `src/engine/GpuLights.java` | the baked lightmaps packed into one float atlas |
+| `src/engine/GpuTable.java` | how a table of records is laid out so a card will allocate it |
+| `src/engine/GpuCheck.java` | how far the card's picture is from the CPU's, camera by camera |
 | `maps/school.json` | the demo map |
 
 ## How it works
