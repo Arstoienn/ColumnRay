@@ -73,7 +73,7 @@ final class GpuWalls {
     }
 
     /** Draw one frame's worth of spans and bring it back. Pixels no span covers stay zero. */
-    void draw(GpuSpans spans, int[] into) {
+    void draw(GpuSpans spans, int[] into, double eye, double horizon) {
         MemorySegment.copy(spans.data(), 0, spanBuf, ValueLayout.JAVA_FLOAT, 0, spans.data().length);
         int[] count = spans.count();
         for (int x = 0; x < columns; x++) countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4, count[x]);
@@ -84,6 +84,8 @@ final class GpuWalls {
         Gl.bindTexture(countTex);
         Gl.texSubImage(columns, 1, Gl.RGBA, Gl.FLOAT, countBuf);
         Gl.useProgram(program);
+        Gl.uniform(program, "eye", (float) eye);
+        Gl.uniform(program, "hz", (float) horizon);
         Gl.clear();
         Gl.drawFullScreen();
         Gl.finish();
@@ -124,7 +126,7 @@ final class GpuWalls {
                 #version 330 core
                 uniform sampler2D spans;
                 uniform sampler2D counts;
-                uniform float height, satBoost, lift;
+                uniform float height, satBoost, lift, eye, hz;
                 out vec4 frag;
                 %s
                 %s
@@ -180,7 +182,7 @@ final class GpuWalls {
                         if (row < int(a.y) || row >= int(a.z)) continue;
                         vec4 b = texelFetch(spans, ivec2(s * 3 + 1, col), 0);
                         vec4 c = texelFetch(spans, ivec2(s * 3 + 2, col), 0);
-                        float z = b.y + float(row) * b.z;
+                        float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
                         frag = vec4(shade(c.z, sideTex(int(a.w), b.x, z, c.x, c.y) * b.w), 1.0);
                         return;
                     }
