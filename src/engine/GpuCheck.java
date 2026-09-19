@@ -76,6 +76,7 @@ final class GpuCheck {
                 GpuTextures textures = new GpuTextures(imgs);
                 GpuMaterials materials = new GpuMaterials(world, textures);
                 walls.setImages(textures, materials);
+                renderer.setMaterials(materials);
                 System.out.printf("%d images in %d array textures, %d of them left to the CPU%n",
                         imgs.size(), textures.banks(), textures.leftToCpu());
                 System.out.printf("%d shapes in %d material records%n",

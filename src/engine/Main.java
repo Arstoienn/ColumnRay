@@ -493,7 +493,10 @@ public final class Main {
                     gpuMaterials = new GpuMaterials(world, gpuImages);
                 }
             }
-            if (gpuImages != null) gpu.setImages(gpuImages, gpuMaterials);
+            if (gpuImages != null) {
+                gpu.setImages(gpuImages, gpuMaterials);
+                renderer.setMaterials(gpuMaterials);
+            }
             spans = new GpuSpans(srcW, srcH);
             masks = new GpuMasks(srcW);
             gpuPixels = null;

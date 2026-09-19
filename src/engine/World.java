@@ -56,8 +56,6 @@ final class World {
     }
 
     static final class Shape {
-        /** Where GpuMaterials put this face's texture record, or -1 when the card cannot draw it. */
-        int gpuSide = -1, gpuTop = -1, gpuBottom = -1, gpuAlpha = -1;
         Kind kind;
         double ax, ay, bx, by, len;   // segment wall
         double cx, cy, r;             // cylinder
