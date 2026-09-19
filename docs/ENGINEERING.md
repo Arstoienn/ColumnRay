@@ -244,9 +244,17 @@ two is what a mistake about which rows those are would look like.
 | read the picture back | 0.96 ms | 1.07 ms |
 | everything else (rays, grid, visibility, warp, HUD) | ~1.0 ms | ~3.3 ms |
 
+These four are measured with a `glFinish` between the draw and the read, which is what puts them
+in separate columns; without `-Dgpu.stats` there is no `glFinish` at all, because `glReadPixels`
+synchronises by itself. Taking that redundant sync out was worth a third of school's frame -
+4.6 ms to 3.3 - and came out of a review of this branch rather than out of a profile.
+
 The readback is a stall by construction: the CPU waits for a frame it cannot start the next one
-without. It is the obvious next thing to attack, by drawing into a texture the window can present
-rather than pulling the pixels back through the bus.
+without. Presenting the card's texture directly would remove it, and on this stack there is no
+way to: Java2D cannot wrap a GL texture as an `Image`, and the escape hatch is JAWT with native
+code of its own on a deprecated macOS view. A ring of pixel buffer objects could overlap the read
+with the next frame's ray walk at the cost of a frame of latency, which is an optimisation rather
+than a way out.
 
 ### The two things to know before trusting a number
 

@@ -24,11 +24,17 @@ import java.util.Map;
  * cost is that the whole chain crosses the bus at load - about 600 MB for Haven - and the
  * benefit is that a distant wall is the same colour on both sides.
  *
- * Sampling is left to the hardware. This is the one place in the port where that is right: a
- * mip level's texels are what they are, and GL_LINEAR_MIPMAP_LINEAR with an explicit lod is the
- * same half-texel-offset, wrapping, two-level blend the CPU does by hand. The lod is computed
- * the CPU's way and passed in, because the card's own derivative-based lod is a different
- * number over a strip of anisotropic samples.
+ * Sampling is left to the hardware, with one known cost. GL_LINEAR_MIPMAP_LINEAR with an
+ * explicit lod is the same half-texel-offset, wrapping, two-level blend the CPU does by hand,
+ * and the lod is computed the CPU's way and passed in because the card's own derivative-based
+ * lod is a different number over a strip of anisotropic samples. What is not the same is the
+ * precision underneath it: {@code Materials.Level.half} deliberately keeps its area averages as
+ * floats and does not quantize them, while these levels are uploaded as RGB8 and the hardware
+ * interpolates them with a fixed number of subtexel bits. That is a fraction of a level per mip,
+ * which is invisible on its own and is the leading explanation for the two pixels in five
+ * million where a blend material - a base, a second layer and a height run through a nonlinear
+ * mix - comes out 3 of 255 apart instead of 2. An RGB32F chain would settle it and would cost
+ * four times Haven's 600 MB, so the diagnosis is written down rather than paid for.
  */
 final class GpuTextures {
     /** One array texture, and the images that landed in it. */

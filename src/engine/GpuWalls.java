@@ -207,8 +207,8 @@ final class GpuWalls implements AutoCloseable {
         long t2 = STATS ? System.nanoTime() : 0;
         Gl.clear();
         Gl.drawFullScreen();
-        Gl.finish();
-        long t3 = STATS ? System.nanoTime() : 0;
+        if (STATS) Gl.finish();                  // only to put the draw and the read in separate
+        long t3 = STATS ? System.nanoTime() : 0; // columns: glReadPixels synchronises by itself
         Gl.readPixels(w, h, back);
         MemorySegment.copy(back, ValueLayout.JAVA_INT, 0, into, 0, w * h);
         if (STATS) {
