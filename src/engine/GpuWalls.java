@@ -134,19 +134,21 @@ final class GpuWalls implements AutoCloseable {
      *  Pixels no span covers are the sky, exactly as Renderer.fillRest leaves them. */
     void draw(GpuSpans spans, GpuMasks masks, int[] into, Renderer.Camera cam, double horizon,
               double focal, int viewH) {
-        MemorySegment.copy(spans.data(), 0, spanBuf, ValueLayout.JAVA_FLOAT, 0, spans.data().length);
-        MemorySegment.copy(masks.data(), 0, maskBuf, ValueLayout.JAVA_FLOAT, 0, masks.data().length);
         int[] count = spans.count(), maskCount = masks.count();
+        int spanW = pack(spans.data(), count, GpuSpans.MAX_PER_COLUMN, GpuSpans.TEXELS,
+                spans.most(), spanBuf);
+        int maskW = pack(masks.data(), maskCount, GpuMasks.MAX_PER_COLUMN, GpuMasks.TEXELS,
+                masks.most(), maskBuf);
         for (int x = 0; x < columns; x++) {
             countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4, count[x]);
             countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4 + 1, maskCount[x]);
         }
         Gl.activeTexture(0);
         Gl.bindTexture(spanTex);
-        Gl.texSubImage(GpuSpans.MAX_PER_COLUMN * GpuSpans.TEXELS, columns, Gl.RGBA, Gl.FLOAT, spanBuf);
+        if (spanW > 0) Gl.texSubImage(spanW, columns, Gl.RGBA, Gl.FLOAT, spanBuf);
         Gl.activeTexture(MASK_UNIT);
         Gl.bindTexture(maskTex);
-        Gl.texSubImage(GpuMasks.MAX_PER_COLUMN * GpuMasks.TEXELS, columns, Gl.RGBA, Gl.FLOAT, maskBuf);
+        if (maskW > 0) Gl.texSubImage(maskW, columns, Gl.RGBA, Gl.FLOAT, maskBuf);
         Gl.activeTexture(1);
         Gl.bindTexture(countTex);
         Gl.texSubImage(columns, 1, Gl.RGBA, Gl.FLOAT, countBuf);
@@ -172,6 +174,27 @@ final class GpuWalls implements AutoCloseable {
         Gl.finish();
         Gl.readPixels(w, h, back);
         MemorySegment.copy(back, ValueLayout.JAVA_INT, 0, into, 0, w * h);
+    }
+
+    /**
+     * Copy a frame's per-column lists into a buffer as wide as the busiest column, and say how
+     * many texels wide that is.
+     *
+     * The lists are held at their worst case, a few hundred entries a column, and a frame uses a
+     * handful of that: eight spans a column on an open view of Haven, against room for five
+     * hundred. Uploading the whole array would be forty megabytes a frame of mostly nothing, and
+     * it measured as most of the GPU pass. The texture stays its full size, so what is left
+     * beyond each column's own entries is simply never read - a column's count is what stops the
+     * shader.
+     */
+    private int pack(float[] from, int[] count, int perColumn, int texels, int most, MemorySegment into) {
+        if (most == 0) return 0;
+        int floats = texels * 4, stride = most * floats;
+        for (int x = 0; x < columns; x++)
+            if (count[x] > 0)
+                MemorySegment.copy(from, x * perColumn * floats, into, ValueLayout.JAVA_FLOAT,
+                        (long) x * stride * Float.BYTES, count[x] * floats);
+        return most * texels;
     }
 
     /** The material tables, built into the shader rather than sent as uniforms: they never change,

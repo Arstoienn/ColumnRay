@@ -1153,13 +1153,15 @@ final class Renderer {
                 m.y0 = y0;
                 m.y1 = y1;
                 m.plane = false;
-                m.gpu = maskOut != null && s.mask >= 0 && s.amap == null
+                boolean cut = s.amap != null;             // a slab sawn out of a mesh, not a tree
+                m.gpu = maskOut != null
+                        && (cut ? s.gpuAlpha >= 0 : s.mask >= 0)
                         && ((s.img == null && s.tex == null) || s.gpuSide >= 0)
                         && (m.lm == null || m.lm.gpuIndex >= 0)
-                        && maskOut.add(x, y0, y1, s.mask, h.u, t, m.w, m.sq, m.f,
+                        && maskOut.addSide(x, y0, y1, cut ? -1 : s.mask, h.u, t, m.w, m.sq, m.f,
                                 m.lm == null ? -1 : m.lm.gpuIndex, s.color, s.mat,
                                 1 / s.len, 1 / (s.h - s.z0), s.z0,
-                                s.img != null || s.tex != null ? s.gpuSide : -1);
+                                s.img != null || s.tex != null ? s.gpuSide : -1, s.gpuAlpha);
                 rows += y1 - y0;
             }
             if (tr != null) note(EventKind.SHAPE, t, s.label + " (masked, " + rows + " rows blended)", 0);
@@ -1227,7 +1229,9 @@ final class Renderer {
                         m.color = c.color;
                         m.y0 = run;
                         m.y1 = y;
-                        m.gpu = false;                    // a cut-out's plane is not ported yet
+                        m.gpu = maskOut != null && c.ggpu && m.s.gpuAlpha >= 0
+                                && maskOut.addPlane(x, run, y, c.z, c.slope, c.gk0, c.glm,
+                                        c.grgb, c.gmat, c.gtex, m.s.gpuAlpha);
                         run = -1;
                     }
                 }
@@ -1240,9 +1244,11 @@ final class Renderer {
             return A[0];
         }
 
-        /** Write one blended pixel of a cut-out, and its albedo and depth for a screenshot. */
-        private void blendPixel(int y, int c, double a, double t, Shape s) {
-            if (sink != null) sink.skip(x, y);
+        /** Write one blended pixel of a cut-out, and its albedo and depth for a screenshot.
+         *  gpu says the card was given this surface too, so the pixel is not marked as one the
+         *  CPU kept - it is one the two are expected to agree on. */
+        private void blendPixel(int y, int c, double a, double t, Shape s, boolean gpu) {
+            if (sink != null && !gpu) sink.skip(x, y);
             int p = y * W + x;
             pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
             if (depth != null) {
@@ -1263,7 +1269,7 @@ final class Renderer {
                 double a = alphaAt(s, px + rx * t, py + ry * t, pixelSize(t));
                 if (a <= 0.004) continue;
                 texAlbedoSet = false;
-                blendPixel(y, m.color.applyAsInt(y), a, t, s);
+                blendPixel(y, m.color.applyAsInt(y), a, t, s, m.gpu);
             }
         }
 
@@ -1282,7 +1288,7 @@ final class Renderer {
                 } else {
                     c = sideColor(s, m.u, z, m.t, m.sq, m.f, null);
                 }
-                blendPixel(y, c, a, m.t, s);
+                blendPixel(y, c, a, m.t, s, m.gpu);
             }
         }
 
