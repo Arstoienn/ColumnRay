@@ -73,7 +73,7 @@ final class GpuWalls {
     }
 
     /** Draw one frame's worth of spans and bring it back. Pixels no span covers stay zero. */
-    void draw(GpuSpans spans, int[] into, double eye, double horizon) {
+    void draw(GpuSpans spans, int[] into, Renderer.Camera cam, double horizon, double focal) {
         MemorySegment.copy(spans.data(), 0, spanBuf, ValueLayout.JAVA_FLOAT, 0, spans.data().length);
         int[] count = spans.count();
         for (int x = 0; x < columns; x++) countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4, count[x]);
@@ -84,8 +84,16 @@ final class GpuWalls {
         Gl.bindTexture(countTex);
         Gl.texSubImage(columns, 1, Gl.RGBA, Gl.FLOAT, countBuf);
         Gl.useProgram(program);
-        Gl.uniform(program, "eye", (float) eye);
+        Gl.uniform(program, "eye", (float) cam.eye);
         Gl.uniform(program, "hz", (float) horizon);
+        Gl.uniform(program, "foc", (float) focal);
+        Gl.uniform(program, "halfW", w / 2.0f);
+        Gl.uniform(program, "camX", (float) cam.x);
+        Gl.uniform(program, "camY", (float) cam.y);
+        Gl.uniform(program, "dirX", (float) cam.dirX);
+        Gl.uniform(program, "dirY", (float) cam.dirY);
+        Gl.uniform(program, "fogOn", Renderer.fogOn ? 1f : 0f);
+        Gl.uniform(program, "maxDist", (float) Renderer.MAX_DIST);
         Gl.clear();
         Gl.drawFullScreen();
         Gl.finish();
@@ -96,27 +104,31 @@ final class GpuWalls {
     /** The material tables, built into the shader rather than sent as uniforms: they never change,
      *  and a table that came out of {@link Materials} itself cannot drift from it. */
     private static String tables() {
+        return table("SIDE", true) + table("FLAT", false);
+    }
+
+    private static String table(String name, boolean side) {
         StringBuilder detail = new StringBuilder(), mean = new StringBuilder();
         for (int m = 0; m < 13; m++) {
             // A material with no detail at all reads 0 and is always faded; one whose detail has no
-            // single size (plaster's skirting board) reads -1 and never is. Materials says both with
-            // a 0 and a NaN, which GLSL has no use for.
-            boolean faded0 = Materials.sideFaded(m, 0);
-            double mn = Materials.sideMean(m);
-            detail.append(m == 0 ? "" : ", ").append(faded0 ? "0.0" : Double.isNaN(mn) ? "-1.0" : featureOf(m));
+            // single size - plaster's skirting board, which cells of a ceiling are lit - reads -1
+            // and never is. Materials says both with a 0 and a NaN, which GLSL has no use for.
+            boolean faded0 = side ? Materials.sideFaded(m, 0) : Materials.flatFaded(m, 0);
+            double mn = side ? Materials.sideMean(m) : Materials.flatMean(m);
+            detail.append(m == 0 ? "" : ", ").append(faded0 ? "0.0" : Double.isNaN(mn) ? "-1.0" : featureOf(m, side));
             mean.append(m == 0 ? "" : ", ").append(Double.isNaN(mn) ? "1.0" : (float) mn);
         }
-        return "const float SIDE_DETAIL[13] = float[13](" + detail + ");\n"
-                + "const float SIDE_MEAN[13] = float[13](" + mean + ");\n";
+        return "const float " + name + "_DETAIL[13] = float[13](" + detail + ");\n"
+                + "const float " + name + "_MEAN[13] = float[13](" + mean + ");\n";
     }
 
-    /** The feature size Materials fades this material's side detail over, read back out of it by
+    /** The feature size Materials fades this material's detail over, read back out of it by
      *  finding the width at which it declares itself faded. */
-    private static String featureOf(int m) {
+    private static String featureOf(int m, boolean side) {
         double lo = 1e-6, hi = 1e6;
-        for (int i = 0; i < 80; i++) {                     // sideFaded is monotone in w: bisect it
+        for (int i = 0; i < 80; i++) {                     // faded is monotone in w: bisect it
             double mid = Math.sqrt(lo * hi);
-            if (Materials.sideFaded(m, mid)) hi = mid; else lo = mid;
+            if (side ? Materials.sideFaded(m, mid) : Materials.flatFaded(m, mid)) hi = mid; else lo = mid;
         }
         return Float.toString((float) hi);                 // faded when 2w/f >= 2, so f = w at the edge
     }
@@ -126,27 +138,49 @@ final class GpuWalls {
                 #version 330 core
                 uniform sampler2D spans;
                 uniform sampler2D counts;
-                uniform float height, satBoost, lift, eye, hz;
+                uniform float height, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
+                uniform float fogOn, maxDist;
+                float rayX, rayY, dk;
                 out vec4 frag;
                 %s
                 %s
-                bool sideFaded(int m, float w) {
-                    float f = SIDE_DETAIL[m];
+                %s
+                bool faded(float f, float w) {
                     if (f == 0.0) return true;
                     if (f < 0.0) return false;
                     return 2.0 * w / f >= 2.0;
                 }
 
+                float fog(float t) { return fogOn != 0.0 ? max(0.3, 1.0 - t / 45.0) : 1.0; }
+
                 /** Renderer.sideTex: sample along the strip, each sample filtered to its narrow side. */
                 float sideTex(int m, float u, float z, float narrow, float square) {
                     float along = narrow / square;
                     int n = int(min(8.0, ceil(along / narrow)));
-                    if (n <= 1) return sideFaded(m, narrow) ? SIDE_MEAN[m] : side(m, u, z, narrow);
+                    if (n <= 1) return faded(SIDE_DETAIL[m], narrow) ? SIDE_MEAN[m] : side(m, u, z, narrow);
                     float stp = along / float(n), w = max(narrow, stp);
-                    if (sideFaded(m, w)) return SIDE_MEAN[m];
+                    if (faded(SIDE_DETAIL[m], w)) return SIDE_MEAN[m];
                     float sum = 0.0;
                     for (int i = 0; i < n; i++)
                         sum += side(m, u + (float(i) + 0.5 - float(n) * 0.5) * stp, z, w);
+                    return sum / float(n);
+                }
+
+                /** Renderer.flatTex: the strip runs away from the eye, so it is walked in distance. */
+                float flatTex(int m, float t, int row) {
+                    float narrow = t * dk / foc;
+                    float d = abs(float(row) + 0.5 - hz);
+                    float along = d < 1e-6 ? 1e30 : t * dk / d;
+                    int n = int(min(8.0, ceil(along / narrow)));
+                    float w = max(narrow, along / float(n));
+                    if (faded(FLAT_DETAIL[m], w)) return FLAT_MEAN[m];
+                    if (n <= 1) return flatAt(m, camX + rayX * t, camY + rayY * t, w);
+                    float stp = t / (d * float(n));
+                    float sum = 0.0;
+                    for (int i = 0; i < n; i++) {
+                        float tt = t + (float(i) + 0.5 - float(n) * 0.5) * stp;
+                        sum += flatAt(m, camX + rayX * tt, camY + rayY * tt, w);
+                    }
                     return sum / float(n);
                 }
 
@@ -172,6 +206,12 @@ final class GpuWalls {
 
                 void main() {
                     int col = int(gl_FragCoord.x);
+                    // The column's ray, worked out the way Column.render does, so the floor lands
+                    // on the same square of tile on both sides.
+                    float off = (float(col) + 0.5 - halfW) / foc;
+                    rayX = dirX - dirY * off;
+                    rayY = dirY + dirX * off;
+                    dk = 1.0;
                     // glReadPixels hands back the bottom row first, and the renderer's row 0 is
                     // the top one, so the two flips cancel: shade framebuffer row j as row j and
                     // the array that comes back is already the right way up.
@@ -182,12 +222,19 @@ final class GpuWalls {
                         if (row < int(a.y) || row >= int(a.z)) continue;
                         vec4 b = texelFetch(spans, ivec2(s * 3 + 1, col), 0);
                         vec4 c = texelFetch(spans, ivec2(s * 3 + 2, col), 0);
-                        float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
-                        frag = vec4(shade(c.z, sideTex(int(a.w), b.x, z, c.x, c.y) * b.w), 1.0);
+                        if (c.w == 0.0) {
+                            float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
+                            frag = vec4(shade(c.z, sideTex(int(a.w), b.x, z, c.x, c.y) * b.w), 1.0);
+                        } else {
+                            float t = (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc);
+                            frag = vec4(!(t > 0.0) || t > maxDist
+                                    ? shade(c.z, 0.3 * b.w)
+                                    : shade(c.z, flatTex(int(a.w), t, row) * b.w * fog(t)), 1.0);
+                        }
                         return;
                     }
                     discard;
                 }
-                """.formatted(GlMaterials.SIDE, tables());
+                """.formatted(GlMaterials.SIDE, GlMaterials.FLAT, tables());
     }
 }
