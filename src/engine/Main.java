@@ -96,7 +96,13 @@ public final class Main {
      *  rebuilt whenever the pitch warp grows the render buffer under it. */
     volatile boolean useGpu;
     private GpuWalls gpu;
+
+    /** What the card's side of a frame cost, for --bench with -Dgpu.stats=true. */
+    void gpuStats() {
+        if (gpu != null) gpu.stats();
+    }
     private GpuSpans spans;
+    private GpuMasks masks;
     private GpuLights gpuLights;
     private GpuTextures gpuImages;
     private GpuMaterials gpuMaterials;
@@ -150,8 +156,18 @@ public final class Main {
         if (Options.headless(args)) System.setProperty("java.awt.headless", "true");
         // Before AWT. A context asked for after the toolkit has started gets no accelerated
         // pixel format on macOS - the same ordering trap that once left the window taking no
-        // keys, in the other direction.
-        if (o.gpu) Gl.context();
+        // keys, in the other direction. A platform with no backend says so in a sentence and
+        // carries on with the CPU renderer, which runs anywhere; asking GlPlatform rather than
+        // Gl is deliberate, because loading Gl is what fails.
+        if (o.gpu) {
+            String why = GlPlatform.missing();
+            if (why != null) {
+                System.err.println(why);
+                o.gpu = false;
+            } else {
+                Gl.context();
+            }
+        }
 
         Main game = new Main(World.load(Path.of(o.map)), o.w, o.h, o.ss);
         game.winW = o.winW;
@@ -428,6 +444,7 @@ public final class Main {
         renderer.traceColumn = rayView.visible() || c.captureDepth
                 ? warp.sourceColumn(traceI >= 0 ? traceI : RW / 2, traceJ >= 0 ? traceJ : RH / 2) : -1;
         if (spans != null) spans.reset();
+        if (masks != null) masks.reset();
         renderer.render(c);
         if (gpu != null) shadeOnGpu(c);
         if (c.captureDepth) {
@@ -455,11 +472,11 @@ public final class Main {
     private void shadeOnGpu(Renderer.Camera c) {
         double horizon = srcH / 2.0 + c.pitch;
         if (!spans.anySkipped()) {
-            gpu.draw(spans, src, c, horizon, renderer.focal(), RH);
+            gpu.draw(spans, masks, src, c, horizon, renderer.focal(), RH);
             return;
         }
         if (gpuPixels == null || gpuPixels.length != src.length) gpuPixels = new int[src.length];
-        gpu.draw(spans, gpuPixels, c, horizon, renderer.focal(), RH);
+        gpu.draw(spans, masks, gpuPixels, c, horizon, renderer.focal(), RH);
         IntStream.range(0, srcH).parallel().forEach(y -> {
             int row = y * srcW;
             for (int x = 0; x < srcW; x++) if (!spans.skipped(x, y)) src[row + x] = gpuPixels[row + x];
@@ -477,7 +494,11 @@ public final class Main {
             renderer.resize(srcW, srcH, src);
         }
         warp.place(renderer.centerX(), srcW, srcH, c);
-        if (useGpu && (gpu == null || spans == null || spans.columns() != srcW)) {
+        // Both dimensions: the overscan grows with pitch, and there is no rule that says the
+        // width has to grow with the height. A height that changed on its own used to leave the
+        // card drawing at the old size and GpuSpans' skip mask too short for the new one.
+        if (useGpu && (gpu == null || spans == null
+                || spans.columns() != srcW || spans.rows() != srcH)) {
             if (gpu != null) gpu.close();
             gpu = new GpuWalls(srcW, srcH, srcW);
             if (lighting != null) {
@@ -491,10 +512,16 @@ public final class Main {
                     gpuMaterials = new GpuMaterials(world, gpuImages);
                 }
             }
-            if (gpuImages != null) gpu.setImages(gpuImages, gpuMaterials);
+            if (gpuImages != null) {
+                gpu.setImages(gpuImages, gpuMaterials);
+                renderer.setMaterials(gpuMaterials);
+            }
             spans = new GpuSpans(srcW, srcH);
+            masks = new GpuMasks(srcW);
             gpuPixels = null;
             renderer.captureSpans(spans);
+            renderer.captureMasks(masks);
+            renderer.shadeUnderCard(false);
         }
     }
 

@@ -26,28 +26,46 @@ package engine;
  * anisotropic filter runs on.
  */
 final class GpuSpans {
-    static final int MAX_PER_COLUMN = 64;
+    /** Measured at 1280 columns: school's busiest column holds 42 wall intervals and Haven's
+     *  256, which is what a column looks like once the blend materials are on the card too and
+     *  it no longer stops recording at the first surface it cannot draw. A column that wants
+     *  more hands the rest back to the CPU (see {@link #slot}). Only what a frame uses is
+     *  uploaded, so this is heap rather than bandwidth. */
+    static final int MAX_PER_COLUMN = 512;
     static final int TEXELS = 4, FLOATS = TEXELS * 4;
 
-    private final int columns;
-    private final float[] data;
+    private final int columns, rows;
+    private float[] data;
+    private int perColumn;
     private final int[] count;
     private final boolean[] blended;
+
     private volatile int dropped;
     private volatile boolean anySkip;
 
     GpuSpans(int columns, int rows) {
         this.columns = columns;
-        this.data = new float[columns * MAX_PER_COLUMN * FLOATS];
+        this.rows = rows;
+        this.perColumn = Math.min(32, MAX_PER_COLUMN);
+        this.data = new float[columns * perColumn * FLOATS];
         this.count = new int[columns];
         this.blended = new boolean[columns * rows];
     }
 
     int columns() { return columns; }
 
+    int rows() { return rows; }
+
     float[] data() { return data; }
 
     int[] count() { return count; }
+
+    /** The most any one column holds, which is how much of the buffer a frame really uses. */
+    int most() {
+        int m = 0;
+        for (int n : count) m = Math.max(m, n);
+        return m;
+    }
 
     int dropped() { return dropped; }
 
@@ -66,8 +84,22 @@ final class GpuSpans {
      *  picture is the whole frame and it can be read straight into the render buffer. */
     boolean anySkipped() { return anySkip; }
 
-    /** Between frames, on one thread: the renderer is not running. */
+    int perColumn() { return perColumn; }
+
+    /**
+     * Between frames, on one thread: the renderer is not running.
+     *
+     * A column that ran out last frame gets twice the room before the next one, up to the cap.
+     * Starting at the worst case instead would be forty megabytes for a frame that uses eight
+     * intervals a column, and a frame that outgrows its room is not wrong - its rows go back to
+     * the CPU, which is what {@link #slot} is for - so one frame of that is a fair price for not
+     * holding Haven's worst camera in memory while drawing school.
+     */
     void reset() {
+        if (dropped > 0 && perColumn < MAX_PER_COLUMN) {
+            perColumn = Math.min(MAX_PER_COLUMN, perColumn * 2);
+            data = new float[columns * perColumn * FLOATS];
+        }
         java.util.Arrays.fill(count, 0);
         java.util.Arrays.fill(blended, false);
         dropped = 0;
@@ -75,13 +107,14 @@ final class GpuSpans {
     }
 
     /**
-     * One wall interval. Called from the column's own thread while it paints, so the only shared
+     * One wall interval, or false when the column had no room for it and its rows were handed
+     * back to the CPU. Called from the column's own thread while it paints, so the only shared
      * thing it touches is the drop counter, and that is only ever a count of something going wrong.
      */
-    void add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb,
-             double fog, int lm, int tex) {
+    boolean add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb,
+                double fog, int lm, int tex) {
         int at = slot(x, y0, y1);
-        if (at < 0) return;
+        if (at < 0) return false;
         data[at + 4] = (float) u;
         data[at + 5] = (float) fog;
         data[at + 6] = lm;
@@ -89,17 +122,20 @@ final class GpuSpans {
         data[at + 9] = (float) sq;
         data[at + 12] = tex;
         head(at, x, y0, y1, mat, light, rgb, 0);
+        return true;
     }
 
     /** One stretch of a floor, a ceiling or a shape's top or bottom. */
-    void addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb, int lm, int tex) {
+    boolean addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb,
+                     int lm, int tex) {
         int at = slot(x, y0, y1);
-        if (at < 0) return;
+        if (at < 0) return false;
         data[at + 4] = (float) z;
         data[at + 5] = (float) slope;
         data[at + 6] = lm;
         data[at + 12] = tex;
         head(at, x, y0, y1, mat, light, rgb, 1);
+        return true;
     }
 
     /** Floors are painted a grid cell at a time, so one floor arrives as a run of short spans
@@ -108,7 +144,7 @@ final class GpuSpans {
     private boolean joins(int at, int x, int y0, int y1, int mat, double light, int rgb, int kind) {
         if (count[x] == 0) return false;
         int prev = at - FLOATS;
-        if (prev < x * MAX_PER_COLUMN * FLOATS) return false;
+        if (prev < x * perColumn * FLOATS) return false;
         if (data[prev + 11] != kind || data[prev + 3] != mat || data[prev + 10] != rgb
                 || data[prev + 7] != (float) light) return false;
         for (int i = 4; i <= 9; i++) if (data[prev + i] != data[at + i]) return false;
@@ -134,12 +170,12 @@ final class GpuSpans {
      *  to the CPU rather than losing them: the card would otherwise draw sky through a wall. */
     private int slot(int x, int y0, int y1) {
         int n = count[x];
-        if (n >= MAX_PER_COLUMN) {
+        if (n >= perColumn) {
             dropped++;
             for (int y = y0; y < y1; y++) skip(x, y);
             return -1;
         }
-        int at = (x * MAX_PER_COLUMN + n) * FLOATS;
+        int at = (x * perColumn + n) * FLOATS;
         for (int i = 0; i < FLOATS; i++) data[at + i] = 0;
         return at;
     }

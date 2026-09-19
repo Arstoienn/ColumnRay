@@ -13,7 +13,7 @@ import java.util.Map;
  * Every image the map uses, on the card.
  *
  * Haven's 452 images come in fifteen distinct sizes - 222 of them 512 square, 75 of them 1024 -
- * so they go into one array texture per size rather than a packed atlas. An array layer keeps
+ * so they go into array textures grouped by size rather than a packed atlas. An array layer keeps
  * its own mip chain, exactly as {@link Materials.Texture} does, which is the property a packed
  * atlas would lose: a mip level of an atlas averages across the seam between two unrelated
  * images, and the engine deliberately never lets that happen.
@@ -24,64 +24,120 @@ import java.util.Map;
  * cost is that the whole chain crosses the bus at load - about 600 MB for Haven - and the
  * benefit is that a distant wall is the same colour on both sides.
  *
- * Sampling is left to the hardware. This is the one place in the port where that is right: a
- * mip level's texels are what they are, and GL_LINEAR_MIPMAP_LINEAR with an explicit lod is the
- * same half-texel-offset, wrapping, two-level blend the CPU does by hand. The lod is computed
- * the CPU's way and passed in, because the card's own derivative-based lod is a different
- * number over a strip of anisotropic samples.
+ * Sampling is left to the hardware, with one known cost. GL_LINEAR_MIPMAP_LINEAR with an
+ * explicit lod is the same half-texel-offset, wrapping, two-level blend the CPU does by hand,
+ * and the lod is computed the CPU's way and passed in because the card's own derivative-based
+ * lod is a different number over a strip of anisotropic samples. What is not the same is the
+ * precision underneath it: {@code Materials.Level.half} deliberately keeps its area averages as
+ * floats and does not quantize them, while these levels are uploaded as RGB8 and the hardware
+ * interpolates them with a fixed number of subtexel bits. That is a fraction of a level per mip,
+ * which is invisible on its own and is the leading explanation for the two pixels in five
+ * million where a blend material - a base, a second layer and a height run through a nonlinear
+ * mix - comes out 3 of 255 apart instead of 2. An RGB32F chain would settle it and would cost
+ * four times Haven's 600 MB, so the diagnosis is written down rather than paid for.
  */
 final class GpuTextures {
-    /** One array texture: all the images of one size. */
-    private record Bank(int w, int h, int name, int layers) {}
+    /** One array texture, and the images that landed in it. */
+    private record Bank(int w, int h, int name, int levels, List<Materials.Texture> layers) {}
 
     private final List<Bank> banks = new ArrayList<>();
     private final IdentityHashMap<Materials.Texture, int[]> where = new IdentityHashMap<>();
 
     /**
-     * A fragment shader may use sixteen samplers in all and the frame already spends five on the
-     * spans, the lightmaps and the material table, so there is room for ten arrays. Haven's
-     * images come in fifteen sizes, but the sizes are not evenly used - 512 square alone accounts
-     * for half of them - so the ten largest groups are taken and the seven images in the five
-     * rarest sizes are left to the CPU, where the skip mask counts them rather than letting them
-     * draw wrong.
+     * A fragment shader may use sixteen samplers in all and the frame already spends six of them
+     * on the spans, the blend table, the light atlas and its records, the material table and the
+     * masked surfaces, so there is room for ten arrays.
+     *
+     * Haven's images come in fifteen sizes, which is more banks than there are units. They do
+     * not need one each: an array layer's levels are a mip chain, and a smaller image of the
+     * same shape is exactly what some level of a bigger one looks like, so a 512 square image
+     * can live in levels 1 and down of a 1024 square layer and be sampled by asking for a level
+     * one deeper. Wrapping still works, because wrapping is in the normalised coordinates and
+     * those do not know which level answered. The cost is the levels above it, which are
+     * allocated and never read, so a size is only folded into a bigger bank when the waste of
+     * doing so stays under {@link #WASTE_BUDGET}. On Haven that turns fifteen sizes into seven
+     * banks for about thirty megabytes, and leaves nothing behind.
      */
     static final int MAX_BANKS = 10;
+
+    /** How much room a folded-in size may waste, over all of its images. Two hundred and
+     *  twenty-two 512 square images would waste 700 MB in a 1024 square bank and so keep their
+     *  own; the fifty-one 128 square ones waste ten and do not. */
+    private static final long WASTE_BUDGET = 32L << 20;
 
     private int leftToCpu;
 
     int leftToCpu() { return leftToCpu; }
+
+    /** Roughly what one layer of a w by h array costs, mip chain included. */
+    private static long layerBytes(int w, int h) {
+        return (long) w * h * 4;
+    }
+
+    /** A bank being built: its size, and the images that will be its layers. */
+    private static final class Pending {
+        final int w, h;
+        final List<Materials.Texture> layers = new ArrayList<>();
+
+        Pending(int w, int h) {
+            this.w = w;
+            this.h = h;
+        }
+    }
 
     GpuTextures(List<Materials.Texture> textures) {
         Map<Long, List<Materials.Texture>> bySize = new LinkedHashMap<>();
         for (Materials.Texture t : textures)
             bySize.computeIfAbsent(((long) t.levelW(0) << 32) | t.levelH(0), k -> new ArrayList<>()).add(t);
         List<List<Materials.Texture>> groups = new ArrayList<>(bySize.values());
-        groups.sort((x, y) -> y.size() - x.size());
-        for (int i = MAX_BANKS; i < groups.size(); i++) leftToCpu += groups.get(i).size();
+        // Biggest first, so a bank always exists by the time something that could fold into it
+        // comes up.
+        groups.sort((x, y) -> Long.compare(layerBytes(y.get(0).levelW(0), y.get(0).levelH(0)),
+                layerBytes(x.get(0).levelW(0), x.get(0).levelH(0))));
+
+        List<Pending> pending = new ArrayList<>();
+        for (List<Materials.Texture> group : groups) {
+            int gw = group.get(0).levelW(0), gh = group.get(0).levelH(0);
+            Pending best = null;
+            for (Pending p : pending) {
+                if (p.w % gw != 0 || p.h % gh != 0 || p.w / gw != p.h / gh) continue;
+                int k = p.w / gw;
+                if (Integer.bitCount(k) != 1) continue;          // a whole number of mip levels
+                if ((long) group.size() * (layerBytes(p.w, p.h) - layerBytes(gw, gh)) > WASTE_BUDGET)
+                    continue;
+                if (best == null || layerBytes(p.w, p.h) < layerBytes(best.w, best.h)) best = p;
+            }
+            if (best == null) pending.add(best = new Pending(gw, gh));
+            best.layers.addAll(group);
+        }
+        // The ones that fit are the ones most images are in; anything past that is left to the
+        // CPU, where the skip mask counts it rather than letting it draw wrong.
+        pending.sort((x, y) -> y.layers.size() - x.layers.size());
+        for (int i = MAX_BANKS; i < pending.size(); i++) leftToCpu += pending.get(i).layers.size();
 
         Gl.context();
-        for (List<Materials.Texture> group : groups.subList(0, Math.min(MAX_BANKS, groups.size()))) {
-            Materials.Texture first = group.get(0);
-            int w = first.levelW(0), h = first.levelH(0), n = group.size();
+        for (Pending p : pending.subList(0, Math.min(MAX_BANKS, pending.size()))) {
+            int levels = 32 - Integer.numberOfLeadingZeros(Math.max(p.w, p.h));
             int name = Gl.texture();
             Gl.bindArray(name);
-            Gl.arrayLevels(first.levelCount(), w, h, n);
+            Gl.arrayLevels(levels, p.w, p.h, p.layers.size());
             try (Arena arena = Arena.ofConfined()) {
-                MemorySegment buf = arena.allocate((long) w * h * 3);
-                for (int layer = 0; layer < n; layer++) {
-                    Materials.Texture t = group.get(layer);
+                MemorySegment buf = arena.allocate((long) p.w * p.h * 3);
+                for (int layer = 0; layer < p.layers.size(); layer++) {
+                    Materials.Texture t = p.layers.get(layer);
                     where.put(t, new int[] {banks.size(), layer});
+                    int off = levels - t.levelCount();        // how far below the bank's level 0
                     for (int lv = 0; lv < t.levelCount(); lv++) {
                         float[] rgb = t.levelRgb(lv);
                         for (int i = 0; i < rgb.length; i++)
                             buf.setAtIndex(ValueLayout.JAVA_BYTE, i, (byte) Math.round(Math.max(0, Math.min(255, rgb[i]))));
-                        Gl.arrayLevel(lv, layer, t.levelW(lv), t.levelH(lv), buf);
+                        Gl.arrayLevel(off + lv, layer, t.levelW(lv), t.levelH(lv), buf);
                     }
                 }
             }
-            Gl.arrayFiltering(first.levelCount());
-            Gl.check("an image array, %dx%d in %d layers".formatted(w, h, n));
-            banks.add(new Bank(w, h, name, n));
+            Gl.arrayFiltering(levels);
+            Gl.check("an image array, %dx%d in %d layers".formatted(p.w, p.h, p.layers.size()));
+            banks.add(new Bank(p.w, p.h, name, levels, p.layers));
         }
     }
 
@@ -111,10 +167,14 @@ final class GpuTextures {
             decl.append("uniform sampler2DArray images").append(i).append(";\n");
             pick.append(i == 0 ? "    if" : "    else if").append(" (bank == ").append(i)
                     .append(") return textureLod(images").append(i)
-                    .append(", vec3(uv, float(layer)), lod).rgb * 255.0;\n");
+                    .append(", vec3(uv, float(layer)), lod + float(").append(banks.get(i).levels())
+                    .append(") - levels).rgb * 255.0;\n");
         }
         decl.append("""
-                vec3 imageAt(int bank, int layer, vec2 uv, float lod) {
+                /** One image's texels. An image smaller than its bank sits that many levels
+                 *  below the bank's own level 0, so the level asked for is shifted by the
+                 *  difference between the two chains' lengths. */
+                vec3 imageAt(int bank, int layer, vec2 uv, float lod, float levels) {
                 """).append(pick).append("""
                     return vec3(255.0);
                 }

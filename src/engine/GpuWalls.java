@@ -21,9 +21,21 @@ import java.lang.foreign.ValueLayout;
  * {@code GpuCheck} measures how far apart the two pictures are instead of hashing them.
  */
 final class GpuWalls implements AutoCloseable {
-    /** Texture units 0..4 are the spans, the counts, the light atlas and its records, and the
-     *  material table; the image arrays follow. */
+    /**
+     * Where each thing the shader reads is bound. There are sixteen units and a fragment shader
+     * is promised no more, so every one of them is spoken for: the spans, the blend table, the
+     * light atlas and its records, the material table, ten image arrays and the masked surfaces.
+     *
+     * How many each column holds used to have a unit of its own. It is two numbers a column, so
+     * it now rides in the first texel of the column's own row of the span texture instead, which
+     * costs a texel a column and buys back the unit the blend table needed.
+     */
+    static final int EXTRA_UNIT = 1;
     private static final int FIRST_IMAGE_UNIT = 5;
+    private static final int MASK_UNIT = 15;
+
+    /** The first texel of a column's row of spans holds its two counts; the spans follow it. */
+    private static final int HEADER = 1;
     private static final String VERT = """
             #version 330 core
             void main() {
@@ -33,8 +45,15 @@ final class GpuWalls implements AutoCloseable {
             """;
 
     private int program;                       // built on the first draw: its text depends on the images
-    private final int target, frame, spanTex, countTex, w, h, columns;
-    private final MemorySegment spanBuf, countBuf, back;
+    private int vao;
+    private final int target, frame, spanTex, maskTex, w, h, columns;
+    private MemorySegment spanBuf, maskBuf;
+    private final MemorySegment back;
+    private final Arena buffers;
+    /** How wide the span and mask textures are, in texels: a high-water mark, not a worst case.
+     *  School fills eight span slots a column out of five hundred it may have, and holding the
+     *  worst case would be a hundred and twenty megabytes of card memory to leave untouched. */
+    private int spanCap, maskCap;
     private final Arena own;
 
     /** For a window, which needs the buffers to outlive the call that made them. */
@@ -62,6 +81,7 @@ final class GpuWalls implements AutoCloseable {
 
     private GpuWalls(Arena arena, int w, int h, int columns, boolean owns) {
         this.own = owns ? arena : null;
+        this.buffers = arena;
         this.w = w;
         this.h = h;
         this.columns = columns;
@@ -74,35 +94,50 @@ final class GpuWalls implements AutoCloseable {
         frame = Gl.framebuffer();
         Gl.bindFramebuffer(frame);
         Gl.attach(target);
-        Gl.bindVertexArray(Gl.vertexArray());
+        vao = Gl.vertexArray();
+        Gl.bindVertexArray(vao);
         Gl.viewport(w, h);
 
-        int spanW = GpuSpans.MAX_PER_COLUMN * GpuSpans.TEXELS;
         spanTex = Gl.texture();
         Gl.activeTexture(0);
         Gl.bindTexture(spanTex);
-        Gl.texImage(Gl.RGBA32F, spanW, columns, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
         Gl.texUnfiltered();
-        countTex = Gl.texture();
-        Gl.activeTexture(1);
-        Gl.bindTexture(countTex);
-        Gl.texImage(Gl.RGBA32F, columns, 1, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
+        maskTex = Gl.texture();
+        Gl.activeTexture(MASK_UNIT);
+        Gl.bindTexture(maskTex);
         Gl.texUnfiltered();
 
 
-        spanBuf = arena.allocate((long) columns * GpuSpans.MAX_PER_COLUMN * GpuSpans.FLOATS * Float.BYTES);
-        countBuf = arena.allocate((long) columns * 4 * Float.BYTES);
         back = arena.allocate((long) w * h * 4);
+    }
+
+    /**
+     * Where a frame's time goes on the card's side, with -Dgpu.stats=true.
+     *
+     * Four numbers, because there are four things it does and they fail in different ways:
+     * packing the lists out of the renderer's arrays, handing them to the driver, the draw
+     * itself, and reading the picture back. The readback is the one to watch - it is a stall by
+     * construction, the CPU waiting for a frame it cannot start the next one without.
+     */
+    private static final boolean STATS = Boolean.getBoolean("gpu.stats");
+    private long packNs, uploadNs, drawNs, readNs, frames;
+
+    void stats() {
+        if (frames == 0) return;
+        System.out.printf("gpu %d frames: pack %.2f ms  upload %.2f  draw %.2f  read back %.2f%n",
+                frames, packNs / 1e6 / frames, uploadNs / 1e6 / frames,
+                drawNs / 1e6 / frames, readNs / 1e6 / frames);
     }
 
     private void link() {
         program = Gl.program(VERT, fragment());
         Gl.useProgram(program);
         Gl.uniform(program, "spans", 0);
-        Gl.uniform(program, "counts", 1);
+        Gl.uniform(program, "blends", EXTRA_UNIT);
         Gl.uniform(program, "lightAtlas", 2);
         Gl.uniform(program, "lightRecords", 3);
         Gl.uniform(program, "materials", 4);
+        Gl.uniform(program, "masks", MASK_UNIT);
         for (int i = 0; images != null && i < images.banks(); i++)
             Gl.uniform(program, "images" + i, FIRST_IMAGE_UNIT + i);
         Gl.uniform(program, "height", (float) h);
@@ -110,25 +145,48 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "lift", (float) Renderer.lift);
     }
 
+    /** Main builds a new one of these whenever the overscan grows, so everything this made has
+     *  to go back - a program and a vertex array as much as the textures. */
     @Override public void close() {
         Gl.deleteTexture(target);
         Gl.deleteTexture(spanTex);
-        Gl.deleteTexture(countTex);
+        Gl.deleteTexture(maskTex);
         Gl.deleteFramebuffer(frame);
+        Gl.deleteVertexArray(vao);
+        if (program != 0) Gl.deleteProgram(program);
         if (own != null) own.close();
     }
 
-    /** Draw one frame's worth of spans and bring it back. Pixels no span covers stay zero. */
-    void draw(GpuSpans spans, int[] into, Renderer.Camera cam, double horizon, double focal, int viewH) {
-        MemorySegment.copy(spans.data(), 0, spanBuf, ValueLayout.JAVA_FLOAT, 0, spans.data().length);
-        int[] count = spans.count();
-        for (int x = 0; x < columns; x++) countBuf.setAtIndex(ValueLayout.JAVA_FLOAT, (long) x * 4, count[x]);
+    /** Draw one frame's worth of spans and the masked surfaces over them, and bring it back.
+     *  Pixels no span covers are the sky, exactly as Renderer.fillRest leaves them. */
+    void draw(GpuSpans spans, GpuMasks masks, int[] into, Renderer.Camera cam, double horizon,
+              double focal, int viewH) {
+        long t0 = STATS ? System.nanoTime() : 0;
+        int[] count = spans.count(), maskCount = masks.count();
+        int wantSpan = Math.max(1, spans.most()) * GpuSpans.TEXELS + HEADER;
+        int wantMask = Math.max(1, masks.most()) * GpuMasks.TEXELS;
+        if (wantSpan > spanCap) spanCap = grow(spanTex, 0, wantSpan);
+        if (wantMask > maskCap) maskCap = grow(maskTex, MASK_UNIT, wantMask);
+        if (spanBuf == null || spanCap * 4L * columns * Float.BYTES > spanBuf.byteSize())
+            spanBuf = buffers.allocate((long) spanCap * 4 * columns * Float.BYTES);
+        if (maskBuf == null || maskCap * 4L * columns * Float.BYTES > maskBuf.byteSize())
+            maskBuf = buffers.allocate((long) maskCap * 4 * columns * Float.BYTES);
+        int spanW = pack(spans.data(), count, spans.perColumn(), GpuSpans.TEXELS,
+                spans.most(), spanBuf, HEADER) + HEADER;
+        int maskW = pack(masks.data(), maskCount, masks.perColumn(), GpuMasks.TEXELS,
+                masks.most(), maskBuf, 0);
+        for (int x = 0; x < columns; x++) {          // the header: how many of each this column has
+            long at = (long) x * spanW * 4;
+            spanBuf.setAtIndex(ValueLayout.JAVA_FLOAT, at, count[x]);
+            spanBuf.setAtIndex(ValueLayout.JAVA_FLOAT, at + 1, maskCount[x]);
+        }
+        long t1 = STATS ? System.nanoTime() : 0;
         Gl.activeTexture(0);
         Gl.bindTexture(spanTex);
-        Gl.texSubImage(GpuSpans.MAX_PER_COLUMN * GpuSpans.TEXELS, columns, Gl.RGBA, Gl.FLOAT, spanBuf);
-        Gl.activeTexture(1);
-        Gl.bindTexture(countTex);
-        Gl.texSubImage(columns, 1, Gl.RGBA, Gl.FLOAT, countBuf);
+        if (spanW > 0) Gl.texSubImage(spanW, columns, Gl.RGBA, Gl.FLOAT, spanBuf);
+        Gl.activeTexture(MASK_UNIT);
+        Gl.bindTexture(maskTex);
+        if (maskW > 0) Gl.texSubImage(maskW, columns, Gl.RGBA, Gl.FLOAT, maskBuf);
         if (program == 0) link();
         if (lights != null) lights.bind();
         if (mats != null) { mats.bind(); images.bind(FIRST_IMAGE_UNIT); }
@@ -146,11 +204,55 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "dirY", (float) cam.dirY);
         Gl.uniform(program, "fogOn", Renderer.fogOn ? 1f : 0f);
         Gl.uniform(program, "maxDist", (float) Renderer.MAX_DIST);
+        long t2 = STATS ? System.nanoTime() : 0;
         Gl.clear();
         Gl.drawFullScreen();
-        Gl.finish();
+        if (STATS) Gl.finish();                  // only to put the draw and the read in separate
+        long t3 = STATS ? System.nanoTime() : 0; // columns: glReadPixels synchronises by itself
         Gl.readPixels(w, h, back);
         MemorySegment.copy(back, ValueLayout.JAVA_INT, 0, into, 0, w * h);
+        if (STATS) {
+            packNs += t1 - t0;
+            uploadNs += t2 - t1;
+            drawNs += t3 - t2;
+            readNs += System.nanoTime() - t3;
+            frames++;
+        }
+    }
+
+    /** Make a per-column texture at least this many texels wide, and say how wide it now is.
+     *  Doubling rather than fitting exactly, so a frame that grows by one does not reallocate. */
+    private int grow(int texture, int unit, int want) {
+        int cap = 8;
+        while (cap < want) cap *= 2;
+        Gl.activeTexture(unit);
+        Gl.bindTexture(texture);
+        Gl.texImage(Gl.RGBA32F, cap, columns, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
+        Gl.texUnfiltered();
+        Gl.check("a per-column texture, %dx%d".formatted(cap, columns));
+        return cap;
+    }
+
+    /**
+     * Copy a frame's per-column lists into a buffer as wide as the busiest column, and say how
+     * many texels wide that is.
+     *
+     * The lists are held at their worst case, a few hundred entries a column, and a frame uses a
+     * handful of that: eight spans a column on an open view of Haven, against room for five
+     * hundred. Uploading the whole array would be forty megabytes a frame of mostly nothing, and
+     * it measured as most of the GPU pass. The texture stays its full size, so what is left
+     * beyond each column's own entries is simply never read - a column's count is what stops the
+     * shader.
+     */
+    private int pack(float[] from, int[] count, int perColumn, int texels, int most,
+                     MemorySegment into, int header) {
+        if (most == 0) return 0;
+        int floats = texels * 4, stride = (most * texels + header) * 4;
+        for (int x = 0; x < columns; x++)
+            if (count[x] > 0)
+                MemorySegment.copy(from, x * perColumn * floats, into, ValueLayout.JAVA_FLOAT,
+                        (long) (x * stride + header * 4) * Float.BYTES, count[x] * floats);
+        return most * texels;
     }
 
     /** The material tables, built into the shader rather than sent as uniforms: they never change,
@@ -190,7 +292,6 @@ final class GpuWalls implements AutoCloseable {
                 #version 330 core
                 %s
                 uniform sampler2D spans;
-                uniform sampler2D counts;
                 uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
                 uniform float fogOn, maxDist;
                 float rayX, rayY, dk;
@@ -285,7 +386,7 @@ final class GpuWalls implements AutoCloseable {
                         c = y + (c - y) * satBoost;
                     }
                     if (lift != 0.0) c = lift * 255.0 + c * (1.0 - lift);
-                    return vec3(tone(c.r), tone(c.g), tone(c.b)) / 255.0;
+                    return vec3(tone(c.r), tone(c.g), tone(c.b));
                 }
 
                 vec3 unpack(float packed) {
@@ -305,13 +406,43 @@ final class GpuWalls implements AutoCloseable {
 
                 /** Renderer.sky: a vertical gradient over the view's own height, which is not the
                  *  buffer's once there is supersampling or overscan above the horizon. Below the
-                 *  horizon it is Renderer.fillRest's flat haze, which skips the grade entirely. */
+                 *  horizon it is Renderer.fillRest's flat haze, which skips the grade entirely.
+                 *  Levels, 0 to 255, like everything from graded(): a mask blends over the
+                 *  finished pixel with Renderer.mix's byte arithmetic, so the whole of a frame is
+                 *  carried at that scale and divided once at the end. */
                 vec3 sky(int row) {
-                    if (float(row) >= hz) return vec3(58.0, 60.0, 64.0) / 255.0;
+                    if (float(row) >= hz) return vec3(58.0, 60.0, 64.0);
                     float s = clamp((hz - float(row)) / (viewH * 0.9), 0.0, 1.0);
                     return graded(vec3(205.0 - 125.0 * s, 222.0 - 87.0 * s, 238.0 - 28.0 * s));
                 }
 
+                /** Renderer.sideColor: what a vertical face is, shaded. Both a span and a
+                 *  masked surface blended over one are made of exactly this. */
+                vec3 wallColour(int mat, int lm, int rec, float rgb,
+                                float u, float z, float narrow, float sq, float k) {
+                    vec3 L = lm < 0 ? vec3(1.0) : lightAt(lm, u, z);
+                    #ifdef HAS_IMAGES
+                    if (rec >= 0)
+                        return shadeT(rgb, sideImage(rec, u, z, narrow, sq, narrow * foc / dk), k, L);
+                    #endif
+                    return shadeT(rgb, vec3(sideTex(mat, u, z, narrow, sq)), k, L);
+                }
+
+                /** Renderer.flat's operator: a floor, a ceiling, or a shape's top or bottom, at
+                 *  the distance the row puts it. */
+                vec3 planeColour(int mat, int lm, int rec, float rgb, float k0, float t, int row) {
+                    if (!(t > 0.0) || t > maxDist) return shade(rgb, 0.3 * k0);
+                    float wx = camX + rayX * t, wy = camY + rayY * t, f = fog(t);
+                    if (lm >= 0 && emissive(mat, wx, wy)) return shade(16774374.0, f);  // EMISSIVE
+                    vec3 L = lm < 0 ? vec3(1.0) : lightAt(lm, wx, wy);
+                    float k = lm < 0 ? k0 * f : f;
+                    #ifdef HAS_IMAGES
+                    if (rec >= 0) return shadeT(rgb, flatImage(rec, t, row), k, L);
+                    #endif
+                    return shadeT(rgb, vec3(flatTex(mat, t, row)), k, L);
+                }
+
+                %s
                 void main() {
                     int col = int(gl_FragCoord.x);
                     // The column's ray, worked out the way Column.render does, so the floor lands
@@ -324,54 +455,35 @@ final class GpuWalls implements AutoCloseable {
                     // the top one, so the two flips cancel: shade framebuffer row j as row j and
                     // the array that comes back is already the right way up.
                     int row = int(gl_FragCoord.y);
-                    int n = int(texelFetch(counts, ivec2(col, 0), 0).r);
+                    vec2 have = texelFetch(spans, ivec2(0, col), 0).rg;   // the row's header
+                    int n = int(have.x);
+                    vec3 colour = vec3(-1.0);          // nothing has claimed this row yet
                     for (int s = 0; s < n; s++) {
-                        vec4 a = texelFetch(spans, ivec2(s * 4, col), 0);
+                        int at = 1 + s * 4;                  // past the header texel
+                        vec4 a = texelFetch(spans, ivec2(at, col), 0);
                         if (row < int(a.y) || row >= int(a.z)) continue;
-                        vec4 b = texelFetch(spans, ivec2(s * 4 + 1, col), 0);
-                        vec4 c = texelFetch(spans, ivec2(s * 4 + 2, col), 0);
-                        vec4 e = texelFetch(spans, ivec2(s * 4 + 3, col), 0);
+                        vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
+                        vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
+                        vec4 e = texelFetch(spans, ivec2(at + 3, col), 0);
                         int mat = int(a.w), lm = int(b.z), rec = int(e.x);
-                        vec3 L = lm < 0 ? vec3(1.0) : vec3(0.0);
                         if (c.w == 0.0) {
                             float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
-                            if (lm >= 0) L = lightAt(lm, b.x, z);
-                            float k = lm < 0 ? b.w : b.y;
-                            #ifdef HAS_IMAGES
-                            if (rec >= 0) {
-                                frag = vec4(shadeT(c.z, sideImage(rec, b.x, z, c.x, c.y, c.x * foc / dk),
-                                        k, L), 1.0);
-                                return;
-                            }
-                            #endif
-                            frag = vec4(shadeT(c.z, vec3(sideTex(mat, b.x, z, c.x, c.y)), k, L), 1.0);
+                            colour = wallColour(mat, lm, rec, c.z, b.x, z, c.x, c.y,
+                                    lm < 0 ? b.w : b.y);
                         } else {
-                            float t = (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc);
-                            if (!(t > 0.0) || t > maxDist) {
-                                frag = vec4(shade(c.z, 0.3 * b.w), 1.0);
-                            } else {
-                                float wx = camX + rayX * t, wy = camY + rayY * t, f = fog(t);
-                                if (lm >= 0 && emissive(mat, wx, wy)) {
-                                    frag = vec4(shade(16774374.0, f), 1.0);   // Renderer.EMISSIVE
-                                    return;
-                                }
-                                if (lm >= 0) L = lightAt(lm, wx, wy);
-                                float k = lm < 0 ? b.w * f : f;
-                                #ifdef HAS_IMAGES
-                                if (rec >= 0) {
-                                    frag = vec4(shadeT(c.z, flatImage(rec, t, row), k, L), 1.0);
-                                    return;
-                                }
-                                #endif
-                                frag = vec4(shadeT(c.z, vec3(flatTex(mat, t, row)), k, L), 1.0);
-                            }
+                            colour = planeColour(mat, lm, rec, c.z, b.w,
+                                    (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc), row);
                         }
-                        return;
+                        break;
                     }
-                    frag = vec4(sky(row), 1.0);        // no span reaches this row: Renderer.fillRest
+                    if (colour.r < 0.0) colour = sky(row);   // Renderer.fillRest
+                    // Renderer.blendMasked, in the same place: over the finished column.
+                    colour = blendMasks(col, row, int(have.y), colour);
+                    frag = vec4(colour / 255.0, 1.0);
                 }
                 """.formatted(images == null ? "" : "#define HAS_IMAGES 1", GlMaterials.SIDE, GlMaterials.FLAT,
                         tables() + (lights == null ? GpuLights.absent() : lights.glsl())
-                                + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + mats.glsl()));
+                                + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + mats.glsl()),
+                        GlMaterials.MASK + GpuMasks.GLSL);
     }
 }
