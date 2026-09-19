@@ -78,21 +78,25 @@ final class GpuSpans {
      * One wall interval. Called from the column's own thread while it paints, so the only shared
      * thing it touches is the drop counter, and that is only ever a count of something going wrong.
      */
-    void add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb) {
+    void add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb,
+             double fog, int lm) {
         int at = slot(x);
         if (at < 0) return;
         data[at + 4] = (float) u;
+        data[at + 5] = (float) fog;
+        data[at + 6] = lm;
         data[at + 8] = (float) w;
         data[at + 9] = (float) sq;
         head(at, x, y0, y1, mat, light, rgb, 0);
     }
 
     /** One stretch of a floor, a ceiling or a shape's top or bottom. */
-    void addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb) {
+    void addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb, int lm) {
         int at = slot(x);
         if (at < 0) return;
         data[at + 4] = (float) z;
         data[at + 5] = (float) slope;
+        data[at + 6] = lm;
         head(at, x, y0, y1, mat, light, rgb, 1);
     }
 

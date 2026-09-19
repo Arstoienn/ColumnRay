@@ -97,6 +97,7 @@ public final class Main {
     volatile boolean useGpu;
     private GpuWalls gpu;
     private GpuSpans spans;
+    private GpuLights gpuLights;
     private int[] gpuPixels;                                     // only when part of the frame is not ported
     private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
     private final int baseW, baseH;                              // the resolution --size asked for
@@ -477,6 +478,10 @@ public final class Main {
         if (useGpu && (gpu == null || spans == null || spans.columns() != srcW)) {
             if (gpu != null) gpu.close();
             gpu = new GpuWalls(srcW, srcH, srcW);
+            if (lighting != null) {
+                if (gpuLights == null) gpuLights = new GpuLights(lighting);
+                gpu.setLights(gpuLights);
+            }
             spans = new GpuSpans(srcW, srcH);
             gpuPixels = null;
             renderer.captureSpans(spans);
