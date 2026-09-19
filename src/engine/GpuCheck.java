@@ -198,7 +198,7 @@ final class GpuCheck {
                 .formatted(x, y, a & 0xffffff, b & 0xffffff);
         float[] sp = spans.data();
         for (int i = 0; i < spans.count()[x]; i++) {
-            int at = (x * GpuSpans.MAX_PER_COLUMN + i) * GpuSpans.FLOATS;
+            int at = (x * spans.perColumn() + i) * GpuSpans.FLOATS;
             if (y < (int) sp[at + 1] || y >= (int) sp[at + 2]) continue;
             return head + (sp[at + 11] == 0
                     ? "      wall  mat %.0f  u %.4f  z %.4f  w %.6f  sq %.4f  light %.4f  rgb %06x  rec %.0f"

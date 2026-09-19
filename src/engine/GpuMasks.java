@@ -46,13 +46,15 @@ final class GpuMasks {
     static final int TEXELS = 4, FLOATS = TEXELS * 4;
 
     private final int columns;
-    private final float[] data;
+    private float[] data;
+    private int perColumn;
     private final int[] count;
     private volatile int dropped;
 
     GpuMasks(int columns) {
         this.columns = columns;
-        this.data = new float[columns * MAX_PER_COLUMN * FLOATS];
+        this.perColumn = Math.min(16, MAX_PER_COLUMN);
+        this.data = new float[columns * perColumn * FLOATS];
         this.count = new int[columns];
     }
 
@@ -71,7 +73,14 @@ final class GpuMasks {
      *  marks their rows skipped instead, exactly as it does for a surface the card cannot draw. */
     int dropped() { return dropped; }
 
+    int perColumn() { return perColumn; }
+
+    /** Between frames, and as {@link GpuSpans#reset}: twice the room after a column ran out. */
     void reset() {
+        if (dropped > 0 && perColumn < MAX_PER_COLUMN) {
+            perColumn = Math.min(MAX_PER_COLUMN, perColumn * 2);
+            data = new float[columns * perColumn * FLOATS];
+        }
         java.util.Arrays.fill(count, 0);
         dropped = 0;
     }
@@ -121,11 +130,11 @@ final class GpuMasks {
 
     private int slot(int x, int y0, int y1, int kind) {
         int n = count[x];
-        if (n >= MAX_PER_COLUMN) {
+        if (n >= perColumn) {
             dropped++;
             return -1;
         }
-        int at = (x * MAX_PER_COLUMN + n) * FLOATS;
+        int at = (x * perColumn + n) * FLOATS;
         for (int i = 0; i < FLOATS; i++) data[at + i] = 0;
         data[at] = x;
         data[at + 1] = y0;

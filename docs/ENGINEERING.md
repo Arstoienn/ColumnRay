@@ -250,15 +250,22 @@ rather than pulling the pixels back through the bus.
 
 ### The two things to know before trusting a number
 
-**An odd buffer height makes the two pictures disagree more.** With an even height the horizon
-sits on an integer row and a pixel's height is a half-integer number of pixel-sizes above it;
-with an odd height it is a whole number, and whole numbers land exactly on the boundaries of the
-procedural materials - plank lines every sixth of a metre, brick courses every quarter. Exactly
-on a boundary, float and double fall on opposite sides. School's worst difference is 11 of 255 at
-720 and 37 at 719 or 721; Haven's is 3 and 74. The overscan buffer the pitch warp asks for is an
-arbitrary integer, so this is reachable in the game and not only in the test. Rounding the
-overscan up to an even number of rows would avoid it, at the price of new golden frames, because
-the buffer height is what sets the horizon.
+**A horizon on a half-integer row makes the two pictures disagree more.** A pixel's height is
+`eye - (row + 0.5 - hz) * pixelSize`. When `hz` is a whole number that offset is a half-integer
+and the heights fall between things; when `hz` ends in .5 the offset is a whole number, and whole
+numbers land exactly on the boundaries of the procedural materials - plank lines every sixth of a
+metre, brick courses every quarter. Exactly on a boundary, float and double fall on opposite
+sides and the two pictures pick different sides of a hard edge.
+
+`GpuCheck` makes that happen by asking for an odd buffer height, because it puts the horizon at
+`h / 2`: school's worst difference is 11 of 255 at 720 and 37 at 719 or 721, Haven's 3 and 74.
+**The game does not reach it that way.** `Warp.place` sets `c.pitch = hz - srcH / 2.0` and the
+renderer then computes `srcH / 2.0 + c.pitch`, so the buffer height cancels exactly and the
+horizon is the warp's own `vHi + 2` whatever size the overscan grew to. Rounding the overscan to
+an even number of rows would therefore change nothing, which is worth writing down because it is
+the fix this section first recommended. What would actually help is making the material
+boundaries themselves agree - snapping the scaled coordinate before `floor` and `frac` with the
+same epsilon on both sides - and that is a change to `Materials`, not to the buffer.
 
 **The frame-time tail on Haven is garbage collection, not the renderer.** The median frame is
 8 to 12 ms and p99 is 32 to 37; `-Xlog:gc` shows G1 mixed pauses of 40 to 174 ms on a live heap

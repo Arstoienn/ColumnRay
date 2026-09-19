@@ -109,6 +109,8 @@ final class Gl {
     private static final MethodHandle PIXEL_STORE = fn("glPixelStorei", FunctionDescriptor.ofVoid(I32, I32));
     private static final MethodHandle DELETE_TEXTURES = fn("glDeleteTextures", FunctionDescriptor.ofVoid(I32, PTR));
     private static final MethodHandle DELETE_FB = fn("glDeleteFramebuffers", FunctionDescriptor.ofVoid(I32, PTR));
+    private static final MethodHandle DELETE_VAO = fn("glDeleteVertexArrays", FunctionDescriptor.ofVoid(I32, PTR));
+    private static final MethodHandle DELETE_PROGRAM = fn("glDeleteProgram", FunctionDescriptor.ofVoid(I32));
 
     private Gl() {}
 
@@ -267,6 +269,10 @@ final class Gl {
     static void deleteTexture(int name) { free(DELETE_TEXTURES, name); }
 
     static void deleteFramebuffer(int name) { free(DELETE_FB, name); }
+
+    static void deleteVertexArray(int name) { free(DELETE_VAO, name); }
+
+    static void deleteProgram(int name) { call(DELETE_PROGRAM, name); }
 
     private static void free(MethodHandle del, int name) {
         try (Arena arena = Arena.ofConfined()) {
