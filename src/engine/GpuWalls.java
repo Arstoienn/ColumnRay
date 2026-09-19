@@ -38,6 +38,11 @@ final class GpuWalls implements AutoCloseable {
         this(Arena.ofShared(), w, h, columns, true);
     }
 
+    private GpuLights lights;
+
+    /** The baked lightmaps, or null for the flat model. Spans say which of the two they are. */
+    void setLights(GpuLights l) { lights = l; }
+
     GpuWalls(Arena arena, int w, int h, int columns) {
         this(arena, w, h, columns, false);
     }
@@ -75,6 +80,8 @@ final class GpuWalls implements AutoCloseable {
         Gl.useProgram(program);
         Gl.uniform(program, "spans", 0);
         Gl.uniform(program, "counts", 1);
+        Gl.uniform(program, "lightAtlas", 2);
+        Gl.uniform(program, "lightRecords", 3);
         Gl.uniform(program, "height", (float) h);
         Gl.uniform(program, "satBoost", (float) Renderer.satBoost);
         Gl.uniform(program, "lift", (float) Renderer.lift);
@@ -103,6 +110,7 @@ final class GpuWalls implements AutoCloseable {
         Gl.activeTexture(1);
         Gl.bindTexture(countTex);
         Gl.texSubImage(columns, 1, Gl.RGBA, Gl.FLOAT, countBuf);
+        if (lights != null) lights.bind();
         Gl.bindFramebuffer(frame);
         Gl.viewport(w, h);
         Gl.useProgram(program);
@@ -224,12 +232,15 @@ final class GpuWalls implements AutoCloseable {
                     return vec3(tone(c.r), tone(c.g), tone(c.b)) / 255.0;
                 }
 
-                /** Renderer.shade: the surface's colour times a shading factor, then the grade. */
-                vec3 shade(float packed, float k) {
-                    return graded(vec3(floor(packed / 65536.0),
-                                       floor(mod(packed / 256.0, 256.0)),
-                                       mod(packed, 256.0)) * k);
+                vec3 unpack(float packed) {
+                    return vec3(floor(packed / 65536.0), floor(mod(packed / 256.0, 256.0)), mod(packed, 256.0));
                 }
+
+                /** Renderer.shade: the surface's colour times a shading factor, then the grade. */
+                vec3 shade(float packed, float k) { return graded(unpack(packed) * k); }
+
+                /** Renderer.shadeL: the same, times a coloured level off a baked lightmap. */
+                vec3 shadeL(float packed, float k, vec3 L) { return graded(unpack(packed) * k * L); }
 
                 /** Renderer.sky: a vertical gradient over the view's own height, which is not the
                  *  buffer's once there is supersampling or overscan above the horizon. Below the
@@ -258,19 +269,33 @@ final class GpuWalls implements AutoCloseable {
                         if (row < int(a.y) || row >= int(a.z)) continue;
                         vec4 b = texelFetch(spans, ivec2(s * 3 + 1, col), 0);
                         vec4 c = texelFetch(spans, ivec2(s * 3 + 2, col), 0);
+                        int mat = int(a.w), lm = int(b.z);
                         if (c.w == 0.0) {
                             float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
-                            frag = vec4(shade(c.z, sideTex(int(a.w), b.x, z, c.x, c.y) * b.w), 1.0);
+                            float f = sideTex(mat, b.x, z, c.x, c.y);
+                            frag = vec4(lm < 0
+                                    ? shade(c.z, f * b.w)
+                                    : shadeL(c.z, f * b.y, lightAt(lm, b.x, z)), 1.0);
                         } else {
                             float t = (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc);
-                            frag = vec4(!(t > 0.0) || t > maxDist
-                                    ? shade(c.z, 0.3 * b.w)
-                                    : shade(c.z, flatTex(int(a.w), t, row) * b.w * fog(t)), 1.0);
+                            if (!(t > 0.0) || t > maxDist) {
+                                frag = vec4(shade(c.z, 0.3 * b.w), 1.0);
+                            } else {
+                                float wx = camX + rayX * t, wy = camY + rayY * t, f = fog(t);
+                                if (lm < 0) {
+                                    frag = vec4(shade(c.z, flatTex(mat, t, row) * b.w * f), 1.0);
+                                } else if (emissive(mat, wx, wy)) {
+                                    frag = vec4(shade(16774374.0, f), 1.0);   // Renderer.EMISSIVE
+                                } else {
+                                    frag = vec4(shadeL(c.z, flatTex(mat, t, row) * f,
+                                            lightAt(lm, wx, wy)), 1.0);
+                                }
+                            }
                         }
                         return;
                     }
                     frag = vec4(sky(row), 1.0);        // no span reaches this row: Renderer.fillRest
                 }
-                """.formatted(GlMaterials.SIDE, GlMaterials.FLAT, tables());
+                """.formatted(GlMaterials.SIDE, GlMaterials.FLAT, tables() + GpuLights.GLSL);
     }
 }

@@ -48,15 +48,19 @@ final class GpuCheck {
             }
         }
         World world = World.load(map);
+        boolean lit = !Boolean.getBoolean("gpucheck.flat");
+        Lighting lighting = lit ? Lighting.bake(world) : null;
         int[] cpu = new int[w * h], gpu = new int[w * h];
         Renderer renderer = new Renderer(world, w, h, cpu);
+        if (lighting != null) renderer.setLighting(lighting);
         GpuSpans spans = new GpuSpans(w, h);
         renderer.captureSpans(spans);
 
         try (Arena arena = Arena.ofConfined()) {
             GpuWalls walls = new GpuWalls(arena, w, h, w);
+            if (lighting != null) walls.setLights(new GpuLights(lighting));
             System.out.printf("GL %s on %s%n", Gl.version(), Gl.device());
-            System.out.printf("%s at %dx%d, flat shading, walls only%n%n", map, w, h);
+            System.out.printf("%s at %dx%d, %s%n%n", map, w, h, lit ? "baked lighting" : "flat shading");
             System.out.printf("%-12s %8s %8s %8s %8s %8s %8s %8s%n",
                     "view", "pixels", "worst", "mean", "over 2", "masked", "cpu ms", "gpu ms");
             int worstAll = 0;
@@ -71,6 +75,7 @@ final class GpuCheck {
                 cam.dirX = Math.cos(heading);
                 cam.dirY = Math.sin(heading);
                 cam.eye = Double.parseDouble(v[4]) + Player.EYE_STAND;
+                cam.baked = lighting != null;
                 renderer.render(cam);
                 walls.draw(spans, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);
 
