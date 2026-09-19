@@ -109,6 +109,24 @@ final class GpuWalls implements AutoCloseable {
         back = arena.allocate((long) w * h * 4);
     }
 
+    /**
+     * Where a frame's time goes on the card's side, with -Dgpu.stats=true.
+     *
+     * Four numbers, because there are four things it does and they fail in different ways:
+     * packing the lists out of the renderer's arrays, handing them to the driver, the draw
+     * itself, and reading the picture back. The readback is the one to watch - it is a stall by
+     * construction, the CPU waiting for a frame it cannot start the next one without.
+     */
+    private static final boolean STATS = Boolean.getBoolean("gpu.stats");
+    private long packNs, uploadNs, drawNs, readNs, frames;
+
+    void stats() {
+        if (frames == 0) return;
+        System.out.printf("gpu %d frames: pack %.2f ms  upload %.2f  draw %.2f  read back %.2f%n",
+                frames, packNs / 1e6 / frames, uploadNs / 1e6 / frames,
+                drawNs / 1e6 / frames, readNs / 1e6 / frames);
+    }
+
     private void link() {
         program = Gl.program(VERT, fragment());
         Gl.useProgram(program);
@@ -137,6 +155,7 @@ final class GpuWalls implements AutoCloseable {
      *  Pixels no span covers are the sky, exactly as Renderer.fillRest leaves them. */
     void draw(GpuSpans spans, GpuMasks masks, int[] into, Renderer.Camera cam, double horizon,
               double focal, int viewH) {
+        long t0 = STATS ? System.nanoTime() : 0;
         int[] count = spans.count(), maskCount = masks.count();
         int spanW = pack(spans.data(), count, GpuSpans.MAX_PER_COLUMN, GpuSpans.TEXELS,
                 spans.most(), spanBuf, HEADER) + HEADER;
@@ -147,6 +166,7 @@ final class GpuWalls implements AutoCloseable {
             spanBuf.setAtIndex(ValueLayout.JAVA_FLOAT, at, count[x]);
             spanBuf.setAtIndex(ValueLayout.JAVA_FLOAT, at + 1, maskCount[x]);
         }
+        long t1 = STATS ? System.nanoTime() : 0;
         Gl.activeTexture(0);
         Gl.bindTexture(spanTex);
         if (spanW > 0) Gl.texSubImage(spanW, columns, Gl.RGBA, Gl.FLOAT, spanBuf);
@@ -170,11 +190,20 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "dirY", (float) cam.dirY);
         Gl.uniform(program, "fogOn", Renderer.fogOn ? 1f : 0f);
         Gl.uniform(program, "maxDist", (float) Renderer.MAX_DIST);
+        long t2 = STATS ? System.nanoTime() : 0;
         Gl.clear();
         Gl.drawFullScreen();
         Gl.finish();
+        long t3 = STATS ? System.nanoTime() : 0;
         Gl.readPixels(w, h, back);
         MemorySegment.copy(back, ValueLayout.JAVA_INT, 0, into, 0, w * h);
+        if (STATS) {
+            packNs += t1 - t0;
+            uploadNs += t2 - t1;
+            drawNs += t3 - t2;
+            readNs += System.nanoTime() - t3;
+            frames++;
+        }
     }
 
     /**
