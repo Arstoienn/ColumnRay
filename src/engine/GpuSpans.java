@@ -34,21 +34,27 @@ final class GpuSpans {
     static final int MAX_PER_COLUMN = 512;
     static final int TEXELS = 4, FLOATS = TEXELS * 4;
 
-    private final int columns;
-    private final float[] data;
+    private final int columns, rows;
+    private float[] data;
+    private int perColumn;
     private final int[] count;
     private final boolean[] blended;
+
     private volatile int dropped;
     private volatile boolean anySkip;
 
     GpuSpans(int columns, int rows) {
         this.columns = columns;
-        this.data = new float[columns * MAX_PER_COLUMN * FLOATS];
+        this.rows = rows;
+        this.perColumn = Math.min(32, MAX_PER_COLUMN);
+        this.data = new float[columns * perColumn * FLOATS];
         this.count = new int[columns];
         this.blended = new boolean[columns * rows];
     }
 
     int columns() { return columns; }
+
+    int rows() { return rows; }
 
     float[] data() { return data; }
 
@@ -78,8 +84,22 @@ final class GpuSpans {
      *  picture is the whole frame and it can be read straight into the render buffer. */
     boolean anySkipped() { return anySkip; }
 
-    /** Between frames, on one thread: the renderer is not running. */
+    int perColumn() { return perColumn; }
+
+    /**
+     * Between frames, on one thread: the renderer is not running.
+     *
+     * A column that ran out last frame gets twice the room before the next one, up to the cap.
+     * Starting at the worst case instead would be forty megabytes for a frame that uses eight
+     * intervals a column, and a frame that outgrows its room is not wrong - its rows go back to
+     * the CPU, which is what {@link #slot} is for - so one frame of that is a fair price for not
+     * holding Haven's worst camera in memory while drawing school.
+     */
     void reset() {
+        if (dropped > 0 && perColumn < MAX_PER_COLUMN) {
+            perColumn = Math.min(MAX_PER_COLUMN, perColumn * 2);
+            data = new float[columns * perColumn * FLOATS];
+        }
         java.util.Arrays.fill(count, 0);
         java.util.Arrays.fill(blended, false);
         dropped = 0;
@@ -124,7 +144,7 @@ final class GpuSpans {
     private boolean joins(int at, int x, int y0, int y1, int mat, double light, int rgb, int kind) {
         if (count[x] == 0) return false;
         int prev = at - FLOATS;
-        if (prev < x * MAX_PER_COLUMN * FLOATS) return false;
+        if (prev < x * perColumn * FLOATS) return false;
         if (data[prev + 11] != kind || data[prev + 3] != mat || data[prev + 10] != rgb
                 || data[prev + 7] != (float) light) return false;
         for (int i = 4; i <= 9; i++) if (data[prev + i] != data[at + i]) return false;
@@ -150,12 +170,12 @@ final class GpuSpans {
      *  to the CPU rather than losing them: the card would otherwise draw sky through a wall. */
     private int slot(int x, int y0, int y1) {
         int n = count[x];
-        if (n >= MAX_PER_COLUMN) {
+        if (n >= perColumn) {
             dropped++;
             for (int y = y0; y < y1; y++) skip(x, y);
             return -1;
         }
-        int at = (x * MAX_PER_COLUMN + n) * FLOATS;
+        int at = (x * perColumn + n) * FLOATS;
         for (int i = 0; i < FLOATS; i++) data[at + i] = 0;
         return at;
     }

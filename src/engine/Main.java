@@ -494,7 +494,11 @@ public final class Main {
             renderer.resize(srcW, srcH, src);
         }
         warp.place(renderer.centerX(), srcW, srcH, c);
-        if (useGpu && (gpu == null || spans == null || spans.columns() != srcW)) {
+        // Both dimensions: the overscan grows with pitch, and there is no rule that says the
+        // width has to grow with the height. A height that changed on its own used to leave the
+        // card drawing at the old size and GpuSpans' skip mask too short for the new one.
+        if (useGpu && (gpu == null || spans == null
+                || spans.columns() != srcW || spans.rows() != srcH)) {
             if (gpu != null) gpu.close();
             gpu = new GpuWalls(srcW, srcH, srcW);
             if (lighting != null) {

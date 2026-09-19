@@ -45,8 +45,15 @@ final class GpuWalls implements AutoCloseable {
             """;
 
     private int program;                       // built on the first draw: its text depends on the images
+    private int vao;
     private final int target, frame, spanTex, maskTex, w, h, columns;
-    private final MemorySegment spanBuf, maskBuf, back;
+    private MemorySegment spanBuf, maskBuf;
+    private final MemorySegment back;
+    private final Arena buffers;
+    /** How wide the span and mask textures are, in texels: a high-water mark, not a worst case.
+     *  School fills eight span slots a column out of five hundred it may have, and holding the
+     *  worst case would be a hundred and twenty megabytes of card memory to leave untouched. */
+    private int spanCap, maskCap;
     private final Arena own;
 
     /** For a window, which needs the buffers to outlive the call that made them. */
@@ -74,6 +81,7 @@ final class GpuWalls implements AutoCloseable {
 
     private GpuWalls(Arena arena, int w, int h, int columns, boolean owns) {
         this.own = owns ? arena : null;
+        this.buffers = arena;
         this.w = w;
         this.h = h;
         this.columns = columns;
@@ -86,26 +94,20 @@ final class GpuWalls implements AutoCloseable {
         frame = Gl.framebuffer();
         Gl.bindFramebuffer(frame);
         Gl.attach(target);
-        Gl.bindVertexArray(Gl.vertexArray());
+        vao = Gl.vertexArray();
+        Gl.bindVertexArray(vao);
         Gl.viewport(w, h);
 
-        int spanW = GpuSpans.MAX_PER_COLUMN * GpuSpans.TEXELS + HEADER;
         spanTex = Gl.texture();
         Gl.activeTexture(0);
         Gl.bindTexture(spanTex);
-        Gl.texImage(Gl.RGBA32F, spanW, columns, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
         Gl.texUnfiltered();
         maskTex = Gl.texture();
         Gl.activeTexture(MASK_UNIT);
         Gl.bindTexture(maskTex);
-        Gl.texImage(Gl.RGBA32F, GpuMasks.MAX_PER_COLUMN * GpuMasks.TEXELS, columns,
-                Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
         Gl.texUnfiltered();
 
 
-        spanBuf = arena.allocate((long) columns
-                * (GpuSpans.MAX_PER_COLUMN * GpuSpans.FLOATS + HEADER * 4) * Float.BYTES);
-        maskBuf = arena.allocate((long) columns * GpuMasks.MAX_PER_COLUMN * GpuMasks.FLOATS * Float.BYTES);
         back = arena.allocate((long) w * h * 4);
     }
 
@@ -143,11 +145,15 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "lift", (float) Renderer.lift);
     }
 
+    /** Main builds a new one of these whenever the overscan grows, so everything this made has
+     *  to go back - a program and a vertex array as much as the textures. */
     @Override public void close() {
         Gl.deleteTexture(target);
         Gl.deleteTexture(spanTex);
         Gl.deleteTexture(maskTex);
         Gl.deleteFramebuffer(frame);
+        Gl.deleteVertexArray(vao);
+        if (program != 0) Gl.deleteProgram(program);
         if (own != null) own.close();
     }
 
@@ -157,9 +163,17 @@ final class GpuWalls implements AutoCloseable {
               double focal, int viewH) {
         long t0 = STATS ? System.nanoTime() : 0;
         int[] count = spans.count(), maskCount = masks.count();
-        int spanW = pack(spans.data(), count, GpuSpans.MAX_PER_COLUMN, GpuSpans.TEXELS,
+        int wantSpan = Math.max(1, spans.most()) * GpuSpans.TEXELS + HEADER;
+        int wantMask = Math.max(1, masks.most()) * GpuMasks.TEXELS;
+        if (wantSpan > spanCap) spanCap = grow(spanTex, 0, wantSpan);
+        if (wantMask > maskCap) maskCap = grow(maskTex, MASK_UNIT, wantMask);
+        if (spanBuf == null || spanCap * 4L * columns * Float.BYTES > spanBuf.byteSize())
+            spanBuf = buffers.allocate((long) spanCap * 4 * columns * Float.BYTES);
+        if (maskBuf == null || maskCap * 4L * columns * Float.BYTES > maskBuf.byteSize())
+            maskBuf = buffers.allocate((long) maskCap * 4 * columns * Float.BYTES);
+        int spanW = pack(spans.data(), count, spans.perColumn(), GpuSpans.TEXELS,
                 spans.most(), spanBuf, HEADER) + HEADER;
-        int maskW = pack(masks.data(), maskCount, GpuMasks.MAX_PER_COLUMN, GpuMasks.TEXELS,
+        int maskW = pack(masks.data(), maskCount, masks.perColumn(), GpuMasks.TEXELS,
                 masks.most(), maskBuf, 0);
         for (int x = 0; x < columns; x++) {          // the header: how many of each this column has
             long at = (long) x * spanW * 4;
@@ -204,6 +218,19 @@ final class GpuWalls implements AutoCloseable {
             readNs += System.nanoTime() - t3;
             frames++;
         }
+    }
+
+    /** Make a per-column texture at least this many texels wide, and say how wide it now is.
+     *  Doubling rather than fitting exactly, so a frame that grows by one does not reallocate. */
+    private int grow(int texture, int unit, int want) {
+        int cap = 8;
+        while (cap < want) cap *= 2;
+        Gl.activeTexture(unit);
+        Gl.bindTexture(texture);
+        Gl.texImage(Gl.RGBA32F, cap, columns, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
+        Gl.texUnfiltered();
+        Gl.check("a per-column texture, %dx%d".formatted(cap, columns));
+        return cap;
     }
 
     /**
