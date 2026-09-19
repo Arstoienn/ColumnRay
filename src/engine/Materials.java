@@ -104,6 +104,20 @@ final class Materials {
             for (int i = 1; i < levels.length; i++) levels[i] = levels[i - 1].half();
         }
 
+        /** The mip chain, for a GPU that has to be handed the same levels: it cannot build them
+         *  itself, because it would average in linear light where these were averaged in the
+         *  PNG's own sRGB values. */
+        int levelCount() { return levels.length; }
+
+        int levelW(int i) { return levels[i].sx; }
+
+        int levelH(int i) { return levels[i].sy; }
+
+        float[] levelRgb(int i) { return levels[i].rgb; }
+
+        /** The divisor that turns a texel into a multiplier on the shape's colour. */
+        double mean(int c) { return mean[c]; }
+
         /** Wrapped bilinear samples, blended between mip levels. out has six scratch components;
          *  the first three receive the RGB multipliers. w is in repetitions of the tile. */
         private void sample(double u, double v, double w, double[] out) {

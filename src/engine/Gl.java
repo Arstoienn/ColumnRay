@@ -38,7 +38,8 @@ final class Gl {
             TEXTURE0 = 0x84C0, FRAGMENT_SHADER = 0x8B30, VERTEX_SHADER = 0x8B31,
             COMPILE_STATUS = 0x8B81, LINK_STATUS = 0x8B82, FRAMEBUFFER = 0x8D40,
             FRAMEBUFFER_COMPLETE = 0x8CD5, COLOR_ATTACHMENT0 = 0x8CE0, RENDERER = 0x1F01,
-            VERSION = 0x1F02;
+            VERSION = 0x1F02, TEXTURE_2D_ARRAY = 0x8C1A, TEXTURE_MAX_LEVEL = 0x813D,
+            RGB8 = 0x8051, UNPACK_ALIGNMENT = 0x0CF5;
 
     /** CGL pixel format attributes: a core profile, accelerated, and no drawable at all. */
     private static final int PFA_ACCELERATED = 73, PFA_PROFILE = 99,
@@ -107,6 +108,11 @@ final class Gl {
             FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, PTR));
     private static final MethodHandle GET_STRING = fn("glGetString", FunctionDescriptor.of(PTR, I32));
     private static final MethodHandle GET_ERROR = fn("glGetError", FunctionDescriptor.of(I32));
+    private static final MethodHandle TEX_IMAGE_3D = fn("glTexImage3D",
+            FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, I32, I32, I32, PTR));
+    private static final MethodHandle TEX_SUB_IMAGE_3D = fn("glTexSubImage3D",
+            FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, PTR));
+    private static final MethodHandle PIXEL_STORE = fn("glPixelStorei", FunctionDescriptor.ofVoid(I32, I32));
     private static final MethodHandle DELETE_TEXTURES = fn("glDeleteTextures", FunctionDescriptor.ofVoid(I32, PTR));
     private static final MethodHandle DELETE_FB = fn("glDeleteFramebuffers", FunctionDescriptor.ofVoid(I32, PTR));
 
@@ -169,6 +175,30 @@ final class Gl {
     }
 
     static void generateMipmap() { call(GEN_MIPMAP, TEXTURE_2D); }
+
+    static void bindArray(int name) { call(BIND_TEXTURE, TEXTURE_2D_ARRAY, name); }
+
+    /** Make room for every mip level of an array texture. glTexStorage3D would say this in one
+     *  call, but it is GL 4.2 and macOS stops at 4.1. */
+    static void arrayLevels(int levels, int w, int h, int layers) {
+        call(PIXEL_STORE, UNPACK_ALIGNMENT, 1);                 // three bytes a texel, rows unpadded
+        for (int i = 0; i < levels; i++)
+            call(TEX_IMAGE_3D, TEXTURE_2D_ARRAY, i, RGB8, Math.max(1, w >> i), Math.max(1, h >> i),
+                    layers, 0, RGB, UNSIGNED_BYTE, MemorySegment.NULL);
+    }
+
+    static void arrayLevel(int level, int layer, int w, int h, MemorySegment pixels) {
+        call(TEX_SUB_IMAGE_3D, TEXTURE_2D_ARRAY, level, 0, 0, layer, w, h, 1, RGB, UNSIGNED_BYTE, pixels);
+    }
+
+    /** Trilinear and wrapping: the same filter Materials.Level does by hand. */
+    static void arrayFiltering(int levels) {
+        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_MIN_FILTER, LINEAR_MIPMAP_LINEAR);
+        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_MAG_FILTER, LINEAR);
+        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_WRAP_S, REPEAT);
+        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_WRAP_T, REPEAT);
+        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_MAX_LEVEL, levels - 1);
+    }
 
     static void bindFramebuffer(int name) { call(BIND_FB, FRAMEBUFFER, name); }
 
