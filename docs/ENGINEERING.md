@@ -169,16 +169,6 @@ Cost scales with N squared, as it must - `--ss 2` is four times the rays. The cl
 rooflines against the sky and the speckle in the ceiling-panel and stone textures, which alias
 badly without it.
 
-`--shot` also writes `a-rays.png`, the matching ray view.
-
-Controls: WASD to move, drag the mouse or use the arrow keys to look (pitch is clamped to +/-30 deg),
-Q / E to turn, Space to jump, C to crouch, Shift to run, M to toggle the minimap, Esc to quit.
-
-- `[` `]` (or `-` `=`): change the field of view
-- `F`: fisheye comparison - project by straight-line distance instead (the wrong way, on purpose)
-- `P`: pitch comparison - look up / down by y-shearing instead of a true tilt (the old way)
-- `R`: show / hide the ray view
-
 ## Texture filtering
 
 A texture drawn by sampling it once per pixel falls apart at a distance. One pixel of a far wall
@@ -280,12 +270,21 @@ vertical line in the world, so it converges like every other vertical.
 | `src/engine/Renderer.java` | camera, projection, DDA grid walk, interval filling, region boundaries, shading |
 | `src/engine/Geometry.java` | ray vs segment / circle / convex polygon; distance helpers for collision |
 | `src/engine/World.java` | region and shape data, JSON loading, acceleration grid, point queries |
-| `src/engine/Materials.java` | procedural textures (to be replaced by image textures and normal maps) |
+| `src/engine/Materials.java` | procedural and image textures, mip levels, anisotropic filtering, masks |
 | `src/engine/Lighting.java` | the baked lightmaps: sun, sky, lamps, shadows and bounced light |
+| `src/engine/LightCache.java` | those lightmaps on disk, keyed by the map, the settings and the bake's own code |
 | `src/engine/Occluder.java` | line of sight and nearest hit for a ray anywhere in the world |
-| `src/engine/Main.java` | window, input, player physics (steps, jumping, crouching), HUD, minimap |
+| `src/engine/Main.java` | the window, the frame loop, and the buffers between the two |
+| `src/engine/Options.java` | the command line, read once into one object |
+| `src/engine/Player.java` | movement, gravity, steps and collision |
+| `src/engine/Warp.java` | the pitch warp: the tilted view resampled from the upright one |
+| `src/engine/Hud.java` | the overlay text and the minimap, drawn over the frame |
+| `src/engine/Minimap.java` | the minimap itself, flooded from walkable space |
+| `src/engine/Capture.java` | the headless modes: `--bench`, `--shot`, `--shots`, `--verify` |
+| `src/engine/DynamicResolution.java` | the render scale, picked from measured frame time |
 | `src/engine/RayView.java` | the top-down ray view window |
 | `src/engine/Keys.java` | physical key state: the controls go by where a key sits, not by its letter |
+| `src/engine/Hash.java` | digests of a frame and of a bake, for the golden test |
 | `src/engine/Json.java` | minimal JSON parser (`//` comments allowed) |
 | `maps/school.json` | the demo map |
 
