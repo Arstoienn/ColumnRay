@@ -19,7 +19,7 @@ final class Options {
     String shot, shots, verify;
     /** --shot's optional "x y heading pitch [column]". */
     double[] at;
-    boolean bench, shear, flat;
+    boolean bench, shear, flat, gpu;
     int w = Main.DEFAULT_W, h = Main.DEFAULT_H, ss = 1;
     int winW = Main.DEFAULT_WINDOW_W, winH = Main.DEFAULT_WINDOW_H;
     int targetFps = 60;
@@ -46,6 +46,8 @@ final class Options {
                 bench = true;
             } else if (args[i].equals("--shear")) {
                 shear = true;
+            } else if (args[i].equals("--gpu")) {
+                gpu = true;
             } else if (args[i].equals("--flat")) {
                 flat = true;
             } else if (args[i].equals("--size")) {
@@ -134,6 +136,7 @@ final class Options {
         System.err.println("  --window  window size; the render is scaled up to it (default " + Main.DEFAULT_WINDOW_W + "x" + Main.DEFAULT_WINDOW_H + ", fitted to the screen)");
         System.err.println("  --feet  starting floor height in metres, to begin on an upper storey (e.g. 3.6)");
         System.err.println("  --shear look up / down the old way (y-shearing) instead of true perspective");
+        System.err.println("  --gpu   shade the frame on the graphics card (the CPU still casts every ray)");
         System.err.println("  --flat  skip baking the lightmaps and use the old flat lighting");
         System.err.println("  --ss    supersampling factor 1-8: renders at size*N and averages down (default 1).");
         System.err.println("          Rays cast per frame = width * N.");

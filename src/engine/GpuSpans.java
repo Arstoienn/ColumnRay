@@ -27,13 +27,14 @@ package engine;
  */
 final class GpuSpans {
     static final int MAX_PER_COLUMN = 64;
-    static final int TEXELS = 3, FLOATS = TEXELS * 4;
+    static final int TEXELS = 4, FLOATS = TEXELS * 4;
 
     private final int columns;
     private final float[] data;
     private final int[] count;
     private final boolean[] blended;
     private volatile int dropped;
+    private volatile boolean anySkip;
 
     GpuSpans(int columns, int rows) {
         this.columns = columns;
@@ -50,39 +51,54 @@ final class GpuSpans {
 
     int dropped() { return dropped; }
 
-    /** A pixel an alpha-masked surface - a tree, a railing - was mixed over after the walls were
-     *  painted. The card is not given those yet, so a comparison has to leave them out rather
-     *  than count the CPU's foliage as the GPU getting the wall wrong. */
-    void blend(int x, int y) { blended[y * columns + x] = true; }
+    /** A pixel the card was not given: a surface whose shading is not ported yet - an alpha
+     *  mask blended over the finished picture, an image texture, a lightmapped wall. Marking
+     *  them is what lets a comparison say "these are not done" instead of counting them as the
+     *  GPU getting a wall wrong, and the count going to zero is what finishing looks like. */
+    void skip(int x, int y) {
+        blended[y * columns + x] = true;
+        anySkip = true;
+    }
 
-    boolean wasBlended(int x, int y) { return blended[y * columns + x]; }
+    boolean skipped(int x, int y) { return blended[y * columns + x]; }
+
+    /** Did this frame paint anything the card was not given? When nothing was, the card's
+     *  picture is the whole frame and it can be read straight into the render buffer. */
+    boolean anySkipped() { return anySkip; }
 
     /** Between frames, on one thread: the renderer is not running. */
     void reset() {
         java.util.Arrays.fill(count, 0);
         java.util.Arrays.fill(blended, false);
         dropped = 0;
+        anySkip = false;
     }
 
     /**
      * One wall interval. Called from the column's own thread while it paints, so the only shared
      * thing it touches is the drop counter, and that is only ever a count of something going wrong.
      */
-    void add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb) {
-        int at = slot(x);
+    void add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb,
+             double fog, int lm, int tex) {
+        int at = slot(x, y0, y1);
         if (at < 0) return;
         data[at + 4] = (float) u;
+        data[at + 5] = (float) fog;
+        data[at + 6] = lm;
         data[at + 8] = (float) w;
         data[at + 9] = (float) sq;
+        data[at + 12] = tex;
         head(at, x, y0, y1, mat, light, rgb, 0);
     }
 
     /** One stretch of a floor, a ceiling or a shape's top or bottom. */
-    void addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb) {
-        int at = slot(x);
+    void addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb, int lm, int tex) {
+        int at = slot(x, y0, y1);
         if (at < 0) return;
         data[at + 4] = (float) z;
         data[at + 5] = (float) slope;
+        data[at + 6] = lm;
+        data[at + 12] = tex;
         head(at, x, y0, y1, mat, light, rgb, 1);
     }
 
@@ -96,6 +112,7 @@ final class GpuSpans {
         if (data[prev + 11] != kind || data[prev + 3] != mat || data[prev + 10] != rgb
                 || data[prev + 7] != (float) light) return false;
         for (int i = 4; i <= 9; i++) if (data[prev + i] != data[at + i]) return false;
+        if (data[prev + 12] != data[at + 12]) return false;
         if (data[prev + 2] == y0) { data[prev + 2] = y1; return true; }
         if (data[prev + 1] == y1) { data[prev + 1] = y0; return true; }
         return false;
@@ -113,10 +130,13 @@ final class GpuSpans {
         count[x]++;
     }
 
-    private int slot(int x) {
+    /** Room for one more span in this column, or -1. A column that runs out hands its rows back
+     *  to the CPU rather than losing them: the card would otherwise draw sky through a wall. */
+    private int slot(int x, int y0, int y1) {
         int n = count[x];
         if (n >= MAX_PER_COLUMN) {
             dropped++;
+            for (int y = y0; y < y1; y++) skip(x, y);
             return -1;
         }
         int at = (x * MAX_PER_COLUMN + n) * FLOATS;
