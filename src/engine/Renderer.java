@@ -137,6 +137,22 @@ final class Renderer {
         cardMats = m;
     }
 
+    /**
+     * Whether the CPU still colours the rows the card is going to draw.
+     *
+     * The game wants the card's picture and nothing else, so leaving those rows alone is the
+     * whole point of putting them on the card - a frame the card draws entirely is one the CPU
+     * never shades a pixel of. {@code GpuCheck} wants both pictures to hold them against each
+     * other, so it leaves this on. It is on by default, which is the answer that is merely slow
+     * rather than wrong.
+     */
+    private volatile boolean shadeUnderCard = true;
+
+    void shadeUnderCard(boolean b) {
+        betweenFrames("shadeUnderCard");
+        shadeUnderCard = b;
+    }
+
     void setLighting(Lighting l) {
         betweenFrames("setLighting");
         lighting = l;
@@ -379,6 +395,17 @@ final class Renderer {
         private GpuSpans sink;
         private GpuMasks maskOut;
         private GpuMaterials mats;
+        /**
+         * Rows the CPU must colour even though the card is drawing them, because a surface the
+         * card was not given will be blended over them and needs something underneath.
+         *
+         * A masked surface is recorded when the ray meets it and blended at the end, so by the
+         * time whatever is behind it comes to be painted, this already says so. Rows nothing
+         * unported covers are left to the card alone, and that is the whole saving: a frame the
+         * card draws entirely is one the CPU never shades a pixel of.
+         */
+        private final boolean[] cpuUnder = new boolean[H];
+        private boolean under = true;                     // shade what the card draws anyway
         private int spanKind;                   // 0 nothing, 1 a wall, 2 a plane
         private double spanU, spanW, spanSq, spanLight, spanZ, spanSlope, spanFog;
         private int spanMat, spanRgb, spanLm, spanTex;
@@ -393,6 +420,7 @@ final class Renderer {
             sink = spanSink;
             maskOut = maskSink;
             mats = cardMats;
+            under = shadeUnderCard;
             px = cam.x;
             py = cam.y;
             eye = cam.eye;
@@ -410,6 +438,7 @@ final class Renderer {
             if (++ray == Integer.MAX_VALUE) { Arrays.fill(stamp, 0); ray = 1; }
             pendN = sortedN = 0;
             maskedN = 0;
+            if (sink != null) Arrays.fill(cpuUnder, false);
             planeN = 0;
             crossings = 0;
             cells = tests = 0;
@@ -1143,6 +1172,18 @@ final class Renderer {
             return rows;
         }
 
+        /**
+         * Has the CPU any reason to work out this pixel of a masked surface?
+         *
+         * None, when the card was given the surface, nothing unported is blended over the same
+         * row, and no screenshot wants the albedo and the depth. That covers every tree in
+         * school, and it is worth more than the spans are: a mask costs two noise lookups and a
+         * filtered texture sample a row, and the CPU was paying for all of them twice.
+         */
+        private boolean cpuWants(Masked m, int y) {
+            return !(sink != null && !under && m.gpu && !cpuUnder[y] && depth == null);
+        }
+
         private int recSide(Shape s) { return mats == null ? -1 : mats.side(s); }
 
         private int recTop(Shape s) { return mats == null ? -1 : mats.top(s); }
@@ -1181,6 +1222,8 @@ final class Renderer {
                                 m.lm == null ? -1 : m.lm.gpuIndex, s.color, s.mat,
                                 1 / s.len, 1 / (s.h - s.z0), s.z0,
                                 s.img != null || s.tex != null ? recSide(s) : -1, recAlpha(s));
+                if (sink != null && !m.gpu)
+                    for (int y = y0; y < y1; y++) cpuUnder[y] = true;
                 rows += y1 - y0;
             }
             if (tr != null) note(EventKind.SHAPE, t, s.label + " (masked, " + rows + " rows blended)", 0);
@@ -1206,6 +1249,7 @@ final class Renderer {
                 }
                 double invU = 1 / s.len, invV = 1 / (s.h - s.z0);
                 for (int y = m.y0; y < m.y1; y++) {
+                    if (!cpuWants(m, y)) continue;
                     double z = eye - (y + 0.5 - hz) * m.t * dk / F;
                     double a = Materials.mask(s.mask, m.u * invU, (z - s.z0) * invV, m.w);
                     if (a <= 0.004) continue;
@@ -1251,6 +1295,8 @@ final class Renderer {
                         m.gpu = maskOut != null && c.ggpu && recAlpha(m.s) >= 0
                                 && maskOut.addPlane(x, run, y, c.z, c.slope, c.gk0, c.glm,
                                         c.grgb, c.gmat, c.gtex, recAlpha(m.s));
+                        if (sink != null && !m.gpu)
+                            for (int yy = run; yy < y; yy++) cpuUnder[yy] = true;
                         run = -1;
                     }
                 }
@@ -1283,6 +1329,7 @@ final class Renderer {
             Shape s = m.s;
             double sF = m.slope * F;
             for (int y = m.y0; y < m.y1; y++) {
+                if (!cpuWants(m, y)) continue;
                 double t = (eye - m.z) * F / ((y + 0.5 - hz) * dk + sF);
                 if (!(t > 0) || t > MAX_DIST) continue;
                 double a = alphaAt(s, px + rx * t, py + ry * t, pixelSize(t));
@@ -1296,6 +1343,7 @@ final class Renderer {
         private void blendCutSide(Masked m) {
             Shape s = m.s;
             for (int y = m.y0; y < m.y1; y++) {
+                if (!cpuWants(m, y)) continue;
                 double z = eye - (y + 0.5 - hz) * m.t * dk / F;
                 double a = alphaAt(s, m.u, z, pixelSize(m.t) / m.sq);
                 if (a <= 0.004) continue;
@@ -1577,10 +1625,17 @@ final class Renderer {
             };
         }
 
-        /** Whatever rows are left: sky above the horizon, distant haze below it. */
+        /** Whatever rows are left: sky above the horizon, distant haze below it. The card draws
+         *  exactly these rows itself (no span reaches them), so they are the CPU's only when a
+         *  screenshot wants them or something unported will be blended over them. */
         private void fillRest() {
-            for (int k = 0; k < open; k++)
-                for (int y = o0[k]; y < o1[k]; y++) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
+            if (sink == null || under || albedo != null)
+                for (int k = 0; k < open; k++)
+                    for (int y = o0[k]; y < o1[k]; y++) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
+            else
+                for (int k = 0; k < open; k++)
+                    for (int y = o0[k]; y < o1[k]; y++)
+                        if (cpuUnder[y]) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
             if (albedo != null)
                 for (int k = 0; k < open; k++)
                     for (int y = o0[k]; y < o1[k]; y++) albedo[y * W + x] = pixels[y * W + x];
@@ -1615,8 +1670,22 @@ final class Renderer {
             for (int k = 0; k < open; k++) {
                 int s0 = Math.max(o0[k], ia), s1 = Math.min(o1[k], ib);
                 if (s1 <= s0) { n0[m] = o0[k]; n1[m++] = o1[k]; continue; }
+                // Record first: whether the card has these rows is what decides whether the CPU
+                // has to colour them at all. A screenshot still does, for its albedo and depth.
+                boolean onCard = false;
+                if (note) {
+                    if (spanKind == 1) onCard = sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq,
+                            spanMat, spanRgb, spanFog, spanLm, spanTex);
+                    else if (spanKind == 2) onCard = sink.addPlane(x, s0, s1, spanZ, spanSlope,
+                            spanLight, spanMat, spanRgb, spanLm, spanTex);
+                    else for (int y = s0; y < s1; y++) sink.skip(x, y);
+                    // Rows the card has not got are the CPU's, and so is anything blended on top
+                    // of them: the blend needs something underneath, and this is where it says so.
+                    if (!onCard) for (int y = s0; y < s1; y++) cpuUnder[y] = true;
+                }
                 if (depth == null) {
-                    for (int y = s0; y < s1; y++) pixels[y * W + x] = colorOf.applyAsInt(y);
+                    for (int y = s0; y < s1; y++)
+                        if (under || !onCard || cpuUnder[y]) pixels[y * W + x] = colorOf.applyAsInt(y);
                 } else {
                     for (int y = s0; y < s1; y++) {
                         texAlbedoSet = false;
@@ -1632,10 +1701,6 @@ final class Renderer {
                         }
                     }
                 }
-                if (!note) { /* nothing to record */ }
-                else if (spanKind == 1) sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq, spanMat, spanRgb, spanFog, spanLm, spanTex);
-                else if (spanKind == 2) sink.addPlane(x, s0, s1, spanZ, spanSlope, spanLight, spanMat, spanRgb, spanLm, spanTex);
-                else for (int y = s0; y < s1; y++) sink.skip(x, y);
                 filled += s1 - s0;
                 if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above
                 if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // leftover below

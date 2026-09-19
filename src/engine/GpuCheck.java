@@ -84,8 +84,9 @@ final class GpuCheck {
             }
             System.out.printf("GL %s on %s%n", Gl.version(), Gl.device());
             System.out.printf("%s at %dx%d, %s%n%n", map, w, h, lit ? "baked lighting" : "flat shading");
-            System.out.printf("%-12s %8s %8s %8s %8s %8s %8s %8s%n",
-                    "view", "pixels", "worst", "mean", "over 2", "masked", "cpu ms", "gpu ms");
+            System.out.printf("%-12s %8s %8s %8s %8s %8s %8s %8s %8s %6s%n",
+                    "view", "pixels", "worst", "mean", "over 2", "masked",
+                    "cpu ms", "fast ms", "gpu ms", "merged");
             int worstAll = 0;
             String name = map.getFileName().toString();
             String[][] views = name.contains("walls") ? WALLS_ONLY : name.contains("haven") ? HAVEN : VIEWS;
@@ -132,9 +133,7 @@ final class GpuCheck {
                     for (int y = 0; y < h; y++) {
                         if (spans.skipped(x, y)) { skipped++; continue; }
                         int a = cpu[y * w + x], b = gpu[y * w + x];
-                        int d = Math.max(Math.abs((a >> 16 & 255) - (b >> 16 & 255)),
-                                Math.max(Math.abs((a >> 8 & 255) - (b >> 8 & 255)),
-                                        Math.abs((a & 255) - (b & 255))));
+                        int d = diff(a, b);
                         n++;
                         sum += d;
                         if (d > 2) over++;
@@ -144,10 +143,35 @@ final class GpuCheck {
                         }
                     }
                 }
-                worstAll = Math.max(worstAll, worst);
-                System.out.printf("%-12s %8d %8d %8.3f %7.3f%% %8d %8.2f %8.2f%n",
+                // And the frame the game itself puts on the screen: the CPU leaves the rows the
+                // card is drawing alone, and the two are merged as Main merges them. This is what
+                // says the saving is safe. A row the CPU skipped that the card turns out not to
+                // have drawn arrives here as black, a difference of two hundred and not of two,
+                // so a mistake about which rows those are cannot pass for a rounding error.
+                int[] ref = cpu.clone();
+                renderer.shadeUnderCard(false);
+                double fastMs = Double.MAX_VALUE;
+                for (int r = 0; r < 12; r++) {
+                    spans.reset();
+                    masks.reset();
+                    Arrays.fill(cpu, 0);
+                    long a0 = System.nanoTime();
+                    renderer.render(cam);
+                    fastMs = Math.min(fastMs, (System.nanoTime() - a0) / 1e6);
+                }
+                walls.draw(spans, masks, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);
+                renderer.shadeUnderCard(true);
+                int merged = 0;
+                for (int x = 0; x < w; x++)
+                    for (int y = 0; y < h; y++) {
+                        int i = y * w + x;
+                        merged = Math.max(merged, diff(spans.skipped(x, y) ? cpu[i] : gpu[i], ref[i]));
+                    }
+
+                worstAll = Math.max(worstAll, Math.max(worst, merged));
+                System.out.printf("%-12s %8d %8d %8.3f %7.3f%% %8d %8.2f %8.2f %8.2f %6d%n",
                         v[0], n, worst, n == 0 ? 0 : (double) sum / n,
-                        n == 0 ? 0 : 100.0 * over / n, skipped, cpuMs, gpuMs);
+                        n == 0 ? 0 : 100.0 * over / n, skipped, cpuMs, fastMs, gpuMs, merged);
                 if (worst > 2) System.out.println(worstAt);
                 if (spans.dropped() > 0) System.out.printf("  %d spans dropped%n", spans.dropped());
                 if (masks.dropped() > 0) System.out.printf("  %d masks dropped%n", masks.dropped());
@@ -156,6 +180,13 @@ final class GpuCheck {
             }
             System.out.printf("%nworst channel difference anywhere: %d of 255%n", worstAll);
         }
+    }
+
+    /** The largest difference between two pixels, on the channel that differs most. */
+    private static int diff(int a, int b) {
+        return Math.max(Math.abs((a >> 16 & 255) - (b >> 16 & 255)),
+                Math.max(Math.abs((a >> 8 & 255) - (b >> 8 & 255)),
+                        Math.abs((a & 255) - (b & 255))));
     }
 
     /** What the renderer said about the pixel the two sides disagree on most: which span covers

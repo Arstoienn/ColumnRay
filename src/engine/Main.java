@@ -502,6 +502,7 @@ public final class Main {
             gpuPixels = null;
             renderer.captureSpans(spans);
             renderer.captureMasks(masks);
+            renderer.shadeUnderCard(false);
         }
     }
 
