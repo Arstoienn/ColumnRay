@@ -162,11 +162,15 @@ final class GpuCheck {
                 walls.draw(spans, masks, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);
                 renderer.shadeUnderCard(true);
                 int merged = 0;
+                int[] shown = new int[w * h];
                 for (int x = 0; x < w; x++)
                     for (int y = 0; y < h; y++) {
                         int i = y * w + x;
-                        merged = Math.max(merged, diff(spans.skipped(x, y) ? cpu[i] : gpu[i], ref[i]));
+                        shown[i] = spans.skipped(x, y) ? cpu[i] : gpu[i];
+                        merged = Math.max(merged, diff(shown[i], ref[i]));
                     }
+                if (System.getProperty("gpucheck.png") != null)
+                    png(shown, w, h, System.getProperty("gpucheck.png") + "/" + v[0] + "-shown.png");
 
                 worstAll = Math.max(worstAll, Math.max(worst, merged));
                 System.out.printf("%-12s %8d %8d %8.3f %7.3f%% %8d %8.2f %8.2f %8.2f %6d%n",
