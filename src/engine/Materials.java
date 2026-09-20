@@ -93,11 +93,11 @@ final class Materials {
 
         private Texture(int w, int h, int[] pixels, int color) {
             levels = new Level[32 - Integer.numberOfLeadingZeros(Math.max(w, h))];
-            Level first = levels[0] = new Level(w, h);
+            Level first = levels[0] = new Level(w, h, true);
             for (int c = 0; c < 3; c++) {
                 mean[c] = (color >> (16 - 8 * c)) & 255;
                 for (int i = 0; i < pixels.length; i++)
-                    first.rgb[3 * i + c] = (pixels[i] >> (16 - 8 * c)) & 255;
+                    first.raw[3 * i + c] = (byte) ((pixels[i] >> (16 - 8 * c)) & 255);
             }
             // Work in the PNG's sRGB values, the same space as the exporter's tile means and the
             // renderer's base colours. Alpha does not change the engine's existing shape masks.
@@ -113,7 +113,11 @@ final class Materials {
 
         int levelH(int i) { return levels[i].sy; }
 
+        /** The level's texels as floats, or null when it is the byte-deep level 0. */
         float[] levelRgb(int i) { return levels[i].rgb; }
+
+        /** The level's texels as bytes, or null when it is one of the fractional levels. */
+        byte[] levelBytes(int i) { return levels[i].raw; }
 
         /** The divisor that turns a texel into a multiplier on the shape's colour. */
         double mean(int c) { return mean[c]; }
@@ -156,18 +160,39 @@ final class Materials {
         }
     }
 
+    /**
+     * One mip level, and the one place where how a texel is stored is worth a thought.
+     *
+     * Level 0 holds what the PNG held: whole numbers from 0 to 255. A byte says those exactly,
+     * and a float says them four times over - which on Haven is 1,755 MB of heap for 438 MB of
+     * information, and the heap is what the garbage collector's long pauses are made of. Every
+     * level below it is different: {@link #half} area-averages and deliberately does not
+     * quantize, so those are genuine fractions and stay float. Level 0 is three quarters of a
+     * chain, so this is most of the memory at none of the precision.
+     *
+     * Nothing about the picture changes. A byte widened to double is the same double a float
+     * holding the same whole number widens to, which is why the golden frames are the test.
+     */
     private static final class Level {
         final int sx, sy;                     // width and height; the atlas's tiles are square
-        final float[] rgb;
+        final float[] rgb;                    // levels 1 and below: fractional area averages
+        final byte[] raw;                     // level 0: the image's own bytes
 
-        Level(int sx, int sy) {
+        Level(int sx, int sy, boolean fromImage) {
             this.sx = sx;
             this.sy = sy;
-            rgb = new float[Math.multiplyExact(Math.multiplyExact(sx, sy), 3)];
+            int n = Math.multiplyExact(Math.multiplyExact(sx, sy), 3);
+            rgb = fromImage ? null : new float[n];
+            raw = fromImage ? new byte[n] : null;
+        }
+
+        /** One channel of one texel, whichever way this level keeps it. */
+        double at(int i) {
+            return raw != null ? raw[i] & 255 : rgb[i];
         }
 
         Level half() {
-            Level next = new Level(Math.max(1, sx / 2), Math.max(1, sy / 2));
+            Level next = new Level(Math.max(1, sx / 2), Math.max(1, sy / 2), false);
             // Area averaging also keeps every source pixel when a side is odd. A power-of-two
             // tile is the usual 2x2 box filter; neither case quantizes the intermediate means.
             double scaleX = (double) sx / next.sx, scaleY = (double) sy / next.sy;
@@ -181,7 +206,7 @@ final class Materials {
                             for (int px = (int) x0; px < Math.ceil(x1); px++) {
                                 double area = (Math.min(px + 1, x1) - Math.max(px, x0))
                                         * (Math.min(py + 1, y1) - Math.max(py, y0));
-                                sum += rgb[3 * (py * sx + px) + c] * area;
+                                sum += at(3 * (py * sx + px) + c) * area;
                             }
                         next.rgb[3 * (y * next.sx + x) + c] = (float) (sum / (scaleX * scaleY));
                     }
@@ -198,8 +223,8 @@ final class Materials {
             int x1 = (x0 + 1) % sx, y1 = (y0 + 1) % sy;
             int a = 3 * (y0 * sx + x0), b = 3 * (y0 * sx + x1);
             int c = 3 * (y1 * sx + x0), d = 3 * (y1 * sx + x1);
-            double top = rgb[a] + (rgb[b] - rgb[a]) * fx;
-            double bottom = rgb[c] + (rgb[d] - rgb[c]) * fx;
+            double top = at(a) + (at(b) - at(a)) * fx;
+            double bottom = at(c) + (at(d) - at(c)) * fx;
             return top + (bottom - top) * fy;
         }
 
@@ -212,8 +237,8 @@ final class Materials {
             int a = 3 * (y0 * sx + x0), b = 3 * (y0 * sx + x1);
             int c = 3 * (y1 * sx + x0), d = 3 * (y1 * sx + x1);
             for (int k = 0; k < 3; k++) {
-                double top = rgb[a + k] + (rgb[b + k] - rgb[a + k]) * fx;
-                double bottom = rgb[c + k] + (rgb[d + k] - rgb[c + k]) * fx;
+                double top = at(a + k) + (at(b + k) - at(a + k)) * fx;
+                double bottom = at(c + k) + (at(d + k) - at(c + k)) * fx;
                 out[offset + k] = top + (bottom - top) * fy;
             }
         }

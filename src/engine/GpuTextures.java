@@ -156,15 +156,22 @@ final class GpuTextures {
                     where.put(t, new int[] {banks.size(), layer});
                     int off = levels - t.levelCount();        // how far below the bank's level 0
                     for (int lv = 0; lv < t.levelCount(); lv++) {
+                        // Level 0 is already bytes, and bytes are what the card wants: it goes
+                        // across as it is. The fractional levels below it are rounded here, and
+                        // that rounding is the last of the difference from the CPU's picture -
+                        // see the note above and -Dgpu.texels.
+                        byte[] raw = t.levelBytes(lv);
                         float[] rgb = t.levelRgb(lv);
+                        int n = raw != null ? raw.length : rgb.length;
                         // The shader reads a texel as 0 to 1 and multiplies by 255, so a float
                         // texture carries the same numbers, divided, and only the rounding differs.
-                        for (int i = 0; i < rgb.length; i++) {
-                            if (f32) buf.setAtIndex(ValueLayout.JAVA_FLOAT, i, rgb[i] / 255f);
+                        for (int i = 0; i < n; i++) {
+                            float v = raw != null ? (raw[i] & 255) : rgb[i];
+                            if (f32) buf.setAtIndex(ValueLayout.JAVA_FLOAT, i, v / 255f);
                             else if (f16) buf.setAtIndex(ValueLayout.JAVA_SHORT, i,
-                                    Float.floatToFloat16(rgb[i] / 255f));
+                                    Float.floatToFloat16(v / 255f));
                             else buf.setAtIndex(ValueLayout.JAVA_BYTE, i,
-                                    (byte) Math.round(Math.max(0, Math.min(255, rgb[i]))));
+                                    (byte) Math.round(Math.max(0, Math.min(255, v))));
                         }
                         Gl.arrayLevel(off + lv, layer, t.levelW(lv), t.levelH(lv), buf, type);
                     }
