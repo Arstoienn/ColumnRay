@@ -1,0 +1,22 @@
+// Nothing but walls: a shaft ten metres across with sixty-metre sides, and the eye halfway up.
+// The floor is twenty-five metres below and only two metres away horizontally, so it falls far
+// outside the vertical field of view and every pixel of the frame is a wall - which is what makes
+// this the scene to check the GPU wall pass against, with nothing else able to fill in for it.
+{
+  "name": "Walls only",
+  "cell": 1.0,
+  "sun": [0.55, 0.83],
+  "spawn": { "pos": [5, 5], "angle": 0 },
+  "regions": [
+    { "name": "shaft", "poly": [[0,0],[10,0],[10,10],[0,10]], "floor": 0,
+      "floorMat": "stone", "floorColor": "#bdb5a6", "light": 1.0 }
+  ],
+  "shapes": [
+    { "type": "wall", "a": [0.2,0.2], "b": [9.8,0.2], "h": 60, "mat": "brick", "color": "#b07a5a" },
+    { "type": "wall", "a": [9.8,0.2], "b": [9.8,9.8], "h": 60, "mat": "stone", "color": "#bdb5a6" },
+    { "type": "wall", "a": [9.8,9.8], "b": [0.2,9.8], "h": 60, "mat": "wood", "color": "#b08a5a" },
+    { "type": "wall", "a": [0.2,9.8], "b": [0.2,0.2], "h": 60, "mat": "concrete", "color": "#9a9a96" },
+    { "type": "box", "x": 6.5, "y": 2.0, "w": 0.6, "d": 0.6, "h": 60, "mat": "metal", "color": "#8e949a" },
+    { "type": "box", "x": 2.4, "y": 7.0, "w": 0.8, "d": 0.8, "h": 60, "mat": "terracotta", "color": "#c07a52" }
+  ]
+}

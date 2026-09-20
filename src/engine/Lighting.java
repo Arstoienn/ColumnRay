@@ -44,6 +44,7 @@ final class Lighting {
         final float[] rgb;                       // w * h texels, three floats each
         final float[] albedo = new float[3];     // the surface's own colour: what it bounces back
         int mat;                                 // its material, for the ceiling panels that glow
+        int gpuIndex = -1;                       // where GpuLights packed it, or -1 if it never did
 
         /** Every surface in the map gets one of these, so a texel count is a decision the map makes:
          *  a 2 km wall at 20 cm texels is ten thousand across, and w * h * 3 in int wraps long
@@ -126,6 +127,9 @@ final class Lighting {
     private List<LightMap> allMaps = List.of();      // every map in bake order, for the cache and hash()
     private java.nio.file.Path fromCache;            // set when the texels were read back rather than baked
     private final double reach, reflect, sunSoft, lampSize;
+
+    /** Every map, in bake order: what GpuLights packs and what LightCache serialises. */
+    List<LightMap> maps() { return allMaps; }
 
     static Lighting bake(World w) {
         long t0 = System.nanoTime();
