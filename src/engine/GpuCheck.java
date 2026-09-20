@@ -90,7 +90,9 @@ final class GpuCheck {
             int worstAll = 0;
             String name = map.getFileName().toString();
             String[][] views = name.contains("walls") ? WALLS_ONLY : name.contains("haven") ? HAVEN : VIEWS;
+            String only = System.getProperty("gpucheck.only", "");
             for (String[] v : views) {
+                if (!only.isEmpty() && !only.equals(v[0])) continue;
                 spans.reset();
                 masks.reset();
                 Arrays.fill(cpu, 0);
