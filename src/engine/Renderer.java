@@ -70,7 +70,24 @@ final class Renderer {
     float[] depth;                          // perpendicular metres, or null outside a screenshot
     int[] albedo;                           // map colours, with no shading; shot only, like depth
     private final World world;
-    private ThreadLocal<Column> columns;
+    /**
+     * The per-column scratch, lent out rather than tied to a thread.
+     *
+     * A Column is expensive to make: most of it is {@code stamp}, an int a shape so that a ray
+     * tests a shape once however many cells it meets it in, which on Haven is 3.5 MB. That was
+     * fine when it was one per thread and threads were forever - but they are not. The common
+     * ForkJoinPool grows and retires workers as the frame loop stalls and resumes, and a
+     * ThreadLocal hands every new worker a fresh 3.5 MB: measured at 2,601 Columns in a
+     * 380-frame benchmark, which is nine gigabytes of garbage for three resizes' worth of real
+     * change. Lent from a queue instead, the count settles at how many chunks really run at once.
+     *
+     * Reuse is safe because a Column is reused already - one chunk renders many columns through
+     * one of these, and render() resets everything a column can see. What survives between
+     * columns is the visited stamp, which is keyed by a counter that also advances, and the lod
+     * cache, whose value depends on the shape and the footprint and not on which column asked.
+     */
+    private final java.util.concurrent.ConcurrentLinkedQueue<Column> columns =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     // Ray-view statistics: where each column's ray stopped, how many cells it walked, how many shapes it tested
     double[] rayEnd;
@@ -186,7 +203,7 @@ final class Renderer {
         this.rayEnd = new double[w];
         this.cellsVisited = new int[w];
         this.shapesTested = new int[w];
-        this.columns = ThreadLocal.withInitial(() -> new Column());   // per-column scratch is sized by H
+        this.columns.clear();                    // their row arrays are sized by H, which just changed
     }
 
     /** Horizontal field of view in degrees, across the view (not the overscan). The vertical axis
@@ -231,7 +248,7 @@ final class Renderer {
         drawnX0 = x0;
         drawnX1 = Math.max(x0, x1);
         if (n <= 0) return;
-        ThreadLocal<Column> cols = columns;
+        var cols = columns;
         int chunks = Math.min(n, Runtime.getRuntime().availableProcessors() * 4);
         // Every chunk takes every chunks-th column rather than a block of neighbours. A column down
         // one of Haven's long lanes shades many times the rows of one facing a wall, and neighbouring
@@ -239,8 +256,13 @@ final class Renderer {
         // and on the M3's efficiency cores it waited longer. Interleaved, every chunk gets a share of
         // everything. Columns are independent, so the picture is the same.
         IntStream.range(0, chunks).parallel().forEach(c -> {
-            Column col = cols.get();
-            for (int x = x0 + c; x < x1; x += chunks) col.render(x, cam);
+            Column col = cols.poll();
+            if (col == null) col = new Column();
+            try {
+                for (int x = x0 + c; x < x1; x += chunks) col.render(x, cam);
+            } finally {
+                cols.add(col);
+            }
         });
     }
 

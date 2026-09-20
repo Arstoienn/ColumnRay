@@ -394,6 +394,33 @@ Cost scales with N squared, as it must - `--ss 2` is four times the rays. The cl
 rooflines against the sky and the speckle in the ceiling-panel and stone textures, which alias
 badly without it.
 
+### What a frame throws away
+
+A renderer in its steady state should allocate almost nothing, and this one was allocating
+gigabytes a second. A flight recording of a Haven benchmark, filtered to what the frame loop
+reaches, put it in three piles:
+
+| | sampled over 380 frames | what it is |
+|---|---|---|
+| 11.0 GB | lambda captures | one `IntUnaryOperator` a surface a column, from `flat` and `drawHit` |
+| 7.1 GB | `Column.<init>` | 3.5 MB of `stamp` a time, and it was being built 2,601 times |
+| 6.4 GB | `Geometry` hits | a `PolyHit` or a `SegHit` a ray-versus-shape test |
+
+The second was the surprise, because it looked like it could not happen. `Column` is per-thread
+scratch and there are a dozen threads; it should be built a dozen times. It was built 2,601 times
+in 380 frames against three buffer resizes, so it was not the resizes - it was the threads. The
+common ForkJoinPool grows and retires workers as a frame loop stalls and resumes, and a
+`ThreadLocal` hands every new worker a fresh 3.5 MB `stamp`, an int a shape so that a ray tests a
+shape once however many cells it meets it in.
+
+Lending the Columns from a queue instead of tying them to a thread took that from 2,601 to 16,
+and the picture cannot move: a chunk already renders many columns through one Column, so reuse
+was the existing behaviour and only the bookkeeping changed. The determinism test is the one that
+matters here, and it is the one that would notice.
+
+The other two piles are still there. The lambdas are the bigger and the harder: `flat` returns a
+closure over the plane it describes, and the renderer is built around passing one to `paint`.
+
 ### What a texel costs to keep
 
 A mip chain is level 0 and everything below it, and the two are not made of the same stuff.
