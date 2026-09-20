@@ -83,11 +83,16 @@ final class GpuTextures {
      * it does not quantize them; these levels are rounded to a byte on the way up. That is a
      * fraction of a level per mip, and the leading suspect for the handful of pixels where a
      * blend material - a base, a second layer and a height through a nonlinear mix - comes out
-     * 3 of 255 apart instead of 2. {@code -Dgpu.texels=float} or {@code =half} uploads the
-     * levels without rounding, which costs four times or twice Haven's 600 MB and is meant for
-     * answering that question, not for playing.
+     * 3 of 255 apart instead of 2.
+     *
+     * So half is the default. Measured on Haven's spot7, the worst difference from the CPU goes
+     * 3, 2, 2 and the mean 0.055, 0.029, 0.006 for RGB8, RGB16F and RGB32F; with half, all six
+     * Haven cameras read 2, which is the floor - float against double in the shader's own
+     * arithmetic, which no texture format reaches. It costs 570 MB of Haven's images against the
+     * byte, which is less than keeping level 0 as float was costing the heap before it stopped.
+     * {@code -Dgpu.texels=byte} goes back, and {@code =float} is for answering the question again.
      */
-    private static final String DEPTH = System.getProperty("gpu.texels", "byte");
+    private static final String DEPTH = System.getProperty("gpu.texels", "half");
 
     private int leftToCpu;
 
