@@ -394,6 +394,27 @@ Cost scales with N squared, as it must - `--ss 2` is four times the rays. The cl
 rooflines against the sky and the speckle in the ceiling-panel and stone textures, which alias
 badly without it.
 
+### What a texel costs to keep
+
+A mip chain is level 0 and everything below it, and the two are not made of the same stuff.
+Level 0 holds what the PNG held: whole numbers from 0 to 255. Every level below it is an area
+average that `Materials.Level.half` deliberately does not quantize, because rounding those is
+visible - it is the difference between agreeing with the card to 2 of 255 and to 3.
+
+So level 0 is kept as bytes and the rest as floats. Level 0 is three quarters of a chain, which
+on Haven is the difference between 2,340 MB of heap and 1,023 MB:
+
+| | texels | kept as |
+|---|---|---|
+| level 0 | 153,365,200 | 438 MB of `byte[]` |
+| levels 1 and below | 51,121,610 | 585 MB of `float[]` |
+
+No pixel moves - a byte widened to double is the same double a float holding that whole number
+widens to, and the golden frames are the test. It is also slightly faster, which was not the
+point but is not a surprise: a byte has four times the cache density of a float, and level 0 is
+what a near surface samples most. A/B over five alternating runs on Haven, 854x480: 2% at level,
+5% tilted, and the run-to-run spread fell from 19% to 7%.
+
 ## Texture filtering
 
 A texture drawn by sampling it once per pixel falls apart at a distance. One pixel of a far wall
