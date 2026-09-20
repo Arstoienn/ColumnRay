@@ -215,6 +215,43 @@ every pixel.
 cameras, and the worst difference is 1 to 3 of 255 with fewer than two pixels in five million
 over 2.
 
+The 3 is the mip chain, not the shading. `Materials.Level.half` keeps its area averages as floats
+and says in a comment that it does not quantize them; `GpuTextures` rounds them to a byte on the
+way up. Uploading the same levels without rounding (`-Dgpu.texels=half` or `=float`) settles it -
+on Haven's spot7 the worst goes 3, 2, 2 and the mean 0.055, 0.029, 0.006 for RGB8, RGB16F and
+RGB32F, and the pixels over 2 go to none. A worst of 2 is the floor: float against double in the
+shader's own arithmetic, which no texture format reaches. With RGB16F all six Haven cameras read
+2. The default stays the byte because the difference costs 570 MB of card memory and nobody can
+see it, but the switch is there and the number it buys is known.
+
+### The whole loop, not just the renderer
+
+`GpuCheck` compares the renderer's buffer at a fixed size with the camera level. Between that
+buffer and the window sit the pitch warp, the overscan growing under it and the card's own
+buffers being rebuilt around that, and none of it was covered - which is where the worst bug of
+this branch lived, a resize that watched the width and not the height.
+
+`--gpu-verify views.txt` draws each view through `Main.frame` twice, once on each path, at five
+tilts, and compares the finished output:
+
+```bash
+./test.sh --gpu                                    # school, at the golden size, in seconds
+./run.sh maps/haven/haven.json --gpu-verify tests/views/haven.txt --flat
+```
+
+The tilts climb, because the overscan only ever grows: each one asks for a taller buffer than the
+last and lands on whatever height the warp asks for rather than a round number. Frames are thrown
+away at each tilt until the per-column lists stop growing, because those start small and double
+when a column runs out, so the first frames at a new tilt hand rows back to the CPU as designed.
+
+Its verdict is about the picture and not about the rounding. The two are never identical, and a
+few pixels a frame land exactly on the hard edge of a procedural material - a plank line, a brick
+course - where float and double fall on opposite sides and disagree by tens of levels. So the
+threshold is on how many pixels disagree, not by how much: school runs at 0.0001% of the frame
+over 8 levels and a deliberately broken merge runs at 4.8%, which is the margin the rule sits in.
+Entries handed back to the CPU are reported and do not fail it - a drop is the fallback working,
+and the run that dropped sixty thousand of them still agreed to within four levels.
+
 ### Why the CPU stops shading, and how that is checked
 
 Moving a surface to the card saves nothing on its own: the CPU was still colouring every pixel
@@ -256,6 +293,26 @@ code of its own on a deprecated macOS view. A ring of pixel buffer objects could
 with the next frame's ray walk at the cost of a frame of latency, which is an optimisation rather
 than a way out.
 
+### What it is worth on a desktop
+
+The numbers above are an M3, where the card and the CPU share their memory and their power
+budget. A desktop with a discrete card is the other shape of the same trade, and the second
+backend is what made it measurable. Measured on an i5-14500 and an RTX 4070, `--flat`, 1280x720,
+`--bench`, CPU and GPU runs alternated:
+
+| | school, level | school, 30 deg | Haven, level | Haven, 30 deg |
+|---|---|---|---|---|
+| CPU | 6.5 ms (154 fps) | 11.1 ms (90 fps) | 49.5 ms (20 fps) | 94.0 ms (11 fps) |
+| `--gpu` | 3.0 ms (336 fps) | 5.6 ms (179 fps) | 23.7 ms (42 fps) | 25.5 ms (39 fps) |
+
+The interesting column is the last one. Tilting the view costs the CPU renderer 90% of its frame
+on Haven and the hybrid 7%, because what pitch adds is overscan - more rows to shade, not more
+rays to walk - and the rows are the part that moved. The p99s move the same way: 136 ms to 39.
+
+A caution that belongs with these: the CPU's first run of the afternoon was 5.4 ms where its
+third was 6.6, which is the chip warming up, and the card's three runs sat inside 0.2 ms of each
+other. That is why they are alternated and why bench.sh rests between runs.
+
 ### The two things to know before trusting a number
 
 **A horizon on a half-integer row makes the two pictures disagree more.** A pixel's height is
@@ -282,10 +339,41 @@ of 5 to 9 GB. That is the size of the map, not the cost of a frame.
 ### Platform
 
 The GL entry points are the same C functions everywhere. Two things are not - which library holds
-them, and how to get a context with no window behind it - and those are `GlPlatform`. Only the
-macOS backend (`GlCgl`, which is CGL) is written; on anything else `--gpu` prints one sentence and
-the CPU renderer carries on, which is the whole engine. `-Dgl.platform=none` forces that path so
-the sentence can be tested on a machine that does have a backend.
+them, and how to get a context with no window behind it - and those are `GlPlatform`. macOS
+(`GlCgl`, which is CGL) and Windows (`GlWgl`, which is WGL) are written; on anything else - Linux -
+`--gpu` prints one sentence and the CPU renderer carries on, which is the whole engine.
+`-Dgl.platform=none` forces that path so the sentence can be tested on a machine that does have a
+backend.
+
+There are two ways to have no card and they arrive differently. No backend for the operating
+system is a question `GlPlatform` answers before `Gl` is loaded, which matters because loading
+`Gl` is what would fail. A backend with no card behind it - a Windows machine with no OpenGL
+driver, a virtual machine, a CI runner offering Microsoft's software renderer - only shows up
+when the context is asked for, and it comes out of `Gl`'s field initialisers as an
+`ExceptionInInitializerError`. `Main` catches both and prints one sentence. The Windows CI job
+runs `--gpu` on a runner that has no card precisely so that the second path is exercised by
+something other than hope.
+
+The two backends are not the same shape under the interface. CGL makes a context out of nothing.
+WGL cannot: the pixel format that decides what a context can do belongs to a device context, and a
+device context comes from a window, so `GlWgl` registers a one-pixel window that is never shown and
+never painted, purely to hang a format on. And `opengl32.dll` exports OpenGL 1.1 and stops - the
+export table was frozen in 1996 - so every call younger than that, every framebuffer and shader and
+vertex array, comes from `wglGetProcAddress`, which only answers a thread that already has a
+context. `Gl` resolves its entry points while its class initialises, so on Windows the context has
+to exist before the lookup does; `GlWgl.library()` makes it.
+
+**Two cards is a trap.** On a machine with an integrated GPU and a discrete one, OpenGL takes
+whichever card Windows prefers for `java.exe` - a per-application setting in Settings > System >
+Display > Graphics, read once when the JVM starts. It is not the card the window is on: placing the
+hidden window on the discrete card's monitor was written, run and measured making no difference at
+all, which is why that code is not here and the measurement is in `GlWgl.note`. So `--gpu` prints
+the renderer string and, when there is more than one card, the name of the one it did not use.
+"Intel UHD Graphics 770" is an answer that looks exactly like success.
+
+One GLSL note that only Windows found: `packed` is a reserved word in the language. Apple's
+compiler accepts it as an identifier anyway and Intel's does not, so the wall shader's `unpack`
+takes a `bits`.
 
 ## Anti-aliasing (`--ss`)
 
@@ -305,6 +393,27 @@ into the window image and no downsample runs.
 Cost scales with N squared, as it must - `--ss 2` is four times the rays. The clearest wins are
 rooflines against the sky and the speckle in the ceiling-panel and stone textures, which alias
 badly without it.
+
+### What a texel costs to keep
+
+A mip chain is level 0 and everything below it, and the two are not made of the same stuff.
+Level 0 holds what the PNG held: whole numbers from 0 to 255. Every level below it is an area
+average that `Materials.Level.half` deliberately does not quantize, because rounding those is
+visible - it is the difference between agreeing with the card to 2 of 255 and to 3.
+
+So level 0 is kept as bytes and the rest as floats. Level 0 is three quarters of a chain, which
+on Haven is the difference between 2,340 MB of heap and 1,023 MB:
+
+| | texels | kept as |
+|---|---|---|
+| level 0 | 153,365,200 | 438 MB of `byte[]` |
+| levels 1 and below | 51,121,610 | 585 MB of `float[]` |
+
+No pixel moves - a byte widened to double is the same double a float holding that whole number
+widens to, and the golden frames are the test. It is also slightly faster, which was not the
+point but is not a surprise: a byte has four times the cache density of a float, and level 0 is
+what a near surface samples most. A/B over five alternating runs on Haven, 854x480: 2% at level,
+5% tilted, and the run-to-run spread fell from 19% to 7%.
 
 ## Texture filtering
 
@@ -426,6 +535,7 @@ vertical line in the world, so it converges like every other vertical.
 | `src/engine/Gl.java` | the OpenGL entry points, one line each |
 | `src/engine/GlPlatform.java` | which library holds them and how to get a context; the only per-OS part |
 | `src/engine/GlCgl.java` | the macOS backend: OpenGL.framework and CGL |
+| `src/engine/GlWgl.java` | the Windows backend: a hidden window, WGL, and `wglGetProcAddress` |
 | `src/engine/GlMaterials.java` | `Materials`' procedural detail and masks, in GLSL |
 | `src/engine/GpuWalls.java` | the card's pass: the shader, the uploads and the readback |
 | `src/engine/GpuSpans.java` | the renderer's intervals, per column, as a card can read them |

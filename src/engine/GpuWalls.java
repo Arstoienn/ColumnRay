@@ -389,19 +389,22 @@ final class GpuWalls implements AutoCloseable {
                     return vec3(tone(c.r), tone(c.g), tone(c.b));
                 }
 
-                vec3 unpack(float packed) {
-                    return vec3(floor(packed / 65536.0), floor(mod(packed / 256.0, 256.0)), mod(packed, 256.0));
+                /** The three bytes of a colour, out of the float they were multiplied into.
+                 *  The argument is not called "packed": that is a reserved word in GLSL, which
+                 *  Apple's compiler lets through and Intel's does not. */
+                vec3 unpack(float bits) {
+                    return vec3(floor(bits / 65536.0), floor(mod(bits / 256.0, 256.0)), mod(bits, 256.0));
                 }
 
                 /** Renderer.shade: the surface's colour times a shading factor, then the grade. */
-                vec3 shade(float packed, float k) { return graded(unpack(packed) * k); }
+                vec3 shade(float bits, float k) { return graded(unpack(bits) * k); }
 
                 /** Renderer.shadeL: the same, times a coloured level off a baked lightmap. */
-                vec3 shadeL(float packed, float k, vec3 L) { return graded(unpack(packed) * k * L); }
+                vec3 shadeL(float bits, float k, vec3 L) { return graded(unpack(bits) * k * L); }
 
                 /** Renderer.shade with an image's RGB multipliers in place of a scalar. */
-                vec3 shadeT(float packed, vec3 tex, float k, vec3 L) {
-                    return graded(unpack(packed) * tex * k * L);
+                vec3 shadeT(float bits, vec3 tex, float k, vec3 L) {
+                    return graded(unpack(bits) * tex * k * L);
                 }
 
                 /** Renderer.sky: a vertical gradient over the view's own height, which is not the

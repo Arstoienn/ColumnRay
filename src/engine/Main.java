@@ -70,7 +70,7 @@ public final class Main {
     float[] depth, hiDepth; // shot only: output depth and the same pitch warp before downsampling
     int[] albedo, hiAlbedo;       // shot only: unshaded map colours, following the depth samples
     private int[] src;            // what the renderer writes: the upright (y-sheared) view plus overscan
-    private int srcW, srcH;
+    int srcW, srcH;
     final Renderer renderer;
     final RayView rayView;
     final Renderer.Camera cam = new Renderer.Camera();
@@ -95,6 +95,30 @@ public final class Main {
     /** --gpu: the card shades the frame the CPU's columns worked out. Null on the CPU path, and
      *  rebuilt whenever the pitch warp grows the render buffer under it. */
     volatile boolean useGpu;
+
+    /**
+     * Turn the card on or off between frames.
+     *
+     * The two halves go together and must not be set apart. With the card on, the renderer is
+     * told to leave the rows the card will draw uncoloured; a frame drawn without the card while
+     * that is still true comes out full of holes. Nothing in the game toggles this - it is set
+     * once from the command line - but {@code --gpu-verify} draws each view both ways, and the
+     * pairing is what makes that safe.
+     */
+    void setUseGpu(boolean on) {
+        useGpu = on;
+        renderer.shadeUnderCard(!on);
+    }
+
+    /** The busiest column of the last frame: spans and masks. */
+    String gpuMost() {
+        return (spans == null ? 0 : spans.most()) + "/" + (masks == null ? 0 : masks.most());
+    }
+
+    /** How many spans and masks a frame had to hand back to the CPU for want of room. */
+    int gpuDropped() {
+        return (spans == null ? 0 : spans.dropped()) + (masks == null ? 0 : masks.dropped());
+    }
     private GpuWalls gpu;
 
     /** What the card's side of a frame cost, for --bench with -Dgpu.stats=true. */
@@ -156,16 +180,36 @@ public final class Main {
         if (Options.headless(args)) System.setProperty("java.awt.headless", "true");
         // Before AWT. A context asked for after the toolkit has started gets no accelerated
         // pixel format on macOS - the same ordering trap that once left the window taking no
-        // keys, in the other direction. A platform with no backend says so in a sentence and
-        // carries on with the CPU renderer, which runs anywhere; asking GlPlatform rather than
-        // Gl is deliberate, because loading Gl is what fails.
+        // keys, in the other direction.
+        //
+        // Two different things can be missing and both end the same way: a sentence, and the CPU
+        // renderer, which runs anywhere. There may be no backend for this operating system, which
+        // GlPlatform can answer without loading Gl - deliberately, because loading Gl is what
+        // fails. Or there may be a backend and no card for it to find: a Windows machine with no
+        // OpenGL driver, a virtual machine, a CI runner that offers Microsoft's software
+        // renderer. That one only shows up when the context is actually asked for, and it
+        // arrives as an ExceptionInInitializerError out of Gl's own field initialisers, which is
+        // not a thing to let out of main().
         if (o.gpu) {
             String why = GlPlatform.missing();
+            if (why == null) {
+                try {
+                    Gl.context();
+                    // Which card, in one line, and on a machine with more than one, which cards
+                    // it was not. An integrated GPU draws the frame and reports success at a
+                    // fraction of the speed of the one beside it; see GlPlatform.note.
+                    System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
+                    String note = GlPlatform.get().note(Gl.device());
+                    if (note != null) System.err.println("gpu: " + note);
+                } catch (Throwable t) {
+                    if (t instanceof VirtualMachineError e) throw e;
+                    Throwable c = t.getCause() != null ? t.getCause() : t;
+                    why = c.getMessage() != null ? c.getMessage() : c.toString();
+                }
+            }
             if (why != null) {
-                System.err.println(why);
+                System.err.println(why);      // both messages already say what happens next
                 o.gpu = false;
-            } else {
-                Gl.context();
             }
         }
 
@@ -184,7 +228,7 @@ public final class Main {
                         String.valueOf(World.num(g, "lift", 0.0)))));
         Renderer.fogOn = !Boolean.FALSE.equals(lg.get("fog"));
         game.shear = o.shear;
-        game.useGpu = o.gpu;
+        game.setUseGpu(o.gpu);
         if (!o.flat) {
             game.lighting = Lighting.bake(game.world);
             game.renderer.setLighting(game.lighting);
@@ -193,6 +237,7 @@ public final class Main {
         Capture capture = new Capture(game);
         if (o.bench) capture.bench();
         else if (o.verify != null) capture.verify(Path.of(o.verify));
+        else if (o.gpuVerify != null) capture.gpuVerify(Path.of(o.gpuVerify));
         else if (o.shots != null) capture.screenshots(Path.of(o.shots));
         else if (o.shot != null) capture.screenshot(new File(o.shot), o.at);
         else game.run();
@@ -446,7 +491,9 @@ public final class Main {
         if (spans != null) spans.reset();
         if (masks != null) masks.reset();
         renderer.render(c);
-        if (gpu != null) shadeOnGpu(c);
+        // Both: the card's resources are now kept in step even while it is switched off (see
+        // preparePitch), so their existence no longer means it is the card drawing this frame.
+        if (useGpu && gpu != null) shadeOnGpu(c);
         if (c.captureDepth) {
             depth = new float[W * H];
             hiDepth = SS == 1 ? depth : new float[RW * RH];
@@ -497,7 +544,10 @@ public final class Main {
         // Both dimensions: the overscan grows with pitch, and there is no rule that says the
         // width has to grow with the height. A height that changed on its own used to leave the
         // card drawing at the old size and GpuSpans' skip mask too short for the new one.
-        if (useGpu && (gpu == null || spans == null
+        // And once these exist they are kept in step whatever useGpu says, because the renderer
+        // is still writing into them: the sink is attached for as long as the card's path exists,
+        // so a buffer that grew while the card was switched off would be written past its end.
+        if ((useGpu || spans != null) && (gpu == null || spans == null
                 || spans.columns() != srcW || spans.rows() != srcH)) {
             if (gpu != null) gpu.close();
             gpu = new GpuWalls(srcW, srcH, srcW);
