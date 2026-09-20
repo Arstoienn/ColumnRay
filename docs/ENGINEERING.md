@@ -215,6 +215,15 @@ every pixel.
 cameras, and the worst difference is 1 to 3 of 255 with fewer than two pixels in five million
 over 2.
 
+The 3 is the mip chain, not the shading. `Materials.Level.half` keeps its area averages as floats
+and says in a comment that it does not quantize them; `GpuTextures` rounds them to a byte on the
+way up. Uploading the same levels without rounding (`-Dgpu.texels=half` or `=float`) settles it -
+on Haven's spot7 the worst goes 3, 2, 2 and the mean 0.055, 0.029, 0.006 for RGB8, RGB16F and
+RGB32F, and the pixels over 2 go to none. A worst of 2 is the floor: float against double in the
+shader's own arithmetic, which no texture format reaches. With RGB16F all six Haven cameras read
+2. The default stays the byte because the difference costs 570 MB of card memory and nobody can
+see it, but the switch is there and the number it buys is known.
+
 ### Why the CPU stops shading, and how that is checked
 
 Moving a surface to the card saves nothing on its own: the CPU was still colouring every pixel

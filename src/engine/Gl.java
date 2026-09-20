@@ -39,7 +39,8 @@ final class Gl {
             COMPILE_STATUS = 0x8B81, LINK_STATUS = 0x8B82, FRAMEBUFFER = 0x8D40,
             FRAMEBUFFER_COMPLETE = 0x8CD5, COLOR_ATTACHMENT0 = 0x8CE0, RENDERER = 0x1F01,
             VERSION = 0x1F02, TEXTURE_2D_ARRAY = 0x8C1A, TEXTURE_MAX_LEVEL = 0x813D,
-            RGB8 = 0x8051, UNPACK_ALIGNMENT = 0x0CF5, MAX_TEXTURE_SIZE = 0x0D33;
+            RGB8 = 0x8051, UNPACK_ALIGNMENT = 0x0CF5, MAX_TEXTURE_SIZE = 0x0D33, RGB16F = 0x881B,
+            HALF_FLOAT = 0x140B;
 
     private static final ValueLayout.OfInt I32 = ValueLayout.JAVA_INT;
     private static final AddressLayout PTR = ValueLayout.ADDRESS;
@@ -166,15 +167,15 @@ final class Gl {
 
     /** Make room for every mip level of an array texture. glTexStorage3D would say this in one
      *  call, but it is GL 4.2 and macOS stops at 4.1. */
-    static void arrayLevels(int levels, int w, int h, int layers) {
-        call(PIXEL_STORE, UNPACK_ALIGNMENT, 1);                 // three bytes a texel, rows unpadded
+    static void arrayLevels(int levels, int w, int h, int layers, int internal, int type) {
+        call(PIXEL_STORE, UNPACK_ALIGNMENT, 1);                 // three of whatever a texel is
         for (int i = 0; i < levels; i++)
-            call(TEX_IMAGE_3D, TEXTURE_2D_ARRAY, i, RGB8, Math.max(1, w >> i), Math.max(1, h >> i),
-                    layers, 0, RGB, UNSIGNED_BYTE, MemorySegment.NULL);
+            call(TEX_IMAGE_3D, TEXTURE_2D_ARRAY, i, internal, Math.max(1, w >> i), Math.max(1, h >> i),
+                    layers, 0, RGB, type, MemorySegment.NULL);
     }
 
-    static void arrayLevel(int level, int layer, int w, int h, MemorySegment pixels) {
-        call(TEX_SUB_IMAGE_3D, TEXTURE_2D_ARRAY, level, 0, 0, layer, w, h, 1, RGB, UNSIGNED_BYTE, pixels);
+    static void arrayLevel(int level, int layer, int w, int h, MemorySegment pixels, int type) {
+        call(TEX_SUB_IMAGE_3D, TEXTURE_2D_ARRAY, level, 0, 0, layer, w, h, 1, RGB, type, pixels);
     }
 
     /** Trilinear and wrapping: the same filter Materials.Level does by hand. */
