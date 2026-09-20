@@ -16,7 +16,7 @@ import java.util.Arrays;
  */
 final class Options {
     String map = "maps/school.json";
-    String shot, shots, verify;
+    String shot, shots, verify, gpuVerify;
     /** --shot's optional "x y heading pitch [column]". */
     double[] at;
     boolean bench, shear, flat, gpu;
@@ -30,7 +30,8 @@ final class Options {
     /** Does this command line open a window? A headless run must not ask about the keyboard. */
     static boolean headless(String[] args) {
         return Arrays.stream(args).anyMatch(a ->
-                a.equals("--shot") || a.equals("--shots") || a.equals("--bench") || a.equals("--verify"));
+                a.equals("--shot") || a.equals("--shots") || a.equals("--bench")
+                        || a.equals("--verify") || a.equals("--gpu-verify"));
     }
 
     /** The settings this command line asks for, or null when it has already been refused and
@@ -105,6 +106,10 @@ final class Options {
             } else if (args[i].equals("--verify")) {
                 if (i + 1 >= args.length) { usage("--verify needs a file of views"); return false; }
                 verify = args[++i];
+            } else if (args[i].equals("--gpu-verify")) {
+                if (i + 1 >= args.length) { usage("--gpu-verify needs a file of views"); return false; }
+                gpuVerify = args[++i];
+                gpu = true;
             } else if (args[i].equals("--shot")) {
                 if (i + 1 >= args.length) { usage("--shot needs an output file"); return false; }
                 shot = args[++i];
@@ -141,5 +146,6 @@ final class Options {
         System.err.println("  --ss    supersampling factor 1-8: renders at size*N and averages down (default 1).");
         System.err.println("          Rays cast per frame = width * N.");
         System.err.println("  --verify views.txt   print a digest of each view instead of writing files (see test.sh)");
+        System.err.println("  --gpu-verify views.txt   draw each view both ways, at several pitches, and compare");
     }
 }

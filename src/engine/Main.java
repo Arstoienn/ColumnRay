@@ -70,7 +70,7 @@ public final class Main {
     float[] depth, hiDepth; // shot only: output depth and the same pitch warp before downsampling
     int[] albedo, hiAlbedo;       // shot only: unshaded map colours, following the depth samples
     private int[] src;            // what the renderer writes: the upright (y-sheared) view plus overscan
-    private int srcW, srcH;
+    int srcW, srcH;
     final Renderer renderer;
     final RayView rayView;
     final Renderer.Camera cam = new Renderer.Camera();
@@ -95,6 +95,30 @@ public final class Main {
     /** --gpu: the card shades the frame the CPU's columns worked out. Null on the CPU path, and
      *  rebuilt whenever the pitch warp grows the render buffer under it. */
     volatile boolean useGpu;
+
+    /**
+     * Turn the card on or off between frames.
+     *
+     * The two halves go together and must not be set apart. With the card on, the renderer is
+     * told to leave the rows the card will draw uncoloured; a frame drawn without the card while
+     * that is still true comes out full of holes. Nothing in the game toggles this - it is set
+     * once from the command line - but {@code --gpu-verify} draws each view both ways, and the
+     * pairing is what makes that safe.
+     */
+    void setUseGpu(boolean on) {
+        useGpu = on;
+        renderer.shadeUnderCard(!on);
+    }
+
+    /** The busiest column of the last frame: spans and masks. */
+    String gpuMost() {
+        return (spans == null ? 0 : spans.most()) + "/" + (masks == null ? 0 : masks.most());
+    }
+
+    /** How many spans and masks a frame had to hand back to the CPU for want of room. */
+    int gpuDropped() {
+        return (spans == null ? 0 : spans.dropped()) + (masks == null ? 0 : masks.dropped());
+    }
     private GpuWalls gpu;
 
     /** What the card's side of a frame cost, for --bench with -Dgpu.stats=true. */
@@ -184,7 +208,7 @@ public final class Main {
                         String.valueOf(World.num(g, "lift", 0.0)))));
         Renderer.fogOn = !Boolean.FALSE.equals(lg.get("fog"));
         game.shear = o.shear;
-        game.useGpu = o.gpu;
+        game.setUseGpu(o.gpu);
         if (!o.flat) {
             game.lighting = Lighting.bake(game.world);
             game.renderer.setLighting(game.lighting);
@@ -193,6 +217,7 @@ public final class Main {
         Capture capture = new Capture(game);
         if (o.bench) capture.bench();
         else if (o.verify != null) capture.verify(Path.of(o.verify));
+        else if (o.gpuVerify != null) capture.gpuVerify(Path.of(o.gpuVerify));
         else if (o.shots != null) capture.screenshots(Path.of(o.shots));
         else if (o.shot != null) capture.screenshot(new File(o.shot), o.at);
         else game.run();
@@ -446,7 +471,9 @@ public final class Main {
         if (spans != null) spans.reset();
         if (masks != null) masks.reset();
         renderer.render(c);
-        if (gpu != null) shadeOnGpu(c);
+        // Both: the card's resources are now kept in step even while it is switched off (see
+        // preparePitch), so their existence no longer means it is the card drawing this frame.
+        if (useGpu && gpu != null) shadeOnGpu(c);
         if (c.captureDepth) {
             depth = new float[W * H];
             hiDepth = SS == 1 ? depth : new float[RW * RH];
@@ -497,7 +524,10 @@ public final class Main {
         // Both dimensions: the overscan grows with pitch, and there is no rule that says the
         // width has to grow with the height. A height that changed on its own used to leave the
         // card drawing at the old size and GpuSpans' skip mask too short for the new one.
-        if (useGpu && (gpu == null || spans == null
+        // And once these exist they are kept in step whatever useGpu says, because the renderer
+        // is still writing into them: the sink is attached for as long as the card's path exists,
+        // so a buffer that grew while the card was switched off would be written past its end.
+        if ((useGpu || spans != null) && (gpu == null || spans == null
                 || spans.columns() != srcW || spans.rows() != srcH)) {
             if (gpu != null) gpu.close();
             gpu = new GpuWalls(srcW, srcH, srcW);

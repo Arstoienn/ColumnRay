@@ -6,6 +6,7 @@
 #   ./test.sh --determinism  the same build must render the same frames on one thread and on all
 #   ./test.sh --golden       the frames must match tests/golden/
 #   ./test.sh --haven        the same, against the maps/haven submodule (--flat, so no bake)
+#   ./test.sh --gpu          the card's frame against the CPU's, through the whole frame loop
 #   ./test.sh --bless        rewrite tests/golden/ from this build (read the diff first)
 #
 # The golden files hold digests of the renderer's own pixels, depth, albedo and lightmap - not of
@@ -16,9 +17,9 @@ cd "$(dirname "$0")"
 
 mode=all
 case "${1:-}" in
-    --unit|--determinism|--golden|--haven|--bless) mode=${1#--} ;;
+    --unit|--determinism|--golden|--haven|--gpu|--bless) mode=${1#--} ;;
     "") ;;
-    *) echo "usage: $0 [--unit | --determinism | --golden | --haven | --bless]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--unit | --determinism | --golden | --haven | --gpu | --bless]" >&2; exit 2 ;;
 esac
 
 # Small enough to run in seconds, large enough that a real change cannot hide in it. The size is
@@ -108,6 +109,16 @@ MSG
     }
     golden school || fail=1
     golden school-flat --flat || fail=1
+fi
+
+# The card, if this machine has one. Not part of the default run and not in CI: it needs an
+# OpenGL context, and a card works in float where the renderer works in double, so there is
+# nothing here a digest could hold. What it checks instead is that the frame the game shows is
+# the frame the CPU would have drawn, through the whole loop - the pitch warp, the overscan
+# growing under it, the card's buffers being rebuilt around that - at five tilts per camera.
+if [ "$mode" = gpu ]; then
+    echo "== gpu =="
+    run maps/school.json --gpu-verify "$VIEWS" --size "$SIZE" || fail=1
 fi
 
 exit $fail

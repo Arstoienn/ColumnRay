@@ -224,6 +224,34 @@ shader's own arithmetic, which no texture format reaches. With RGB16F all six Ha
 2. The default stays the byte because the difference costs 570 MB of card memory and nobody can
 see it, but the switch is there and the number it buys is known.
 
+### The whole loop, not just the renderer
+
+`GpuCheck` compares the renderer's buffer at a fixed size with the camera level. Between that
+buffer and the window sit the pitch warp, the overscan growing under it and the card's own
+buffers being rebuilt around that, and none of it was covered - which is where the worst bug of
+this branch lived, a resize that watched the width and not the height.
+
+`--gpu-verify views.txt` draws each view through `Main.frame` twice, once on each path, at five
+tilts, and compares the finished output:
+
+```bash
+./test.sh --gpu                                    # school, at the golden size, in seconds
+./run.sh maps/haven/haven.json --gpu-verify tests/views/haven.txt --flat
+```
+
+The tilts climb, because the overscan only ever grows: each one asks for a taller buffer than the
+last and lands on whatever height the warp asks for rather than a round number. Frames are thrown
+away at each tilt until the per-column lists stop growing, because those start small and double
+when a column runs out, so the first frames at a new tilt hand rows back to the CPU as designed.
+
+Its verdict is about the picture and not about the rounding. The two are never identical, and a
+few pixels a frame land exactly on the hard edge of a procedural material - a plank line, a brick
+course - where float and double fall on opposite sides and disagree by tens of levels. So the
+threshold is on how many pixels disagree, not by how much: school runs at 0.0001% of the frame
+over 8 levels and a deliberately broken merge runs at 4.8%, which is the margin the rule sits in.
+Entries handed back to the CPU are reported and do not fail it - a drop is the fallback working,
+and the run that dropped sixty thousand of them still agreed to within four levels.
+
 ### Why the CPU stops shading, and how that is checked
 
 Moving a surface to the card saves nothing on its own: the CPU was still colouring every pixel
