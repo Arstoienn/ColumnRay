@@ -2,6 +2,7 @@ package engine;
 
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
+import java.util.Arrays;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -122,6 +123,117 @@ final class Capture {
         }
         if (g.lighting != null) System.out.printf("lightmap %s rays=%d%n", g.lighting.hash(), g.lighting.rays);
         else System.out.println("lightmap - rays=0   # --flat");
+    }
+
+    /**
+     * The card against the CPU, through the whole of the real frame loop.
+     *
+     * {@code GpuCheck} compares the two at a fixed size with the camera level, which leaves out
+     * everything between the renderer and the window: the pitch warp, the overscan buffer growing
+     * and the card's resources being rebuilt around it. That is not a small gap - it is exactly
+     * where the worst bug of this branch lived, a resize that watched the width and not the
+     * height - so this runs the same views through {@link Main#frame} twice, once on each path,
+     * and compares the finished output.
+     *
+     * The pitches climb, because the overscan only ever grows: each step asks for a taller buffer
+     * than the last and so exercises the rebuild, and the heights it lands on are whatever the
+     * warp asks for rather than round numbers.
+     *
+     * One trap is worth naming. With the card on, the renderer is told to leave the rows the card
+     * will draw uncoloured; turning the card off for the reference frame without undoing that
+     * would compare against a picture with holes in it. Hence the pairing below, and hence
+     * {@code Main.useGpu} being a thing nothing else toggles at runtime.
+     */
+    void gpuVerify(Path list) throws Exception {
+        if (!g.useGpu) {
+            System.err.println("--gpu-verify needs --gpu: it is the card that is being checked");
+            return;
+        }
+        // The file's own pitch column is replaced by this sweep, so a views file that names the
+        // same camera at several tilts checks it several times over. That is a little wasted work
+        // and no wrong answer.
+        double[] pitches = {0, 8, 17, 25, Math.toDegrees(Player.MAX_PITCH)};
+        int worstAll = 0;
+        long failed = 0, pixels = 0, drops = 0;
+        System.out.printf("%-12s %6s %10s %8s %8s %8s %8s %12s%n",
+                "view", "pitch", "buffer", "worst", "mean", "over 8", "dropped", "per column");
+        for (String line : Files.readAllLines(list)) {
+            String t = line.trim();
+            if (t.isEmpty() || t.startsWith("#")) continue;
+            String[] f = t.split("\s+");
+            if (f.length < 5) { System.err.println("skipping: " + t); continue; }
+            exactFeet = f.length > 5 && !f[5].equals("-") ? Double.parseDouble(f[5]) : Double.NaN;
+            for (double pitch : pitches) {
+                // Frames thrown away until the lists stop growing: they start small and double
+                // when a column runs out, so the first frames at a new tilt legitimately hand rows
+                // back to the CPU. What is being checked is the steady state, not the climb to it,
+                // and a tilt that never stops dropping is a real answer rather than a slow start.
+                for (int warm = 0; warm < 16; warm++) {
+                    place(Double.parseDouble(f[1]), Double.parseDouble(f[2]),
+                            Double.parseDouble(f[3]), pitch);
+                    g.setUseGpu(false);
+                    g.frame();
+                    place(Double.parseDouble(f[1]), Double.parseDouble(f[2]),
+                            Double.parseDouble(f[3]), pitch);
+                    g.setUseGpu(true);
+                    g.frame();
+                    if (warm > 0 && g.gpuDropped() == 0) break;
+                }
+                place(Double.parseDouble(f[1]), Double.parseDouble(f[2]),
+                        Double.parseDouble(f[3]), pitch);
+                g.setUseGpu(false);
+                g.frame();
+                int[] cpu = Arrays.copyOf(g.out, g.W * g.H);
+
+                place(Double.parseDouble(f[1]), Double.parseDouble(f[2]),
+                        Double.parseDouble(f[3]), pitch);
+                g.setUseGpu(true);
+                g.frame();
+
+                int worst = 0, over = 0;
+                long sum = 0;
+                for (int i = 0; i < g.W * g.H; i++) {
+                    int a = cpu[i], b = g.out[i];
+                    int d = Math.max(Math.abs((a >> 16 & 255) - (b >> 16 & 255)),
+                            Math.max(Math.abs((a >> 8 & 255) - (b >> 8 & 255)),
+                                    Math.abs((a & 255) - (b & 255))));
+                    sum += d;
+                    if (d > 8) over++;
+                    worst = Math.max(worst, d);
+                }
+                worstAll = Math.max(worstAll, worst);
+                failed += over;
+                pixels += (long) g.W * g.H;
+                drops += g.gpuDropped();
+                System.out.printf("%-12s %6.0f %10s %8d %8.3f %8d %8d %12s%n", f[0], pitch,
+                        g.srcW + "x" + g.srcH, worst, (double) sum / (g.W * g.H), over,
+                        g.gpuDropped(), g.gpuMost());
+            }
+        }
+        // What this is allowed to find, and what it is not.
+        //
+        // The two pictures are never identical - float against double - and a few pixels a frame
+        // land exactly on the hard edge of a procedural material, a plank line or a brick course,
+        // where the two fall on opposite sides and disagree by tens of levels. That is a handful
+        // of pixels in a million and it is what the worst column reports. What this is here to
+        // catch is structural: a row the card did not draw, a buffer left at the wrong size, a
+        // frame where the merge kept the wrong half. Those are not two pixels, they are percents
+        // of the frame, so the threshold is on how many pixels disagree and not on how much.
+        double bad = 100.0 * failed / Math.max(1, pixels);
+        System.out.printf("%nworst %d of 255 anywhere; %d of %d pixels over 8 (%.4f%%); %d dropped%n",
+                worstAll, failed, pixels, bad, drops);
+        // Dropping is not failing. A column with no room for another entry hands its rows back to
+        // the CPU, and this very run is the proof that the picture survives it: the frames that
+        // dropped sixty thousand entries between them still agreed to within four levels. So a
+        // drop is said out loud, because it costs coverage and speed, and the verdict is about
+        // the picture alone.
+        if (drops > 0)
+            System.out.printf("note  %d entries went back to the CPU for want of room in a column%n", drops);
+        if (bad > 0.01) {
+            System.out.println("FAIL  the card and the CPU disagree over more of the frame than rounding explains");
+            System.exit(1);
+        }
+        System.out.println("ok    the card's frame and the CPU's agree everywhere but the odd edge");
     }
 
     /** Every view in a file, one per line: "out.png x y feet heading". Baking the lightmaps for

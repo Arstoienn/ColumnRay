@@ -35,14 +35,17 @@ package engine;
  */
 final class GpuMasks {
     /**
-     * Room for a column's entries. Measured at 1280 columns: school wants ten, and Haven's worst
-     * camera wants 601, because a mesh sawn into cut-out slabs puts a great many of them behind
-     * one another. A column that wants more keeps the rest on the CPU and says so through
-     * {@link #dropped()}, which costs coverage rather than correctness. Only the part of this a
-     * frame really uses crosses the bus ({@code GpuWalls.pack}), so the size is heap and not
-     * bandwidth.
+     * Room for a column's entries. Measured: school wants ten, Haven's worst camera 601 at
+     * 1280 columns and 1768 once the pitch warp's overscan makes the buffer 2074x1112, because a
+     * mesh sawn into cut-out slabs puts a great many of them behind one another and a taller
+     * column meets more. A column that wants more keeps the rest on the CPU and says so through
+     * {@link #dropped()}, which costs coverage and speed rather than correctness.
+     *
+     * Nothing is allocated for this until a column asks: the list starts at sixteen and doubles
+     * when one runs out, and only the part a frame really fills crosses the bus. The cap is what
+     * the worst case may cost, not what a frame does.
      */
-    static final int MAX_PER_COLUMN = 1024;
+    static final int MAX_PER_COLUMN = 2048;
     static final int TEXELS = 4, FLOATS = TEXELS * 4;
 
     private final int columns;
