@@ -9,15 +9,14 @@ import java.lang.foreign.SymbolLookup;
  * points are C functions with the same names and the same signatures wherever they are found.
  * Two things are not, and they are the two this says: which library holds those functions, and
  * how to get a context with no window behind it, which is the one part of OpenGL that was never
- * standardised. On macOS that is CGL; on Windows it would be WGL, on Linux GLX or EGL.
+ * standardised. On macOS that is CGL and on Windows WGL; on Linux it would be GLX or EGL.
  *
- * Only the macOS backend is written. The others are a shape waiting to be filled rather than
- * code nobody has run: a WGL backend needs a hidden window, a pixel format chosen through
- * {@code ChoosePixelFormat}, a dummy context to reach {@code wglCreateContextAttribsARB}, and
- * then a real core-profile context - four calls that cannot be tested from here, so writing them
- * would be guessing in public. What this file does instead is make the seam, so that adding one
- * is a new class and a line in {@link #find}, and make the failure on a platform without one a
- * sentence rather than a stack trace out of a missing framework.
+ * {@link GlCgl} and {@link GlWgl} are written and have been run. Linux has no backend, and the
+ * seam is what this file is for: adding one is a new class and a line in {@link #find}, and a
+ * platform without one fails as a sentence rather than as a stack trace out of a missing
+ * library. The two that exist differ more than the interface suggests - CGL makes a context out
+ * of nothing, while WGL needs a window, a pixel format and a context to ask how to make the
+ * context it wanted - and {@link GlWgl} says why.
  *
  * -Dgl.platform=none forces the missing case, which is how the sentence gets tested on a machine
  * that does have a backend.
@@ -33,6 +32,15 @@ interface GlPlatform {
     String name();
 
     /**
+     * Anything worth saying about how this machine chose the card that answered, or null.
+     *
+     * One card is one card and there is nothing to say. Two is a trap: the renderer string names
+     * one of them, the frame is drawn, everything looks like it worked, and the number at the
+     * bottom of --bench is the wrong card's. {@code renderer} is what {@link Gl#device} said.
+     */
+    default String note(String renderer) { return null; }
+
+    /**
      * Why this machine has no backend, or null when it has one. Deliberately answerable without
      * loading {@link Gl}, whose every field is a GL entry point and so cannot exist here at all.
      */
@@ -45,7 +53,9 @@ interface GlPlatform {
     static GlPlatform find() {
         String forced = System.getProperty("gl.platform", "");
         if (forced.equals("none")) return null;
-        if (System.getProperty("os.name", "").startsWith("Mac")) return GlCgl.INSTANCE;
+        String os = System.getProperty("os.name", "");
+        if (os.startsWith("Mac")) return GlCgl.INSTANCE;
+        if (os.startsWith("Windows")) return GlWgl.INSTANCE;
         return null;
     }
 
