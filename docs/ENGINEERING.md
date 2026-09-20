@@ -416,8 +416,26 @@ and the picture cannot move: a chunk already renders many columns through one Co
 was the existing behaviour and only the bookkeeping changed. The determinism test is the one that
 matters here, and it is the one that would notice.
 
-The other two piles are still there. The lambdas are the bigger and the harder: `flat` returns a
-closure over the plane it describes, and the renderer is built around passing one to `paint`.
+The lambdas were the bigger of the two that were left, and they came of `paint` being handed a
+closure: `flat` returned one over the plane it had just described, `drawHit` another over the side
+of a shape, and each was built afresh for every surface of every column. A flight recording of a
+whole benchmark - 1,120 frames of Haven at 854x480, the map's loading included - sampled 50.0 GB
+of allocation, and 38.3 GB of it was those closures.
+
+What replaced them was already in the file. Building the GPU path had put a description of every
+surface on the column - its material, its colour, the light on it, its lightmap and its texture -
+so that a shader could draw what the CPU was drawing. That description is the closure's captured
+state, written out. So `Surf` now carries it, the `Plane`, the `Cand` and the masked entry hold one
+each and are pooled as they already were, and `paint` colours a row by dispatching on which kind of
+surface it has rather than by calling through an `IntUnaryOperator`. The same recording of this
+build samples 11.7 GB, and nothing in it comes from a surface being described.
+
+The picture cannot move, and the proof is the usual one: school and Haven golden digests unchanged,
+and `GpuCheck` agreeing with the card to the same 2 of 255 on Haven and 10 of 255 on school as
+before, pixel for pixel.
+
+That leaves the third pile, now 2.3 GB of `Geometry.SegHit`, one a ray-versus-segment test.
+`PolyHit` is lent to the renderer rather than allocated; its sibling still is not.
 
 ### What a texel costs to keep
 

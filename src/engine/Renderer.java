@@ -9,7 +9,6 @@ import engine.World.Shape;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.function.IntUnaryOperator;
 import java.util.stream.IntStream;
 
 /**
@@ -337,7 +336,7 @@ final class Renderer {
             // plane (z, slope) and its colour from the plane's own colour function.
             boolean plane;
             double z, slope;
-            IntUnaryOperator color;
+            final Surf surf = new Surf();
             /** Given to the card, so the CPU's own blend of it is not counted as a pixel the
              *  card was never shown. */
             boolean gpu;
@@ -356,15 +355,12 @@ final class Renderer {
          * So it is painted a stretch at a time, with the floors, as the ray moves on (surfaces()).
          */
         private static final class Plane {
-            double gk0;
-            int gmat, grgb, glm, gtex;
-            boolean ggpu;
+            final Surf surf = new Surf();
             boolean top, inside;
             boolean masked;                    // a cut-out's: recorded and blended in, never takes a row
             Shape owner;
             double z, slope, t1, t2;          // z: its height at the eye, slope: its climb along the ray
             int base;
-            IntUnaryOperator color;
             int ev, which;                     // ray view: its shape's event, and 1 top / 2 bottom
             int[] rows;                        // ray view: that shape's side, top and bottom rows
             String label;
@@ -373,15 +369,52 @@ final class Renderer {
         private final ArrayList<Plane> planes = new ArrayList<>();
         private int planeN;                                 // planes[0, planeN) are still being painted
 
+        /**
+         * What a surface is made of: everything shadeRow() needs to colour a row of it, and
+         * everything the card needs to draw it, which are the same few numbers.
+         *
+         * This is what paint() used to be handed a closure for. A surface is described once, where
+         * it is found, and painted a row at a time from the description - a plane long after the
+         * cell it was found in, because a shape's top is painted a stretch at a time as the ray
+         * moves on. So the description is carried by the Plane, the Cand and the Masked entry,
+         * all of which are pooled, and nothing is built per surface per column any more.
+         */
+        private static final class Surf {
+            int mat, rgb;                      // the procedural material, and the colour it tints
+            double k0, ts;                     // the light on it, and a Texture's world scale
+            Lighting.LightMap lm;              // baked light, or null for the flat model
+            Materials.Texture tex;
+            Shape owner;                       // whose mesh image wins over tex; null for a region
+            int glm, gtex;                     // the card's lightmap and texture, -1 for neither
+            boolean gpu;                       // the card was given this surface too
+
+            void set(int mat, int rgb, double k0, Lighting.LightMap lm,
+                     Materials.Texture tex, double ts, Shape owner, boolean gpu, int gtex) {
+                this.mat = mat;
+                this.rgb = rgb;
+                this.k0 = k0;
+                this.lm = lm;
+                this.tex = tex;
+                this.ts = ts;
+                this.owner = owner;
+                this.gtex = gtex;
+                this.glm = lm == null ? -1 : lm.gpuIndex;
+                this.gpu = gpu && (lm == null || lm.gpuIndex >= 0);
+            }
+
+            void copyFrom(Surf o) {
+                mat = o.mat; rgb = o.rgb; k0 = o.k0; ts = o.ts;
+                lm = o.lm; tex = o.tex; owner = o.owner;
+                glm = o.glm; gtex = o.gtex; gpu = o.gpu;
+            }
+        }
+
         /** One horizontal or tilted surface to paint between two distances: a floor, a ceiling or a
          *  stretch of a Plane. Rows [lo, hi]. */
         private static final class Cand {
             double lo, hi, z, slope;
-            double gk0;                        // the GPU path: the plane's light, material, colour and
-            int gmat, grgb, glm, gtex;         // lightmap and texture, which its IntUnaryOperator hides
-            boolean ggpu;                      // false for a lightmapped or image-textured plane
+            final Surf surf = new Surf();
             int ia, ib, base;
-            IntUnaryOperator color;
             Plane plane;
             Region region;
             EventKind kind;
@@ -432,6 +465,21 @@ final class Renderer {
         private int spanKind;                   // 0 nothing, 1 a wall, 2 a plane
         private double spanU, spanW, spanSq, spanLight, spanZ, spanSlope, spanFog;
         private int spanMat, spanRgb, spanLm, spanTex;
+
+        /**
+         * The surface paint() is filling rows of, which shadeRow() reads one row at a time.
+         *
+         * A side is set straight onto these fields, because it is painted where it is found. A
+         * plane hands over the Surf it was described by instead, since several are alive at once
+         * and each is painted in stretches.
+         */
+        private int shKind;                     // 1 a side, 2 a plane
+        private Shape shShape;                  // the side's shape, or null for a region's wall
+        private Lighting.LightMap shLm;
+        private int shMat, shRgb;
+        private double shU, shT, shSq, shK;     // along it, how far, how square-on, the light on it
+        private Surf shSurf;                    // the plane, and where it is:
+        private double shZ, shSF;               // its height at the eye, and its climb times F
 
         private Trace tr;
         private double endT, lastT;
@@ -829,18 +877,16 @@ final class Renderer {
                     spanMat = s.mat;
                     spanRgb = s.color;
                 }
-                if (lm != null) {
-                    double f = fog(t1);
-                    side = paint(yTop, yBot, t1, 0, s.albedoColor, y -> {
-                        double z = eye - (y + 0.5 - hz) * t1 * dk / F;
-                        lm.sample(u, z, L);
-                        return sideColor(s, u, z, t1, sq, f, L);
-                    });
-                } else {
-                    double k = lambert(h.nx, h.ny) * fog(t1) * light;
-                    side = paint(yTop, yBot, t1, 0, s.albedoColor, y -> sideColor(s,
-                            u, eye - (y + 0.5 - hz) * t1 * dk / F, t1, sq, k, null));
-                }
+                shKind = 1;
+                shShape = s;
+                shMat = s.mat;
+                shRgb = s.color;
+                shLm = lm;
+                shU = u;
+                shT = t1;
+                shSq = sq;
+                shK = lm != null ? fog(t1) : lambert(h.nx, h.ny) * fog(t1) * light;
+                side = paint(yTop, yBot, t1, 0, s.albedoColor);
                 spanKind = 0;
             }
             int ev = -1;
@@ -857,21 +903,22 @@ final class Renderer {
             if (eye > atEye) {
                 Lighting.LightMap lm = baked ? lit.top(s) : null;
                 addPlane(s, h, true, atEye, slope, ev, rows, label,
-                        flat(atEye, slope, s.topMat, s.color, light, lm, s.topTex, s.topTs, s),
-                        s.topMat, light, (s.topTex == null && s.img == null) || recTop(s) >= 0, lm,
+                        s.topMat, light, s.topTex, s.topTs,
+                        (s.topTex == null && s.img == null) || recTop(s) >= 0, lm,
                         s.topTex != null || s.img != null ? recTop(s) : -1);
             }
             if (eye < bEye) {
                 Lighting.LightMap lm = baked ? lit.bottom(s) : null;
                 addPlane(s, h, false, bEye, bSlope, ev, rows, label,
-                        flat(bEye, bSlope, s.mat, s.color, 0.45 * light, lm, s.tex, s.ts, s),
-                        s.mat, 0.45 * light, (s.tex == null && s.img == null) || recBottom(s) >= 0, lm,
+                        s.mat, 0.45 * light, s.tex, s.ts,
+                        (s.tex == null && s.img == null) || recBottom(s) >= 0, lm,
                         s.tex != null || s.img != null ? recBottom(s) : -1);
             }
         }
 
         private void addPlane(Shape s, Hit h, boolean top, double z, double slope, int ev, int[] rows, String label,
-                              IntUnaryOperator color, int mat, double k0, boolean gpu, Lighting.LightMap lm, int tex) {
+                              int mat, double k0, Materials.Texture tex, double ts, boolean gpu,
+                              Lighting.LightMap lm, int gtex) {
             if (planeN == planes.size()) planes.add(new Plane());
             Plane p = planes.get(planeN++);
             p.top = top;
@@ -883,13 +930,7 @@ final class Renderer {
             p.t1 = Math.max(h.t1, NEAR);
             p.t2 = Math.min(h.t2, MAX_DIST);
             p.base = s.albedoColor;
-            p.color = color;
-            p.gmat = mat;
-            p.grgb = s.color;
-            p.gk0 = k0;
-            p.glm = lm == null ? -1 : lm.gpuIndex;
-            p.gtex = tex;
-            p.ggpu = gpu && (lm == null || lm.gpuIndex >= 0);
+            p.surf.set(mat, s.color, k0, lm, tex, ts, s, gpu, gtex);
             p.ev = ev;
             p.which = top ? 1 : 2;
             p.rows = rows;
@@ -1018,18 +1059,25 @@ final class Renderer {
         }
 
         private int sideColor(Shape s, double u, double z, double t, double square, double k, float[] light) {
-            if (s.img != null) {
+            return sideColor(s, s.mat, s.color, u, z, t, square, k, light);
+        }
+
+        /** The same, for a face that has no shape behind it: a region's wall finish, which is a
+         *  procedural material and a colour and nothing else. */
+        private int sideColor(Shape s, int mat, int rgb, double u, double z, double t, double square,
+                              double k, float[] light) {
+            if (s != null && s.img != null) {
                 sideImg(s, u, z, t, square);
-                if (albedo != null) textured(s.color);
-                return shade(s.color, T, k, light);
+                if (albedo != null) textured(rgb);
+                return shade(rgb, T, k, light);
             }
-            if (s.tex == null) {
-                double factor = sideTex(s.mat, u, z, t, square) * k;
-                return light == null ? shade(s.color, factor) : shadeL(s.color, factor, light);
+            if (s == null || s.tex == null) {
+                double factor = sideTex(mat, u, z, t, square) * k;
+                return light == null ? shade(rgb, factor) : shadeL(rgb, factor, light);
             }
             sideTex(s.tex, s.ts, u, z, t, square);
-            if (albedo != null) textured(s.color);
-            return shade(s.color, T, k, light);
+            if (albedo != null) textured(rgb);
+            return shade(rgb, T, k, light);
         }
 
         // The albedo pass wants what a surface is - its texture included - with no light on it.
@@ -1164,19 +1212,15 @@ final class Renderer {
         private int wallBand(double zLo, double zHi, double t, double u, double lam, double sq,
                              Region skin, Lighting.LightMap em) {
             if (!(zHi > zLo) || skin == null) return 0;
-            IntUnaryOperator wall;
-            if (em != null) {
-                double f = fog(t);
-                wall = y -> {
-                    double z = eye - (y + 0.5 - hz) * t * dk / F;
-                    em.sample(u, z, L);
-                    return shadeL(skin.wallColor, sideTex(skin.wallMat, u, z, t, sq) * f, L);
-                };
-            } else {
-                double k = lam * skin.light;
-                wall = y -> shade(skin.wallColor,
-                        sideTex(skin.wallMat, u, eye - (y + 0.5 - hz) * t * dk / F, t, sq) * k);
-            }
+            shKind = 1;
+            shShape = null;                             // a region's finish, not a shape's
+            shMat = skin.wallMat;
+            shRgb = skin.wallColor;
+            shLm = em;
+            shU = u;
+            shT = t;
+            shSq = sq;
+            shK = em != null ? fog(t) : lam * skin.light;
             if (sink != null && (em == null || em.gpuIndex >= 0)) {
                 double c = t * dk / F;
                 spanKind = 1;
@@ -1190,7 +1234,7 @@ final class Renderer {
                 spanMat = skin.wallMat;
                 spanRgb = skin.wallColor;
             }
-            int rows = paint(rowZ(zHi, t), rowZ(zLo, t), t, 0, skin.wallColor, wall);
+            int rows = paint(rowZ(zHi, t), rowZ(zLo, t), t, 0, skin.wallColor);
             spanKind = 0;
             return rows;
         }
@@ -1312,12 +1356,12 @@ final class Renderer {
                         m.plane = true;
                         m.z = c.z;
                         m.slope = c.slope;
-                        m.color = c.color;
+                        m.surf.copyFrom(c.surf);
                         m.y0 = run;
                         m.y1 = y;
-                        m.gpu = maskOut != null && c.ggpu && recAlpha(m.s) >= 0
-                                && maskOut.addPlane(x, run, y, c.z, c.slope, c.gk0, c.glm,
-                                        c.grgb, c.gmat, c.gtex, recAlpha(m.s));
+                        m.gpu = maskOut != null && c.surf.gpu && recAlpha(m.s) >= 0
+                                && maskOut.addPlane(x, run, y, c.z, c.slope, c.surf.k0, c.surf.glm,
+                                        c.surf.rgb, c.surf.mat, c.surf.gtex, recAlpha(m.s));
                         if (sink != null && !m.gpu)
                             for (int yy = run; yy < y; yy++) cpuUnder[yy] = true;
                         run = -1;
@@ -1350,15 +1394,18 @@ final class Renderer {
          *  its alpha there, and the plane's own colour. */
         private void blendPlane(Masked m) {
             Shape s = m.s;
-            double sF = m.slope * F;
+            shKind = 2;
+            shSurf = m.surf;
+            shZ = m.z;
+            shSF = m.slope * F;
             for (int y = m.y0; y < m.y1; y++) {
                 if (!cpuWants(m, y)) continue;
-                double t = (eye - m.z) * F / ((y + 0.5 - hz) * dk + sF);
+                double t = (eye - m.z) * F / ((y + 0.5 - hz) * dk + shSF);
                 if (!(t > 0) || t > MAX_DIST) continue;
                 double a = alphaAt(s, px + rx * t, py + ry * t, pixelSize(t));
                 if (a <= 0.004) continue;
                 texAlbedoSet = false;
-                blendPixel(y, m.color.applyAsInt(y), a, t, s, m.gpu);
+                blendPixel(y, planeRow(y), a, t, s, m.gpu);
             }
         }
 
@@ -1423,17 +1470,15 @@ final class Renderer {
                 Region r = stack[i];
                 if (eye <= r.floor) continue;
                 Lighting.LightMap lm = baked ? lit.floor(r) : null;
-                describe(cand(rowZ(r.floor, tb), rowZ(r.floor, ta), r.floor, 0, r.floorColor,
-                        flat(r.floor, r.floorMat, r.floorColor, r.light, lm), null, r, EventKind.FLOOR),
-                        r.floorMat, r.floorColor, r.light, true, lm, -1);
+                cand(rowZ(r.floor, tb), rowZ(r.floor, ta), r.floor, 0, r.floorColor, null, r, EventKind.FLOOR)
+                        .surf.set(r.floorMat, r.floorColor, r.light, lm, null, 1, null, true, -1);
             }
             for (int i = 0; i < stackN; i++) {
                 Region r = stack[i];
                 if (r.sky || eye >= r.ceil) continue;
                 Lighting.LightMap lm = baked ? lit.ceil(r) : null;
-                describe(cand(rowZ(r.ceil, ta), rowZ(r.ceil, tb), r.ceil, 0, r.ceilColor,
-                        flat(r.ceil, r.ceilMat, r.ceilColor, r.light, lm), null, r, EventKind.CEILING),
-                        r.ceilMat, r.ceilColor, r.light, true, lm, -1);
+                cand(rowZ(r.ceil, ta), rowZ(r.ceil, tb), r.ceil, 0, r.ceilColor, null, r, EventKind.CEILING)
+                        .surf.set(r.ceilMat, r.ceilColor, r.light, lm, null, 1, null, true, -1);
             }
             for (int i = 0; i < planeN; i++) addPiece(planes.get(i), ta, tb);
             paintCands(ta, tb);
@@ -1459,27 +1504,10 @@ final class Renderer {
                 if (p.top) hi = H;
                 else lo = 0;
             }
-            Cand c = cand(lo, hi, p.z, p.slope, p.base, p.color, p, null, EventKind.SHAPE);
-            c.gmat = p.gmat;
-            c.grgb = p.grgb;
-            c.gk0 = p.gk0;
-            c.glm = p.glm;
-            c.gtex = p.gtex;
-            c.ggpu = p.ggpu;
+            cand(lo, hi, p.z, p.slope, p.base, p, null, EventKind.SHAPE).surf.copyFrom(p.surf);
         }
 
-        /** What the candidate's colour operator is made of, for the GPU path to rebuild in a
-         *  shader. Only the procedural, unlit path is on the card; the rest says so with ggpu. */
-        private void describe(Cand c, int mat, int rgb, double k0, boolean gpu, Lighting.LightMap lm, int tex) {
-            c.gmat = mat;
-            c.grgb = rgb;
-            c.gk0 = k0;
-            c.gtex = tex;
-            c.glm = lm == null ? -1 : lm.gpuIndex;
-            c.ggpu = gpu && c.glm >= (lm == null ? -1 : 0);
-        }
-
-        private Cand cand(double lo, double hi, double z, double slope, int base, IntUnaryOperator color,
+        private Cand cand(double lo, double hi, double z, double slope, int base,
                           Plane plane, Region region, EventKind kind) {
             if (nc == cands.size()) cands.add(new Cand());
             Cand c = cands.get(nc++);
@@ -1488,11 +1516,9 @@ final class Renderer {
             c.z = z;
             c.slope = slope;
             c.base = base;
-            c.color = color;
             c.plane = plane;
             c.region = region;
             c.kind = kind;
-            c.ggpu = false;
             return c;
         }
 
@@ -1518,18 +1544,22 @@ final class Renderer {
                     if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked)) alone = false;
                 }
                 int rows = 0;
-                if (sink != null && c.ggpu) {
+                shKind = 2;
+                shSurf = c.surf;
+                shZ = c.z;
+                shSF = c.slope * F;
+                if (sink != null && c.surf.gpu) {
                     spanKind = 2;
                     spanZ = c.z;
                     spanSlope = c.slope;
-                    spanLight = c.gk0;
-                    spanLm = c.glm;
-                    spanTex = c.gtex;
-                    spanMat = c.gmat;
-                    spanRgb = c.grgb;
+                    spanLight = c.surf.k0;
+                    spanLm = c.surf.glm;
+                    spanTex = c.surf.gtex;
+                    spanMat = c.surf.mat;
+                    spanRgb = c.surf.rgb;
                 }
                 if (alone) {
-                    rows = paint(c.ia, c.ib, 0, c.z, c.slope, c.base, c.color);
+                    rows = paint(c.ia, c.ib, 0, c.z, c.slope, c.base);
                 } else {
                     int run = -1;
                     for (int y = c.ia; y <= c.ib; y++) {
@@ -1537,7 +1567,7 @@ final class Renderer {
                         if (win && run < 0) {
                             run = y;
                         } else if (!win && run >= 0) {
-                            rows += paint(run, y, 0, c.z, c.slope, c.base, c.color);
+                            rows += paint(run, y, 0, c.z, c.slope, c.base);
                             run = -1;
                         }
                     }
@@ -1593,59 +1623,61 @@ final class Renderer {
             note(kind, ta, String.format("%s%.2f-%.2f", prefix, ta, Math.min(tb, MAX_DIST)), rows);
         }
 
-        /** Horizontal surfaces: invert the projection to get the distance for a row,
-         *  then look up where that lands on the map. */
-        private IntUnaryOperator flat(double z, int mat, int color, double k0, Lighting.LightMap lm) {
-            return flat(z, 0, mat, color, k0, lm, null, 1, null);
+        /** The colour of one row of whatever paint() is filling. */
+        private int shadeRow(int y) {
+            return shKind == 1 ? sideRow(y) : planeRow(y);
+        }
+
+        /** A vertical face: the whole column shares its distance and its u, so only the height
+         *  changes down it. */
+        private int sideRow(int y) {
+            double z = eye - (y + 0.5 - hz) * shT * dk / F;
+            if (shLm == null) return sideColor(shShape, shMat, shRgb, shU, z, shT, shSq, shK, null);
+            shLm.sample(shU, z, L);
+            return sideColor(shShape, shMat, shRgb, shU, z, shT, shSq, shK, L);
         }
 
         /**
-         * A plane. z is its height where the eye stands and slope how fast it climbs along this
-         * ray, so a floor or a flat top passes slope 0 and nothing about it changes.
+         * A plane: a floor, a ceiling, or the top or bottom of a shape. shZ is its height where
+         * the eye stands and shSF how fast it climbs along this ray, times F, so a floor has
+         * shSF 0 and nothing about it changes.
          *
          * The row a plane fills is where the ray's height meets the plane's. The ray is at
          * eye - C*t with C = (row - horizon) * dk / F; the plane is at z + slope*t; so
          * t = (eye - z) / (C + slope), which is the old t = (eye - z) / C with one term added.
          */
-        private IntUnaryOperator flat(double z, double slope, int mat, int color, double k0,
-                                      Lighting.LightMap lm, Materials.Texture tex, double ts, Shape owner) {
-            boolean mapped = owner != null && owner.img != null;        // the mesh's own texture wins
-            double sF = slope * F;
-            if (lm == null) {
-                return y -> {
-                    double t = (eye - z) * F / ((y + 0.5 - hz) * dk + sF);
-                    if (!(t > 0) || t > MAX_DIST) return shade(color, 0.3 * k0);
-                    if (mapped) {
-                        flatImg(owner, t, y);
-                        if (albedo != null) textured(color);
-                        return shade(color, T, k0 * fog(t), null);
-                    }
-                    if (tex != null) {
-                        flatTex(tex, ts, t, y);
-                        if (albedo != null) textured(color);
-                        return shade(color, T, k0 * fog(t), null);
-                    }
-                    return shade(color, flatTex(mat, t, y) * k0 * fog(t));
-                };
-            }
-            return y -> {
-                double t = (eye - z) * F / ((y + 0.5 - hz) * dk + sF);
-                if (!(t > 0) || t > MAX_DIST) return shade(color, 0.3 * k0);
-                double wx = px + rx * t, wy = py + ry * t, f = fog(t);
-                if (Materials.emissive(mat, wx, wy)) return shade(EMISSIVE, f);   // a light panel is its own light
-                lm.sample(wx, wy, L);
+        private int planeRow(int y) {
+            Surf p = shSurf;
+            double t = (eye - shZ) * F / ((y + 0.5 - hz) * dk + shSF);
+            if (!(t > 0) || t > MAX_DIST) return shade(p.rgb, 0.3 * p.k0);
+            boolean mapped = p.owner != null && p.owner.img != null;    // the mesh's own texture wins
+            if (p.lm == null) {
                 if (mapped) {
-                    flatImg(owner, t, y);
-                    if (albedo != null) textured(color);
-                    return shade(color, T, f, L);
+                    flatImg(p.owner, t, y);
+                    if (albedo != null) textured(p.rgb);
+                    return shade(p.rgb, T, p.k0 * fog(t), null);
                 }
-                if (tex != null) {
-                    flatTex(tex, ts, t, y);
-                    if (albedo != null) textured(color);
-                    return shade(color, T, f, L);
+                if (p.tex != null) {
+                    flatTex(p.tex, p.ts, t, y);
+                    if (albedo != null) textured(p.rgb);
+                    return shade(p.rgb, T, p.k0 * fog(t), null);
                 }
-                return shadeL(color, flatTex(mat, t, y) * f, L);
-            };
+                return shade(p.rgb, flatTex(p.mat, t, y) * p.k0 * fog(t));
+            }
+            double wx = px + rx * t, wy = py + ry * t, f = fog(t);
+            if (Materials.emissive(p.mat, wx, wy)) return shade(EMISSIVE, f);   // a light panel is its own light
+            p.lm.sample(wx, wy, L);
+            if (mapped) {
+                flatImg(p.owner, t, y);
+                if (albedo != null) textured(p.rgb);
+                return shade(p.rgb, T, f, L);
+            }
+            if (p.tex != null) {
+                flatTex(p.tex, p.ts, t, y);
+                if (albedo != null) textured(p.rgb);
+                return shade(p.rgb, T, f, L);
+            }
+            return shadeL(p.rgb, flatTex(p.mat, t, y) * f, L);
         }
 
         /** Whatever rows are left: sky above the horizon, distant haze below it. The card draws
@@ -1678,14 +1710,14 @@ final class Renderer {
 
         /** Returns how many rows were actually filled. Depth is constant t on a side; t = 0
          *  means a horizontal face at z, whose distance comes from the row instead. */
-        private int paint(double a, double b, double t, double z, int baseColor, IntUnaryOperator colorOf) {
-            return paint(a, b, t, z, 0, baseColor, colorOf);
+        private int paint(double a, double b, double t, double z, int baseColor) {
+            return paint(a, b, t, z, 0, baseColor);
         }
 
         /** slope: for a plane (t = 0), how fast it climbs along this ray, z being its height at the
          *  eye - a tilted top or bottom. Its depth then comes from the same formula flat() uses to
          *  find it; the horizontal one put every tilted face at the wrong distance. */
-        private int paint(double a, double b, double t, double z, double slope, int baseColor, IntUnaryOperator colorOf) {
+        private int paint(double a, double b, double t, double z, double slope, int baseColor) {
             int ia = clampRow(a), ib = clampRow(b);
             if (ib <= ia) return 0;
             int m = 0, filled = 0;
@@ -1708,11 +1740,11 @@ final class Renderer {
                 }
                 if (depth == null) {
                     for (int y = s0; y < s1; y++)
-                        if (under || !onCard || cpuUnder[y]) pixels[y * W + x] = colorOf.applyAsInt(y);
+                        if (under || !onCard || cpuUnder[y]) pixels[y * W + x] = shadeRow(y);
                 } else {
                     for (int y = s0; y < s1; y++) {
                         texAlbedoSet = false;
-                        pixels[y * W + x] = colorOf.applyAsInt(y);
+                        pixels[y * W + x] = shadeRow(y);
                         albedo[y * W + x] = texAlbedoSet ? texAlbedo : baseColor;
                     }
                     if (t > 0) {
