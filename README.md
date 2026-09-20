@@ -27,6 +27,10 @@ and textured geometry while keeping the column-based renderer.
   which is a preview feature before 22
 - Developed and tested on macOS. On other platforms, input falls back to AWT key events read
   as a US QWERTY layout
+- `--gpu` needs an OpenGL backend: macOS (CGL) and Windows (WGL) have one, Linux does not yet.
+  Without one it prints a sentence and the CPU renderer carries on. On a machine with two
+  graphics cards, which one draws is Windows' per-application preference for `java.exe`
+  (Settings > System > Display > Graphics), and `--gpu` names the card it ended up on
 
 ## Building and running
 

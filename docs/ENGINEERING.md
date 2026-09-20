@@ -319,10 +319,32 @@ of 5 to 9 GB. That is the size of the map, not the cost of a frame.
 ### Platform
 
 The GL entry points are the same C functions everywhere. Two things are not - which library holds
-them, and how to get a context with no window behind it - and those are `GlPlatform`. Only the
-macOS backend (`GlCgl`, which is CGL) is written; on anything else `--gpu` prints one sentence and
-the CPU renderer carries on, which is the whole engine. `-Dgl.platform=none` forces that path so
-the sentence can be tested on a machine that does have a backend.
+them, and how to get a context with no window behind it - and those are `GlPlatform`. macOS
+(`GlCgl`, which is CGL) and Windows (`GlWgl`, which is WGL) are written; on anything else - Linux -
+`--gpu` prints one sentence and the CPU renderer carries on, which is the whole engine.
+`-Dgl.platform=none` forces that path so the sentence can be tested on a machine that does have a
+backend.
+
+The two backends are not the same shape under the interface. CGL makes a context out of nothing.
+WGL cannot: the pixel format that decides what a context can do belongs to a device context, and a
+device context comes from a window, so `GlWgl` registers a one-pixel window that is never shown and
+never painted, purely to hang a format on. And `opengl32.dll` exports OpenGL 1.1 and stops - the
+export table was frozen in 1996 - so every call younger than that, every framebuffer and shader and
+vertex array, comes from `wglGetProcAddress`, which only answers a thread that already has a
+context. `Gl` resolves its entry points while its class initialises, so on Windows the context has
+to exist before the lookup does; `GlWgl.library()` makes it.
+
+**Two cards is a trap.** On a machine with an integrated GPU and a discrete one, OpenGL takes
+whichever card Windows prefers for `java.exe` - a per-application setting in Settings > System >
+Display > Graphics, read once when the JVM starts. It is not the card the window is on: placing the
+hidden window on the discrete card's monitor was written, run and measured making no difference at
+all, which is why that code is not here and the measurement is in `GlWgl.note`. So `--gpu` prints
+the renderer string and, when there is more than one card, the name of the one it did not use.
+"Intel UHD Graphics 770" is an answer that looks exactly like success.
+
+One GLSL note that only Windows found: `packed` is a reserved word in the language. Apple's
+compiler accepts it as an identifier anyway and Intel's does not, so the wall shader's `unpack`
+takes a `bits`.
 
 ## Anti-aliasing (`--ss`)
 
@@ -463,6 +485,7 @@ vertical line in the world, so it converges like every other vertical.
 | `src/engine/Gl.java` | the OpenGL entry points, one line each |
 | `src/engine/GlPlatform.java` | which library holds them and how to get a context; the only per-OS part |
 | `src/engine/GlCgl.java` | the macOS backend: OpenGL.framework and CGL |
+| `src/engine/GlWgl.java` | the Windows backend: a hidden window, WGL, and `wglGetProcAddress` |
 | `src/engine/GlMaterials.java` | `Materials`' procedural detail and masks, in GLSL |
 | `src/engine/GpuWalls.java` | the card's pass: the shader, the uploads and the readback |
 | `src/engine/GpuSpans.java` | the renderer's intervals, per column, as a card can read them |

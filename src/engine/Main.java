@@ -190,6 +190,12 @@ public final class Main {
                 o.gpu = false;
             } else {
                 Gl.context();
+                // Which card, in one line, and on a machine with more than one, which cards it
+                // was not. An integrated GPU draws the frame and reports success at a fraction
+                // of the speed of the one sitting beside it; see GlPlatform.note.
+                System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
+                String note = GlPlatform.get().note(Gl.device());
+                if (note != null) System.err.println("gpu: " + note);
             }
         }
 
