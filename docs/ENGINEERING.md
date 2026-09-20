@@ -330,9 +330,21 @@ the fix this section first recommended. What would actually help is making the m
 boundaries themselves agree - snapping the scaled coordinate before `floor` and `frac` with the
 same epsilon on both sides - and that is a change to `Materials`, not to the buffer.
 
-**The frame-time tail on Haven is garbage collection, not the renderer.** The median frame is
-8 to 12 ms and p99 is 32 to 37; `-Xlog:gc` shows G1 mixed pauses of 40 to 174 ms on a live heap
-of 5 to 9 GB. That is the size of the map, not the cost of a frame.
+**The frame-time tail on Haven is mostly where the camera is pointing, not the collector.** This
+was first written down the other way round, on the strength of a p99 and a `-Xlog:gc` log read
+side by side, and `-Dbench.dump` exists to tell the two apart: it writes every frame of the turn
+in the order it was rendered, and a stall and an expensive heading do not look alike in that.
+
+A spin on the card at `--feet 3` with the bake, 1280x720: median 5.5 ms, p95 18.4, p99 21.4,
+worst 23.8. As a distribution that is a four-fold tail. In order it is not a tail at all but one
+broad hill - the median by fifteen degrees runs 3, 3, 3, 4, 4, 7, 9, 10, 14, 17, 16, 16, 18, 15,
+11, 11, 7, 4, 4, 3, 3, 3, 3, 3 ms, which is a wall two metres away at one end of the turn and the
+length of the map at the other. Tilted, the same one hill between 6 and 105 ms.
+
+The collector is still large and still there: 32 pauses in that run, 0.99 s of them together, the
+worst a 673 ms humongous allocation. But none of the 1,440 timed frames is anywhere near 673 ms,
+so it fell in the warmup or the load, where a bench's percentiles cannot see it. On a map this
+size, read a percentile with the series beside it.
 
 ### Platform
 
