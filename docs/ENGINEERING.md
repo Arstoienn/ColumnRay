@@ -212,8 +212,7 @@ every pixel.
 | `merged` | the same, for the frame the game actually shows (see below) |
 
 `masked` going to zero is what finishing looks like. It is zero on school and on all six Haven
-cameras, and the worst difference is 1 to 3 of 255 with fewer than two pixels in five million
-over 2.
+cameras, and the worst difference is 2 of 255 with no pixel anywhere over 2.
 
 The 3 is the mip chain, not the shading. `Materials.Level.half` keeps its area averages as floats
 and says in a comment that it does not quantize them; `GpuTextures` rounds them to a byte on the
@@ -221,8 +220,7 @@ way up. Uploading the same levels without rounding (`-Dgpu.texels=half` or `=flo
 on Haven's spot7 the worst goes 3, 2, 2 and the mean 0.055, 0.029, 0.006 for RGB8, RGB16F and
 RGB32F, and the pixels over 2 go to none. A worst of 2 is the floor: float against double in the
 shader's own arithmetic, which no texture format reaches. With RGB16F all six Haven cameras read
-2. The default stays the byte because the difference costs 570 MB of card memory and nobody can
-see it, but the switch is there and the number it buys is known.
+2, so RGB16F is the default; `-Dgpu.texels=byte` goes back and `=float` asks the question again.
 
 ### The whole loop, not just the renderer
 
