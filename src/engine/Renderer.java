@@ -303,6 +303,7 @@ final class Renderer {
         private int open;                                   // number of row intervals still empty
         private final int[] stamp = new int[world.shapes.length];
         private final int[] nodes = new int[128];           // the tree walk's stack; a tree is ~log2(n) deep
+        private final Geometry.Poly poly = new Geometry.Poly();   // lent to rayPoly, never allocated
         private int ray;
 
         /**
@@ -701,13 +702,13 @@ final class Renderer {
                             (Math.atan2(ny, nx) + Math.PI) * s.r, 0);
                 }
                 case POLY -> {
-                    PolyHit ph = Geometry.rayPoly(px, py, rx, ry, s.xs, s.ys);
-                    if (ph == null || ph.t2() <= NEAR || ph.t1() > s.maxDist) return false;
-                    int i = ph.enterEdge(), j = (i + 1) % s.xs.length;
+                    if (!Geometry.rayPoly(px, py, rx, ry, s.xs, s.ys, poly)) return false;
+                    if (poly.t2 <= NEAR || poly.t1 > s.maxDist) return false;
+                    int i = poly.enterEdge, j = (i + 1) % s.xs.length;
                     double ex = s.xs[j] - s.xs[i], ey = s.ys[j] - s.ys[i], len = Math.hypot(ex, ey);
                     double nx = -ey / len, ny = ex / len;
                     if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }
-                    return set(into, s, ph.t1(), ph.t2(), ph.t1() <= NEAR, nx, ny, ph.enterU() * len, i);
+                    return set(into, s, poly.t1, poly.t2, poly.t1 <= NEAR, nx, ny, poly.enterU * len, i);
                 }
                 default -> {
                     return false;

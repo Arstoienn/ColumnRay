@@ -39,17 +39,76 @@ final class Geometry {
         return new Span((-B - q) / (2 * A), (-B + q) / (2 * A));   // enter, exit
     }
 
-    /** raySeg against every edge: the smallest t is the entry, the largest the exit.
-     *  A negative entry means the ray origin is inside the polygon. */
+    /**
+     * Every edge: the smallest t is the entry, the largest the exit. A negative entry means the
+     * ray origin is inside the polygon.
+     *
+     * The edge test is written out here rather than calling {@link #raySeg}, and the reason is
+     * measured rather than stylistic. This is the hottest method in the engine - every ray
+     * against every polygon it meets - and its {@code PolyHit} does not escape its caller, so
+     * escape analysis should turn it into a few registers and never allocate. It did not: with
+     * the call in place the method sat just over HotSpot's inlining budget, the caller could not
+     * inline it, and Haven's benchmark allocated 1,645 MB of PolyHit. Written out it inlines,
+     * the analysis fires, and the same benchmark allocates 13 MB. A record that is never built
+     * is worth a dozen lines that repeat themselves.
+     */
+    /**
+     * The same, into six slots the caller lends, and so without the record.
+     *
+     * The record does not escape its caller and escape analysis ought to remove it, and with a
+     * larger inlining budget it does - measured, 1,645 MB of PolyHit a benchmark falling to 13.
+     * But that leaves the engine's hottest allocation resting on a JVM heuristic and a default
+     * that could change. The renderer, which runs this a few million times a frame, lends a
+     * Poly instead; the bake's Occluder is offline and keeps the record, which reads better.
+     */
+    static boolean rayPoly(double px, double py, double rx, double ry,
+                           double[] xs, double[] ys, Poly into) {
+        double t1 = Double.POSITIVE_INFINITY, t2 = Double.NEGATIVE_INFINITY, u1 = 0, u2 = 0;
+        int e1 = -1, e2 = -1;
+        for (int i = 0, n = xs.length; i < n; i++) {
+            int j = i + 1 == n ? 0 : i + 1;
+            double ax = xs[i], ay = ys[i];
+            double ex = xs[j] - ax, ey = ys[j] - ay;
+            double den = rx * ey - ry * ex;
+            if (Math.abs(den) < EPS) continue;
+            double apx = ax - px, apy = ay - py;
+            double u = (apx * ry - apy * rx) / den;
+            if (u < 0 || u > 1) continue;
+            double t = (apx * ey - apy * ex) / den;
+            if (t < t1) { t1 = t; e1 = i; u1 = u; }
+            if (t > t2) { t2 = t; e2 = i; u2 = u; }
+        }
+        if (!(t2 > t1)) return false;
+        into.t1 = t1;
+        into.t2 = t2;
+        into.enterEdge = e1;
+        into.enterU = u1;
+        into.exitEdge = e2;
+        into.exitU = u2;
+        return true;
+    }
+
+    /** What {@link #rayPoly} fills in, owned and reused by whoever asks. */
+    static final class Poly {
+        double t1, t2, enterU, exitU;
+        int enterEdge, exitEdge;
+    }
+
     static PolyHit rayPoly(double px, double py, double rx, double ry, double[] xs, double[] ys) {
         double t1 = Double.POSITIVE_INFINITY, t2 = Double.NEGATIVE_INFINITY, u1 = 0, u2 = 0;
         int e1 = -1, e2 = -1;
         for (int i = 0, n = xs.length; i < n; i++) {
-            int j = (i + 1) % n;
-            SegHit h = raySeg(px, py, rx, ry, xs[i], ys[i], xs[j], ys[j]);
-            if (h == null) continue;
-            if (h.t() < t1) { t1 = h.t(); e1 = i; u1 = h.u(); }
-            if (h.t() > t2) { t2 = h.t(); e2 = i; u2 = h.u(); }
+            int j = i + 1 == n ? 0 : i + 1;
+            double ax = xs[i], ay = ys[i];
+            double ex = xs[j] - ax, ey = ys[j] - ay;
+            double den = rx * ey - ry * ex;
+            if (Math.abs(den) < EPS) continue;                // parallel
+            double apx = ax - px, apy = ay - py;
+            double u = (apx * ry - apy * rx) / den;           // position along the edge, 0..1
+            if (u < 0 || u > 1) continue;
+            double t = (apx * ey - apy * ex) / den;           // distance along the ray
+            if (t < t1) { t1 = t; e1 = i; u1 = u; }
+            if (t > t2) { t2 = t; e2 = i; u2 = u; }
         }
         return t2 > t1 ? new PolyHit(t1, t2, e1, u1, e2, u2) : null;
     }
