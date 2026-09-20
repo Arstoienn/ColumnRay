@@ -83,8 +83,31 @@ final class Capture {
                     g.W, g.H, g.RW, g.RH, g.SS, Math.toDegrees(p), g.shear ? "shear" : "true",
                     g.renderer.drawnX1 - g.renderer.drawnX0, median, p95, p99, worst, mean, 1000 / median);
             g.gpuStats();
+            dump(ns, p);
         }
         g.player.pitch = saved;
+    }
+
+    /**
+     * -Dbench.dump=NAME writes every frame's time to NAME-pitchN.txt, one millisecond figure a
+     * line, in the order the turn rendered them.
+     *
+     * A percentile says how bad the bad frames are and nothing about what they are. Two very
+     * different things look the same in one: a collector stopping the world for 80 ms, and a
+     * heading that simply has more of the map down it than the one before. The first is a spike
+     * with cheap frames either side, the second a broad hill that comes round once a turn, and
+     * only the frames in order tell them apart.
+     */
+    private void dump(long[] ns, double pitch) {
+        String name = System.getProperty("bench.dump");
+        if (name == null) return;
+        StringBuilder b = new StringBuilder();
+        for (long n : ns) b.append(String.format("%.3f%n", n / 1e6));
+        try {
+            Files.writeString(Path.of(String.format("%s-pitch%.0f.txt", name, Math.toDegrees(pitch))), b);
+        } catch (Exception e) {
+            System.err.println("bench.dump: " + e);
+        }
     }
 
     /**
