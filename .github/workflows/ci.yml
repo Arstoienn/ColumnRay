@@ -54,6 +54,9 @@ jobs:
           java-version: '26'
       - run: ./build.sh
       - run: ./test.sh --unit
+      # The whole point of the job: the engine starts and renders on a platform with no OpenGL
+      # backend, saying so rather than failing. --gpu is asked for deliberately.
+      - run: ./run.sh --gpu --size 320x180 --shot windows.png
 
   # The golden frames, which are digests of actual pixels and so are tied to a CPU: Math.sin is
   # specified to one unit in the last place, not exactly. They were taken on Apple silicon, which

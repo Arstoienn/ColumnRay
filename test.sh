@@ -22,6 +22,15 @@ case "${1:-}" in
     *) echo "usage: $0 [--unit | --determinism | --golden | --haven | --gpu | --bless]" >&2; exit 2 ;;
 esac
 
+# Java's classpath separator is the one thing in here that is not the same everywhere: a colon on
+# Unix and a semicolon on Windows, where this runs under Git Bash and so has a Unix shell in front
+# of a Windows JVM. Everything else - find, javac, the forward slashes in the paths it prints - the
+# JDK and Git Bash agree about.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) CP=';' ;;
+    *) CP=':' ;;
+esac
+
 # Small enough to run in seconds, large enough that a real change cannot hide in it. The size is
 # part of the golden file: change it and every digest changes with it.
 SIZE=320x180
@@ -44,7 +53,7 @@ if [ "$mode" = all ] || [ "$mode" = unit ]; then
     echo "== unit =="
     mkdir -p out-test
     javac -d out-test -cp out $(find tests/src -name '*.java')
-    java -cp out:out-test engine.Tests || fail=1
+    java -cp "out${CP}out-test" engine.Tests || fail=1
 fi
 
 if [ "$mode" = all ] || [ "$mode" = determinism ]; then
