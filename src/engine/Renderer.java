@@ -111,6 +111,48 @@ final class Renderer {
                     + "post the change to that thread and let it apply it between frames");
     }
 
+    /** When set, every wall interval the columns paint is also recorded here for the GPU path.
+     *  Null - which it is unless something asks otherwise - costs one null test an interval. */
+    private volatile GpuSpans spanSink;
+
+    /** The same, for the masked surfaces blended over the finished column. */
+    private volatile GpuMasks maskSink;
+
+    void captureSpans(GpuSpans s) {
+        betweenFrames("captureSpans");
+        spanSink = s;
+    }
+
+    void captureMasks(GpuMasks m) {
+        betweenFrames("captureMasks");
+        maskSink = m;
+    }
+
+    /** Which record on the card each of a shape's faces reads, for the span to carry. Null when
+     *  the world has no images, and then no surface has one. */
+    private volatile GpuMaterials cardMats;
+
+    void setMaterials(GpuMaterials m) {
+        betweenFrames("setMaterials");
+        cardMats = m;
+    }
+
+    /**
+     * Whether the CPU still colours the rows the card is going to draw.
+     *
+     * The game wants the card's picture and nothing else, so leaving those rows alone is the
+     * whole point of putting them on the card - a frame the card draws entirely is one the CPU
+     * never shades a pixel of. {@code GpuCheck} wants both pictures to hold them against each
+     * other, so it leaves this on. It is on by default, which is the answer that is merely slow
+     * rather than wrong.
+     */
+    private volatile boolean shadeUnderCard = true;
+
+    void shadeUnderCard(boolean b) {
+        betweenFrames("shadeUnderCard");
+        shadeUnderCard = b;
+    }
+
     void setLighting(Lighting l) {
         betweenFrames("setLighting");
         lighting = l;
@@ -273,6 +315,9 @@ final class Renderer {
             boolean plane;
             double z, slope;
             IntUnaryOperator color;
+            /** Given to the card, so the CPU's own blend of it is not counted as a pixel the
+             *  card was never shown. */
+            boolean gpu;
         }
 
         private final double[] A = new double[6];          // an alpha sample; T is the colour's
@@ -288,6 +333,9 @@ final class Renderer {
          * So it is painted a stretch at a time, with the floors, as the ray moves on (surfaces()).
          */
         private static final class Plane {
+            double gk0;
+            int gmat, grgb, glm, gtex;
+            boolean ggpu;
             boolean top, inside;
             boolean masked;                    // a cut-out's: recorded and blended in, never takes a row
             Shape owner;
@@ -306,6 +354,9 @@ final class Renderer {
          *  stretch of a Plane. Rows [lo, hi]. */
         private static final class Cand {
             double lo, hi, z, slope;
+            double gk0;                        // the GPU path: the plane's light, material, colour and
+            int gmat, grgb, glm, gtex;         // lightmap and texture, which its IntUnaryOperator hides
+            boolean ggpu;                      // false for a lightmapped or image-textured plane
             int ia, ib, base;
             IntUnaryOperator color;
             Plane plane;
@@ -340,6 +391,25 @@ final class Renderer {
         private int crossEdge, crossings;
 
         // Statistics and recording
+        /** The GPU path: where wall intervals go, and the wall currently being painted. */
+        private GpuSpans sink;
+        private GpuMasks maskOut;
+        private GpuMaterials mats;
+        /**
+         * Rows the CPU must colour even though the card is drawing them, because a surface the
+         * card was not given will be blended over them and needs something underneath.
+         *
+         * A masked surface is recorded when the ray meets it and blended at the end, so by the
+         * time whatever is behind it comes to be painted, this already says so. Rows nothing
+         * unported covers are left to the card alone, and that is the whole saving: a frame the
+         * card draws entirely is one the CPU never shades a pixel of.
+         */
+        private final boolean[] cpuUnder = new boolean[H];
+        private boolean under = true;                     // shade what the card draws anyway
+        private int spanKind;                   // 0 nothing, 1 a wall, 2 a plane
+        private double spanU, spanW, spanSq, spanLight, spanZ, spanSlope, spanFog;
+        private int spanMat, spanRgb, spanLm, spanTex;
+
         private Trace tr;
         private double endT, lastT;
         private String endReason;
@@ -347,6 +417,10 @@ final class Renderer {
 
         void render(int x, Camera cam) {
             this.x = x;
+            sink = spanSink;
+            maskOut = maskSink;
+            mats = cardMats;
+            under = shadeUnderCard;
             px = cam.x;
             py = cam.y;
             eye = cam.eye;
@@ -364,6 +438,7 @@ final class Renderer {
             if (++ray == Integer.MAX_VALUE) { Arrays.fill(stamp, 0); ray = 1; }
             pendN = sortedN = 0;
             maskedN = 0;
+            if (sink != null) Arrays.fill(cpuUnder, false);
             planeN = 0;
             crossings = 0;
             cells = tests = 0;
@@ -717,6 +792,20 @@ final class Renderer {
                 double u = h.u;
                 Lighting.LightMap lm = baked ? lit.side(s, h.face) : null;
                 double sq = square(h.nx, h.ny);
+                if (sink != null && (lm == null || lm.gpuIndex >= 0)
+                        && ((s.img == null && s.tex == null) || recSide(s) >= 0)) {
+                    double c = t1 * dk / F;
+                    spanKind = 1;
+                    spanU = u;
+                    spanW = c;
+                    spanSq = sq;
+                    spanLight = lambert(h.nx, h.ny) * fog(t1) * light;
+                    spanFog = fog(t1);
+                    spanLm = lm == null ? -1 : lm.gpuIndex;
+                    spanTex = s.img != null || s.tex != null ? recSide(s) : -1;
+                    spanMat = s.mat;
+                    spanRgb = s.color;
+                }
                 if (lm != null) {
                     double f = fog(t1);
                     side = paint(yTop, yBot, t1, 0, s.albedoColor, y -> {
@@ -729,6 +818,7 @@ final class Renderer {
                     side = paint(yTop, yBot, t1, 0, s.albedoColor, y -> sideColor(s,
                             u, eye - (y + 0.5 - hz) * t1 * dk / F, t1, sq, k, null));
                 }
+                spanKind = 0;
             }
             int ev = -1;
             int[] rows = null;
@@ -741,16 +831,24 @@ final class Renderer {
             }
             // A plane is seen from above exactly when the eye is above it where the eye stands - it
             // is a plane, so every point of it the ray meets is then met from above.
-            if (eye > atEye)
+            if (eye > atEye) {
+                Lighting.LightMap lm = baked ? lit.top(s) : null;
                 addPlane(s, h, true, atEye, slope, ev, rows, label,
-                        flat(atEye, slope, s.topMat, s.color, light, baked ? lit.top(s) : null, s.topTex, s.topTs, s));
-            if (eye < bEye)
+                        flat(atEye, slope, s.topMat, s.color, light, lm, s.topTex, s.topTs, s),
+                        s.topMat, light, (s.topTex == null && s.img == null) || recTop(s) >= 0, lm,
+                        s.topTex != null || s.img != null ? recTop(s) : -1);
+            }
+            if (eye < bEye) {
+                Lighting.LightMap lm = baked ? lit.bottom(s) : null;
                 addPlane(s, h, false, bEye, bSlope, ev, rows, label,
-                        flat(bEye, bSlope, s.mat, s.color, 0.45 * light, baked ? lit.bottom(s) : null, s.tex, s.ts, s));
+                        flat(bEye, bSlope, s.mat, s.color, 0.45 * light, lm, s.tex, s.ts, s),
+                        s.mat, 0.45 * light, (s.tex == null && s.img == null) || recBottom(s) >= 0, lm,
+                        s.tex != null || s.img != null ? recBottom(s) : -1);
+            }
         }
 
         private void addPlane(Shape s, Hit h, boolean top, double z, double slope, int ev, int[] rows, String label,
-                              IntUnaryOperator color) {
+                              IntUnaryOperator color, int mat, double k0, boolean gpu, Lighting.LightMap lm, int tex) {
             if (planeN == planes.size()) planes.add(new Plane());
             Plane p = planes.get(planeN++);
             p.top = top;
@@ -763,6 +861,12 @@ final class Renderer {
             p.t2 = Math.min(h.t2, MAX_DIST);
             p.base = s.albedoColor;
             p.color = color;
+            p.gmat = mat;
+            p.grgb = s.color;
+            p.gk0 = k0;
+            p.glm = lm == null ? -1 : lm.gpuIndex;
+            p.gtex = tex;
+            p.ggpu = gpu && (lm == null || lm.gpuIndex >= 0);
             p.ev = ev;
             p.which = top ? 1 : 2;
             p.rows = rows;
@@ -828,7 +932,6 @@ final class Renderer {
             nextCross(t);
         }
 
-        /** One solid band of the far side, seen through an opening on the near side. */
         /** How wide one pixel is, in metres, on a surface square to the eye at distance t. */
         private double pixelSize(double t) { return t * dk / F; }
 
@@ -1034,6 +1137,7 @@ final class Renderer {
             T[0] = r / n; T[1] = g / n; T[2] = b / n;
         }
 
+        /** One solid band of the far side, seen through an opening on the near side. */
         private int wallBand(double zLo, double zHi, double t, double u, double lam, double sq,
                              Region skin, Lighting.LightMap em) {
             if (!(zHi > zLo) || skin == null) return 0;
@@ -1050,8 +1154,43 @@ final class Renderer {
                 wall = y -> shade(skin.wallColor,
                         sideTex(skin.wallMat, u, eye - (y + 0.5 - hz) * t * dk / F, t, sq) * k);
             }
-            return paint(rowZ(zHi, t), rowZ(zLo, t), t, 0, skin.wallColor, wall);
+            if (sink != null && (em == null || em.gpuIndex >= 0)) {
+                double c = t * dk / F;
+                spanKind = 1;
+                spanU = u;
+                spanW = c;                              // pixelSize(t): how wide a pixel is here
+                spanSq = sq;
+                spanLight = lam * skin.light;           // the flat model's scalar; fog alone when lit
+                spanFog = fog(t);
+                spanLm = em == null ? -1 : em.gpuIndex;
+                spanTex = -1;
+                spanMat = skin.wallMat;
+                spanRgb = skin.wallColor;
+            }
+            int rows = paint(rowZ(zHi, t), rowZ(zLo, t), t, 0, skin.wallColor, wall);
+            spanKind = 0;
+            return rows;
         }
+
+        /**
+         * Has the CPU any reason to work out this pixel of a masked surface?
+         *
+         * None, when the card was given the surface, nothing unported is blended over the same
+         * row, and no screenshot wants the albedo and the depth. That covers every tree in
+         * school, and it is worth more than the spans are: a mask costs two noise lookups and a
+         * filtered texture sample a row, and the CPU was paying for all of them twice.
+         */
+        private boolean cpuWants(Masked m, int y) {
+            return !(sink != null && !under && m.gpu && !cpuUnder[y] && depth == null);
+        }
+
+        private int recSide(Shape s) { return mats == null ? -1 : mats.side(s); }
+
+        private int recTop(Shape s) { return mats == null ? -1 : mats.top(s); }
+
+        private int recBottom(Shape s) { return mats == null ? -1 : mats.bottom(s); }
+
+        private int recAlpha(Shape s) { return mats == null ? -1 : mats.alpha(s); }
 
         /** Note the rows a masked surface could cover, clipped to the ones still open. */
         private void record(Shape s, Hit h, double t, double yTop, double yBot, Region in) {
@@ -1074,6 +1213,17 @@ final class Renderer {
                 m.y0 = y0;
                 m.y1 = y1;
                 m.plane = false;
+                boolean cut = s.amap != null;             // a slab sawn out of a mesh, not a tree
+                m.gpu = maskOut != null
+                        && (cut ? recAlpha(s) >= 0 : s.mask >= 0)
+                        && ((s.img == null && s.tex == null) || recSide(s) >= 0)
+                        && (m.lm == null || m.lm.gpuIndex >= 0)
+                        && maskOut.addSide(x, y0, y1, cut ? -1 : s.mask, h.u, t, m.w, m.sq, m.f,
+                                m.lm == null ? -1 : m.lm.gpuIndex, s.color, s.mat,
+                                1 / s.len, 1 / (s.h - s.z0), s.z0,
+                                s.img != null || s.tex != null ? recSide(s) : -1, recAlpha(s));
+                if (sink != null && !m.gpu)
+                    for (int y = y0; y < y1; y++) cpuUnder[y] = true;
                 rows += y1 - y0;
             }
             if (tr != null) note(EventKind.SHAPE, t, s.label + " (masked, " + rows + " rows blended)", 0);
@@ -1099,6 +1249,7 @@ final class Renderer {
                 }
                 double invU = 1 / s.len, invV = 1 / (s.h - s.z0);
                 for (int y = m.y0; y < m.y1; y++) {
+                    if (!cpuWants(m, y)) continue;
                     double z = eye - (y + 0.5 - hz) * m.t * dk / F;
                     double a = Materials.mask(s.mask, m.u * invU, (z - s.z0) * invV, m.w);
                     if (a <= 0.004) continue;
@@ -1109,6 +1260,7 @@ final class Renderer {
                     } else {
                         c = sideColor(s, m.u, z, m.t, m.sq, m.f, null);
                     }
+                    if (sink != null && !m.gpu) sink.skip(x, y);
                     int p = y * W + x;
                     pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
                     // A blended pixel has several surfaces; keep the nearest one that contributes.
@@ -1140,6 +1292,11 @@ final class Renderer {
                         m.color = c.color;
                         m.y0 = run;
                         m.y1 = y;
+                        m.gpu = maskOut != null && c.ggpu && recAlpha(m.s) >= 0
+                                && maskOut.addPlane(x, run, y, c.z, c.slope, c.gk0, c.glm,
+                                        c.grgb, c.gmat, c.gtex, recAlpha(m.s));
+                        if (sink != null && !m.gpu)
+                            for (int yy = run; yy < y; yy++) cpuUnder[yy] = true;
                         run = -1;
                     }
                 }
@@ -1152,8 +1309,11 @@ final class Renderer {
             return A[0];
         }
 
-        /** Write one blended pixel of a cut-out, and its albedo and depth for a screenshot. */
-        private void blendPixel(int y, int c, double a, double t, Shape s) {
+        /** Write one blended pixel of a cut-out, and its albedo and depth for a screenshot.
+         *  gpu says the card was given this surface too, so the pixel is not marked as one the
+         *  CPU kept - it is one the two are expected to agree on. */
+        private void blendPixel(int y, int c, double a, double t, Shape s, boolean gpu) {
+            if (sink != null && !gpu) sink.skip(x, y);
             int p = y * W + x;
             pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
             if (depth != null) {
@@ -1169,12 +1329,13 @@ final class Renderer {
             Shape s = m.s;
             double sF = m.slope * F;
             for (int y = m.y0; y < m.y1; y++) {
+                if (!cpuWants(m, y)) continue;
                 double t = (eye - m.z) * F / ((y + 0.5 - hz) * dk + sF);
                 if (!(t > 0) || t > MAX_DIST) continue;
                 double a = alphaAt(s, px + rx * t, py + ry * t, pixelSize(t));
                 if (a <= 0.004) continue;
                 texAlbedoSet = false;
-                blendPixel(y, m.color.applyAsInt(y), a, t, s);
+                blendPixel(y, m.color.applyAsInt(y), a, t, s, m.gpu);
             }
         }
 
@@ -1182,6 +1343,7 @@ final class Renderer {
         private void blendCutSide(Masked m) {
             Shape s = m.s;
             for (int y = m.y0; y < m.y1; y++) {
+                if (!cpuWants(m, y)) continue;
                 double z = eye - (y + 0.5 - hz) * m.t * dk / F;
                 double a = alphaAt(s, m.u, z, pixelSize(m.t) / m.sq);
                 if (a <= 0.004) continue;
@@ -1193,7 +1355,7 @@ final class Renderer {
                 } else {
                     c = sideColor(s, m.u, z, m.t, m.sq, m.f, null);
                 }
-                blendPixel(y, c, a, m.t, s);
+                blendPixel(y, c, a, m.t, s, m.gpu);
             }
         }
 
@@ -1237,14 +1399,18 @@ final class Renderer {
             for (int i = stackN - 1; i >= 0; i--) {
                 Region r = stack[i];
                 if (eye <= r.floor) continue;
-                cand(rowZ(r.floor, tb), rowZ(r.floor, ta), r.floor, 0, r.floorColor,
-                        flat(r.floor, r.floorMat, r.floorColor, r.light, baked ? lit.floor(r) : null), null, r, EventKind.FLOOR);
+                Lighting.LightMap lm = baked ? lit.floor(r) : null;
+                describe(cand(rowZ(r.floor, tb), rowZ(r.floor, ta), r.floor, 0, r.floorColor,
+                        flat(r.floor, r.floorMat, r.floorColor, r.light, lm), null, r, EventKind.FLOOR),
+                        r.floorMat, r.floorColor, r.light, true, lm, -1);
             }
             for (int i = 0; i < stackN; i++) {
                 Region r = stack[i];
                 if (r.sky || eye >= r.ceil) continue;
-                cand(rowZ(r.ceil, ta), rowZ(r.ceil, tb), r.ceil, 0, r.ceilColor,
-                        flat(r.ceil, r.ceilMat, r.ceilColor, r.light, baked ? lit.ceil(r) : null), null, r, EventKind.CEILING);
+                Lighting.LightMap lm = baked ? lit.ceil(r) : null;
+                describe(cand(rowZ(r.ceil, ta), rowZ(r.ceil, tb), r.ceil, 0, r.ceilColor,
+                        flat(r.ceil, r.ceilMat, r.ceilColor, r.light, lm), null, r, EventKind.CEILING),
+                        r.ceilMat, r.ceilColor, r.light, true, lm, -1);
             }
             for (int i = 0; i < planeN; i++) addPiece(planes.get(i), ta, tb);
             paintCands(ta, tb);
@@ -1270,10 +1436,27 @@ final class Renderer {
                 if (p.top) hi = H;
                 else lo = 0;
             }
-            cand(lo, hi, p.z, p.slope, p.base, p.color, p, null, EventKind.SHAPE);
+            Cand c = cand(lo, hi, p.z, p.slope, p.base, p.color, p, null, EventKind.SHAPE);
+            c.gmat = p.gmat;
+            c.grgb = p.grgb;
+            c.gk0 = p.gk0;
+            c.glm = p.glm;
+            c.gtex = p.gtex;
+            c.ggpu = p.ggpu;
         }
 
-        private void cand(double lo, double hi, double z, double slope, int base, IntUnaryOperator color,
+        /** What the candidate's colour operator is made of, for the GPU path to rebuild in a
+         *  shader. Only the procedural, unlit path is on the card; the rest says so with ggpu. */
+        private void describe(Cand c, int mat, int rgb, double k0, boolean gpu, Lighting.LightMap lm, int tex) {
+            c.gmat = mat;
+            c.grgb = rgb;
+            c.gk0 = k0;
+            c.gtex = tex;
+            c.glm = lm == null ? -1 : lm.gpuIndex;
+            c.ggpu = gpu && c.glm >= (lm == null ? -1 : 0);
+        }
+
+        private Cand cand(double lo, double hi, double z, double slope, int base, IntUnaryOperator color,
                           Plane plane, Region region, EventKind kind) {
             if (nc == cands.size()) cands.add(new Cand());
             Cand c = cands.get(nc++);
@@ -1286,6 +1469,8 @@ final class Renderer {
             c.plane = plane;
             c.region = region;
             c.kind = kind;
+            c.ggpu = false;
+            return c;
         }
 
         private void paintCands(double ta, double tb) {
@@ -1310,6 +1495,16 @@ final class Renderer {
                     if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked)) alone = false;
                 }
                 int rows = 0;
+                if (sink != null && c.ggpu) {
+                    spanKind = 2;
+                    spanZ = c.z;
+                    spanSlope = c.slope;
+                    spanLight = c.gk0;
+                    spanLm = c.glm;
+                    spanTex = c.gtex;
+                    spanMat = c.gmat;
+                    spanRgb = c.grgb;
+                }
                 if (alone) {
                     rows = paint(c.ia, c.ib, 0, c.z, c.slope, c.base, c.color);
                 } else {
@@ -1324,6 +1519,7 @@ final class Renderer {
                         }
                     }
                 }
+                spanKind = 0;
                 if (tr != null && rows > 0) {
                     if (c.plane != null) notePlane(c.plane, rows);
                     else noteSurface(c.kind, c.region, ta, tb, rows);
@@ -1429,10 +1625,17 @@ final class Renderer {
             };
         }
 
-        /** Whatever rows are left: sky above the horizon, distant haze below it. */
+        /** Whatever rows are left: sky above the horizon, distant haze below it. The card draws
+         *  exactly these rows itself (no span reaches them), so they are the CPU's only when a
+         *  screenshot wants them or something unported will be blended over them. */
         private void fillRest() {
-            for (int k = 0; k < open; k++)
-                for (int y = o0[k]; y < o1[k]; y++) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
+            if (sink == null || under || albedo != null)
+                for (int k = 0; k < open; k++)
+                    for (int y = o0[k]; y < o1[k]; y++) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
+            else
+                for (int k = 0; k < open; k++)
+                    for (int y = o0[k]; y < o1[k]; y++)
+                        if (cpuUnder[y]) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
             if (albedo != null)
                 for (int k = 0; k < open; k++)
                     for (int y = o0[k]; y < o1[k]; y++) albedo[y * W + x] = pixels[y * W + x];
@@ -1463,11 +1666,26 @@ final class Renderer {
             int ia = clampRow(a), ib = clampRow(b);
             if (ib <= ia) return 0;
             int m = 0, filled = 0;
+            boolean note = sink != null;                      // the GPU path is watching what is drawn
             for (int k = 0; k < open; k++) {
                 int s0 = Math.max(o0[k], ia), s1 = Math.min(o1[k], ib);
                 if (s1 <= s0) { n0[m] = o0[k]; n1[m++] = o1[k]; continue; }
+                // Record first: whether the card has these rows is what decides whether the CPU
+                // has to colour them at all. A screenshot still does, for its albedo and depth.
+                boolean onCard = false;
+                if (note) {
+                    if (spanKind == 1) onCard = sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq,
+                            spanMat, spanRgb, spanFog, spanLm, spanTex);
+                    else if (spanKind == 2) onCard = sink.addPlane(x, s0, s1, spanZ, spanSlope,
+                            spanLight, spanMat, spanRgb, spanLm, spanTex);
+                    else for (int y = s0; y < s1; y++) sink.skip(x, y);
+                    // Rows the card has not got are the CPU's, and so is anything blended on top
+                    // of them: the blend needs something underneath, and this is where it says so.
+                    if (!onCard) for (int y = s0; y < s1; y++) cpuUnder[y] = true;
+                }
                 if (depth == null) {
-                    for (int y = s0; y < s1; y++) pixels[y * W + x] = colorOf.applyAsInt(y);
+                    for (int y = s0; y < s1; y++)
+                        if (under || !onCard || cpuUnder[y]) pixels[y * W + x] = colorOf.applyAsInt(y);
                 } else {
                     for (int y = s0; y < s1; y++) {
                         texAlbedoSet = false;
