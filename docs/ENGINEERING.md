@@ -293,6 +293,26 @@ code of its own on a deprecated macOS view. A ring of pixel buffer objects could
 with the next frame's ray walk at the cost of a frame of latency, which is an optimisation rather
 than a way out.
 
+### What it is worth on a desktop
+
+The numbers above are an M3, where the card and the CPU share their memory and their power
+budget. A desktop with a discrete card is the other shape of the same trade, and the second
+backend is what made it measurable. Measured on an i5-14500 and an RTX 4070, `--flat`, 1280x720,
+`--bench`, CPU and GPU runs alternated:
+
+| | school, level | school, 30 deg | Haven, level | Haven, 30 deg |
+|---|---|---|---|---|
+| CPU | 6.5 ms (154 fps) | 11.1 ms (90 fps) | 49.5 ms (20 fps) | 94.0 ms (11 fps) |
+| `--gpu` | 3.0 ms (336 fps) | 5.6 ms (179 fps) | 23.7 ms (42 fps) | 25.5 ms (39 fps) |
+
+The interesting column is the last one. Tilting the view costs the CPU renderer 90% of its frame
+on Haven and the hybrid 7%, because what pitch adds is overscan - more rows to shade, not more
+rays to walk - and the rows are the part that moved. The p99s move the same way: 136 ms to 39.
+
+A caution that belongs with these: the CPU's first run of the afternoon was 5.4 ms where its
+third was 6.6, which is the chip warming up, and the card's three runs sat inside 0.2 ms of each
+other. That is why they are alternated and why bench.sh rests between runs.
+
 ### The two things to know before trusting a number
 
 **A horizon on a half-integer row makes the two pictures disagree more.** A pixel's height is
