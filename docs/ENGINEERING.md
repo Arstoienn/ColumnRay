@@ -345,6 +345,15 @@ them, and how to get a context with no window behind it - and those are `GlPlatf
 `-Dgl.platform=none` forces that path so the sentence can be tested on a machine that does have a
 backend.
 
+There are two ways to have no card and they arrive differently. No backend for the operating
+system is a question `GlPlatform` answers before `Gl` is loaded, which matters because loading
+`Gl` is what would fail. A backend with no card behind it - a Windows machine with no OpenGL
+driver, a virtual machine, a CI runner offering Microsoft's software renderer - only shows up
+when the context is asked for, and it comes out of `Gl`'s field initialisers as an
+`ExceptionInInitializerError`. `Main` catches both and prints one sentence. The Windows CI job
+runs `--gpu` on a runner that has no card precisely so that the second path is exercised by
+something other than hope.
+
 The two backends are not the same shape under the interface. CGL makes a context out of nothing.
 WGL cannot: the pixel format that decides what a context can do belongs to a device context, and a
 device context comes from a window, so `GlWgl` registers a one-pixel window that is never shown and
