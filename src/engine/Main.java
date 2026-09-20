@@ -180,22 +180,36 @@ public final class Main {
         if (Options.headless(args)) System.setProperty("java.awt.headless", "true");
         // Before AWT. A context asked for after the toolkit has started gets no accelerated
         // pixel format on macOS - the same ordering trap that once left the window taking no
-        // keys, in the other direction. A platform with no backend says so in a sentence and
-        // carries on with the CPU renderer, which runs anywhere; asking GlPlatform rather than
-        // Gl is deliberate, because loading Gl is what fails.
+        // keys, in the other direction.
+        //
+        // Two different things can be missing and both end the same way: a sentence, and the CPU
+        // renderer, which runs anywhere. There may be no backend for this operating system, which
+        // GlPlatform can answer without loading Gl - deliberately, because loading Gl is what
+        // fails. Or there may be a backend and no card for it to find: a Windows machine with no
+        // OpenGL driver, a virtual machine, a CI runner that offers Microsoft's software
+        // renderer. That one only shows up when the context is actually asked for, and it
+        // arrives as an ExceptionInInitializerError out of Gl's own field initialisers, which is
+        // not a thing to let out of main().
         if (o.gpu) {
             String why = GlPlatform.missing();
+            if (why == null) {
+                try {
+                    Gl.context();
+                    // Which card, in one line, and on a machine with more than one, which cards
+                    // it was not. An integrated GPU draws the frame and reports success at a
+                    // fraction of the speed of the one beside it; see GlPlatform.note.
+                    System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
+                    String note = GlPlatform.get().note(Gl.device());
+                    if (note != null) System.err.println("gpu: " + note);
+                } catch (Throwable t) {
+                    if (t instanceof VirtualMachineError e) throw e;
+                    Throwable c = t.getCause() != null ? t.getCause() : t;
+                    why = c.getMessage() != null ? c.getMessage() : c.toString();
+                }
+            }
             if (why != null) {
-                System.err.println(why);
+                System.err.println(why);      // both messages already say what happens next
                 o.gpu = false;
-            } else {
-                Gl.context();
-                // Which card, in one line, and on a machine with more than one, which cards it
-                // was not. An integrated GPU draws the frame and reports success at a fraction
-                // of the speed of the one sitting beside it; see GlPlatform.note.
-                System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
-                String note = GlPlatform.get().note(Gl.device());
-                if (note != null) System.err.println("gpu: " + note);
             }
         }
 
