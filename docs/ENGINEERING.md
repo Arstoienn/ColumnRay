@@ -212,8 +212,7 @@ every pixel.
 | `merged` | the same, for the frame the game actually shows (see below) |
 
 `masked` going to zero is what finishing looks like. It is zero on school and on all six Haven
-cameras, and the worst difference is 1 to 3 of 255 with fewer than two pixels in five million
-over 2.
+cameras, and the worst difference is 2 of 255 with no pixel anywhere over 2.
 
 The 3 is the mip chain, not the shading. `Materials.Level.half` keeps its area averages as floats
 and says in a comment that it does not quantize them; `GpuTextures` rounds them to a byte on the
@@ -221,8 +220,7 @@ way up. Uploading the same levels without rounding (`-Dgpu.texels=half` or `=flo
 on Haven's spot7 the worst goes 3, 2, 2 and the mean 0.055, 0.029, 0.006 for RGB8, RGB16F and
 RGB32F, and the pixels over 2 go to none. A worst of 2 is the floor: float against double in the
 shader's own arithmetic, which no texture format reaches. With RGB16F all six Haven cameras read
-2. The default stays the byte because the difference costs 570 MB of card memory and nobody can
-see it, but the switch is there and the number it buys is known.
+2, so RGB16F is the default; `-Dgpu.texels=byte` goes back and `=float` asks the question again.
 
 ### The whole loop, not just the renderer
 
@@ -332,9 +330,21 @@ the fix this section first recommended. What would actually help is making the m
 boundaries themselves agree - snapping the scaled coordinate before `floor` and `frac` with the
 same epsilon on both sides - and that is a change to `Materials`, not to the buffer.
 
-**The frame-time tail on Haven is garbage collection, not the renderer.** The median frame is
-8 to 12 ms and p99 is 32 to 37; `-Xlog:gc` shows G1 mixed pauses of 40 to 174 ms on a live heap
-of 5 to 9 GB. That is the size of the map, not the cost of a frame.
+**The frame-time tail on Haven is mostly where the camera is pointing, not the collector.** This
+was first written down the other way round, on the strength of a p99 and a `-Xlog:gc` log read
+side by side, and `-Dbench.dump` exists to tell the two apart: it writes every frame of the turn
+in the order it was rendered, and a stall and an expensive heading do not look alike in that.
+
+A spin on the card at `--feet 3` with the bake, 1280x720: median 5.5 ms, p95 18.4, p99 21.4,
+worst 23.8. As a distribution that is a four-fold tail. In order it is not a tail at all but one
+broad hill - the median by fifteen degrees runs 3, 3, 3, 4, 4, 7, 9, 10, 14, 17, 16, 16, 18, 15,
+11, 11, 7, 4, 4, 3, 3, 3, 3, 3 ms, which is a wall two metres away at one end of the turn and the
+length of the map at the other. Tilted, the same one hill between 6 and 105 ms.
+
+The collector is still large and still there: 32 pauses in that run, 0.99 s of them together, the
+worst a 673 ms humongous allocation. But none of the 1,440 timed frames is anywhere near 673 ms,
+so it fell in the warmup or the load, where a bench's percentiles cannot see it. On a map this
+size, read a percentile with the series beside it.
 
 ### Platform
 
@@ -393,6 +403,51 @@ into the window image and no downsample runs.
 Cost scales with N squared, as it must - `--ss 2` is four times the rays. The clearest wins are
 rooflines against the sky and the speckle in the ceiling-panel and stone textures, which alias
 badly without it.
+
+### What a frame throws away
+
+A renderer in its steady state should allocate almost nothing, and this one was allocating
+gigabytes a second. A flight recording of a Haven benchmark, filtered to what the frame loop
+reaches, put it in three piles:
+
+| | sampled over 380 frames | what it is |
+|---|---|---|
+| 11.0 GB | lambda captures | one `IntUnaryOperator` a surface a column, from `flat` and `drawHit` |
+| 7.1 GB | `Column.<init>` | 3.5 MB of `stamp` a time, and it was being built 2,601 times |
+| 6.4 GB | `Geometry` hits | a `PolyHit` or a `SegHit` a ray-versus-shape test |
+
+The second was the surprise, because it looked like it could not happen. `Column` is per-thread
+scratch and there are a dozen threads; it should be built a dozen times. It was built 2,601 times
+in 380 frames against three buffer resizes, so it was not the resizes - it was the threads. The
+common ForkJoinPool grows and retires workers as a frame loop stalls and resumes, and a
+`ThreadLocal` hands every new worker a fresh 3.5 MB `stamp`, an int a shape so that a ray tests a
+shape once however many cells it meets it in.
+
+Lending the Columns from a queue instead of tying them to a thread took that from 2,601 to 16,
+and the picture cannot move: a chunk already renders many columns through one Column, so reuse
+was the existing behaviour and only the bookkeeping changed. The determinism test is the one that
+matters here, and it is the one that would notice.
+
+The lambdas were the bigger of the two that were left, and they came of `paint` being handed a
+closure: `flat` returned one over the plane it had just described, `drawHit` another over the side
+of a shape, and each was built afresh for every surface of every column. A flight recording of a
+whole benchmark - 1,120 frames of Haven at 854x480, the map's loading included - sampled 50.0 GB
+of allocation, and 38.3 GB of it was those closures.
+
+What replaced them was already in the file. Building the GPU path had put a description of every
+surface on the column - its material, its colour, the light on it, its lightmap and its texture -
+so that a shader could draw what the CPU was drawing. That description is the closure's captured
+state, written out. So `Surf` now carries it, the `Plane`, the `Cand` and the masked entry hold one
+each and are pooled as they already were, and `paint` colours a row by dispatching on which kind of
+surface it has rather than by calling through an `IntUnaryOperator`. The same recording of this
+build samples 11.7 GB, and nothing in it comes from a surface being described.
+
+The picture cannot move, and the proof is the usual one: school and Haven golden digests unchanged,
+and `GpuCheck` agreeing with the card to the same 2 of 255 on Haven and 10 of 255 on school as
+before, pixel for pixel.
+
+That leaves the third pile, now 2.3 GB of `Geometry.SegHit`, one a ray-versus-segment test.
+`PolyHit` is lent to the renderer rather than allocated; its sibling still is not.
 
 ### What a texel costs to keep
 
