@@ -53,8 +53,10 @@ final class Capture {
      *
      * The JIT gets -Dbench.warmup untimed frames first (400): 120 were not enough, and the first
      * timed frames were still being compiled. Then each of -Dbench.frames frames (720, one full turn)
-     * is timed on its own, and the median and 99th percentile are reported next to the mean - a
-     * mean hides both a slow start and a stall. bench.sh runs this several times and says how far
+     * is timed on its own, and the median, the 95th and 99th percentiles and the worst frame are
+     * reported next to the mean - a mean hides both a slow start and a stall, and on a map the size
+     * of Haven the tail is a garbage collection rather than anything the renderer did, which only
+     * the far end of the distribution shows. bench.sh runs this several times and says how far
      * apart the runs were.
      */
     void bench() {
@@ -73,11 +75,13 @@ final class Capture {
             long[] sorted = ns.clone();
             Arrays.sort(sorted);
             double median = sorted[frames / 2] / 1e6;
+            double p95 = sorted[Math.min(frames - 1, (int) Math.ceil(frames * 0.95) - 1)] / 1e6;
             double p99 = sorted[Math.min(frames - 1, (int) Math.ceil(frames * 0.99) - 1)] / 1e6;
+            double worst = sorted[frames - 1] / 1e6;
             double mean = Arrays.stream(ns).average().orElse(0) / 1e6;
-            System.out.printf("BENCH %dx%d rendered %dx%d ss %d pitch %.0f %s rays %d median %.3f p99 %.3f mean %.3f ms  (median %.0f fps)%n",
+            System.out.printf("BENCH %dx%d rendered %dx%d ss %d pitch %.0f %s rays %d median %.3f p95 %.3f p99 %.3f max %.3f mean %.3f ms  (median %.0f fps)%n",
                     g.W, g.H, g.RW, g.RH, g.SS, Math.toDegrees(p), g.shear ? "shear" : "true",
-                    g.renderer.drawnX1 - g.renderer.drawnX0, median, p99, mean, 1000 / median);
+                    g.renderer.drawnX1 - g.renderer.drawnX0, median, p95, p99, worst, mean, 1000 / median);
             g.gpuStats();
         }
         g.player.pitch = saved;
