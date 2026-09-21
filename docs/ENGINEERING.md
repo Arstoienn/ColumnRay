@@ -298,6 +298,86 @@ shading off, merges the two the way `Host` does, and compares that against the C
 That is the `merged` column, and it has to equal `worst`: a difference of two hundred and not of
 two is what a mistake about which rows those are would look like.
 
+### What a ray actually does (`WORK`)
+
+`--bench` prints a `WORK` line beside each `BENCH` one: how many grid cells a ray walks, how many
+shapes it intersection-tests, and how many of those tests hit. They are gathered over the warmup
+frames, which are the same turn and nobody is timing, and they do not move with the weather -
+which milliseconds very much do on a fanless machine. For "did that change make the rays do less",
+these are the figures to compare.
+
+What they say today, at 1920x1080, level:
+
+| | cells / ray | tested / ray | hit |
+|---|---|---|---|
+| school | 9.0 | 2.1 | 95% |
+| Haven | 25.6 | 138.9 | 86% |
+
+Haven walks under three times school's cells and tests sixty-six times its shapes, and six tests in
+seven find something. So the CPU half of a Haven frame is not lost on bounding boxes the ray misses
+and not lost on walking the grid: the ray genuinely crosses 119 surfaces. That is what the map is
+made of - the conversion turns each mesh triangle into its own slab, and the median one is 13 cm
+across and 8 cm tall, with 87 per cent of them under half a metre.
+
+Three things were tried against that and none worked, which is worth writing down so they are not
+tried twice:
+
+- **A `maxDist` on every shape** (`tools/add_maxdist.py`, grouping coplanar fragments so a floor is
+  judged by the floor's size and not by a sliver's). At one pixel it gave 17 per cent of shapes a
+  cut-off and moved the tests from 138.9 to 138.7. At four pixels, 39 per cent of shapes, 136.5.
+  The pictures were within 67 pixels in 7.4 million, so the cut itself was safe - it simply was not
+  where the work is. The shapes a ray crosses are not the ones small enough to cull.
+- **A finer acceleration grid.** Haven's cell is 2 m; at 1 m the tests fell to 128.8 and at 0.5 m to
+  117.4, while the cells walked went from 25.6 to 49.5 to 96.8. A fifteen per cent saving for four
+  times the walking is not a trade worth making.
+
+- **Merging coplanar neighbours** (`tools/merge_coplanar.py`: two polygons on the same plane in
+  world coordinates, same material, sharing an edge, welded when what they make is still convex;
+  walls stacked in height or meeting end to end). It removed 2.7 per cent of the shapes and took
+  the tests from 138.9 to 134.2, and the pictures were within 37 pixels in 7.4 million, so it
+  works - there is simply almost nothing to merge. Haven is not a set of flat surfaces cut into
+  fragments. It is a tessellated mesh: 71 per cent of its 653,000 polygons are alone on their own
+  plane in world coordinates, and 652,613 of them carry their own texture mapping, which two
+  neighbours would have to agree on to become one. Counting every pair that shares an edge inside
+  a plane-and-material group gives 26,000 possible welds out of 653,000 polygons. Three per cent
+  is the ceiling, not the result of a timid rule.
+
+All three fail for the same reason. There is no redundancy in this map to take out: every triangle
+really is its own surface, with its own plane and its own texture mapping, and a ray down an open
+sightline really does cross 119 of them. Anything that cuts that number has to be **lossy** - a
+decimated mesh with fewer, larger triangles, made in Blender before the export, and if it is to
+depend on distance, several of them used as a geometry LOD. That is what a texture's mip chain is
+for the texture, and geometry here has no equivalent: one level, 929,000 fragments, at every
+distance.
+
+### What a big map actually costs
+
+Not its size. Measured 2026-09-21 on Haven, 1920x1080, baked, on the card, standing on one spot
+and turning all the way round with `-Dbench.dump` - one frame per degree, the medians of each 30
+degree arc:
+
+| heading | ms | | heading | ms |
+|---|---|---|---|---|
+| 0-30 | 35.5 | | 180-210 | 55.8 |
+| 30-60 | 46.2 | | 210-240 | 74.4 |
+| 60-90 | 47.8 | | 240-270 | 32.2 |
+| 90-120 | 55.5 | | 270-300 | 15.2 |
+| 120-150 | 46.2 | | 300-330 | 12.4 |
+| 150-180 | 47.9 | | 330-360 | 23.1 |
+
+The cheapest frame of the turn is 8.6 ms and the dearest that is not a collection is 74 - six
+times, from the same point in the same map with the same 1,924 rays. Nothing about the map
+changed between those two frames except which way the camera faced, so the 3.8 million surfaces
+are not what the frame is paying for. What it pays for is how far the rays get before their
+columns fill: face a wall and a column is full after a few cells and the ray stops, face down an
+open sightline and every ray walks to `MAX_DIST` through every cell on the way, testing what is
+in them and painting what it finds.
+
+That is worth keeping in mind next to the note that chunk loading does nothing for frame time -
+the same fact from the other side - and it says where the levers are for a map that has to be
+dense: a shape's `maxDist`, coarser geometry with distance, and anything that fills a column
+sooner. Not a smaller map.
+
 ### Where the time goes
 
 `-Dgpu.stats=true` with `--bench` prints the card's share of a frame. Measured on an M3 at
@@ -465,6 +545,70 @@ the renderer string and, when there is more than one card, the name of the one i
 One GLSL note that only Windows found: `packed` is a reserved word in the language. Apple's
 compiler accepts it as an identifier anyway and Intel's does not, so the wall shader's `unpack`
 takes a `bits`.
+
+## Shading in light (`--hdr`)
+
+For as long as there has been a bake, the last step of it was wrong. A colour arrives as three
+sRGB bytes off a PNG, the light on it arrives as a float, and the renderer multiplied one by the
+other. sRGB is a transfer curve and not a quantity of light, so that multiply over-darkens
+everything it touches: a surface at a third of full light came out at about a ninth of its
+colour. The bake had the same mistake one step earlier - a surface bounced `colour / 255` of the
+light that hit it, so a mid-grey wall returned 0.50 where it really returns 0.22, and two bounces
+of that filled every room with a flat grey glow.
+
+`--hdr` puts the shading right: the colour is read back into light (`Renderer.linOf`, the sRGB
+transfer), the light is applied there, and the result comes back out through a filmic curve and
+the sRGB encode. The bounce is a second switch, `-Dhdr.bake=true`, for the reason below. The old per-channel knee at 200 is still there for the old
+path: it compresses each channel separately, so a bright red saturates in red first and shifts hue
+on the way to white, where the ACES fit rolls the three together the way a film stock does.
+
+### Why the bounce is a switch of its own
+
+The two halves were measured apart, on both maps. School's courtyard and Haven's spot7, 1280x720:
+
+| school | mean level | contrast (p95 - p5) | chroma |
+|---|---|---|---|
+| sRGB shading, sRGB bounce | 106.9 | 137 | 27.2 |
+| linear shading, sRGB bounce | 140.5 | 147 | 31.2 |
+| linear shading, linear bounce | 119.7 | **149** | **38.8** |
+
+| Haven | mean level | contrast (p95 - p5) | chroma |
+|---|---|---|---|
+| sRGB shading, sRGB bounce | 77.9 | 46 | 10.6 |
+| linear shading, sRGB bounce | 81.8 | **72** | **20.6** |
+| linear shading, linear bounce | 95.4 | 56 | 5.3 |
+
+The shading wins on both, and on Haven it is not close: a grey-brown mush becomes wood with grain
+in it. The bounce wins on school and loses badly on Haven, where it flattens the picture and takes
+three quarters of the colour out of it.
+
+That is not a contradiction, it is the two maps having been tuned against the old bounce in
+different ways - school's lighting was authored by hand against it, and Haven's came out of a
+converter matched to Blender's own render. Which of them is telling the truth is not something a
+measurement of the two pictures can settle, so the bounce stays behind `-Dhdr.bake=true` until the
+maps have caught up, and `--hdr` on its own is the part that is right everywhere.
+
+The grade comes last, after the tone curve and the sRGB encode, because that is what a grade is.
+This was got wrong first: a map's `lift` is a fraction of the picture's range - Haven asks for
+0.08, which is 20 levels out of 255 - and applying it to light instead made it 0.08 of full
+daylight, or 76 levels, which laid a grey sheet over the whole map.
+
+`EXPOSURE` (0.696, `-Dhdr.exposure`) is the one number that was chosen rather than derived: it is
+what puts a mid-grey surface under full light back where the old pipeline had it, so the two can
+be compared without one of them simply being darker.
+
+### What it cost to get the two paths to agree
+
+`--hdr --gpu-verify` failed the first time, over 22% of the frame, and what it had caught was
+real. A procedural material's texture factor was folded into the shading scalar on the CPU
+(`c * (tex * k)`) and applied to the colour on the card (`(c * tex) * k`). Those are the same
+number in the old arithmetic and different ones in linear, where the factor darkens albedo and
+belongs on the sRGB side of the conversion. Nobody could have seen it before, because before
+there was nothing to see. `Renderer.shadeS` is where that now lives, for both.
+
+H switches the shading while the game runs, which compares the two ways of finishing one bake.
+`--hdr` is the whole change, bake included, and the two bakes are different files: the light cache
+keys on the mode.
 
 ## Anti-aliasing (`--ss`)
 

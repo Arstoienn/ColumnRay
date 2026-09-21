@@ -73,7 +73,27 @@ public final class Capture {
         View v = game.view().copy();              // the game's own camera, ours to spin
         for (double p : new double[] {0, h.pitchLimit()}) {   // level, and fully tilted (the most overscan)
             v.pitch = p;
-            for (int i = 0; i < warmup; i++) { v.heading += 2 * Math.PI / frames; h.frame(v); }
+            // The warmup frames are the same turn as the timed ones and nobody is holding a stop
+            // watch over them, so the ray statistics are gathered here: summing a column array
+            // inside the timed loop would be measuring this instead of the renderer. What comes
+            // out does not move with the weather, which the milliseconds very much do - a chip
+            // that has been busy all afternoon reports a different number for the same work - so
+            // for "did that change make the rays do less", these are the figures to compare.
+            long cells = 0, tests = 0, hits = 0, columns = 0;
+            for (int i = 0; i < warmup; i++) {
+                v.heading += 2 * Math.PI / frames;
+                h.frame(v);
+                for (int x = h.renderer.drawnX0; x < h.renderer.drawnX1; x++) {
+                    cells += h.renderer.cellsVisited[x];
+                    tests += h.renderer.shapesTested[x];
+                    hits += h.renderer.shapesHit[x];
+                }
+                columns += h.renderer.drawnX1 - h.renderer.drawnX0;
+            }
+            System.out.printf("WORK pitch %.0f rays %d cells/ray %.1f tested/ray %.1f hit/ray %.1f (%.0f%% of tests)  (%d warmup frames)%n",
+                    Math.toDegrees(p), columns / Math.max(1, warmup), cells / (double) Math.max(1, columns),
+                    tests / (double) Math.max(1, columns), hits / (double) Math.max(1, columns),
+                    100.0 * hits / Math.max(1, tests), warmup);
             long[] ns = new long[frames];
             for (int i = 0; i < frames; i++) {
                 long t0 = System.nanoTime();

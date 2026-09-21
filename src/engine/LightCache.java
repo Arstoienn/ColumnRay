@@ -88,6 +88,7 @@ final class LightCache {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             md.update(("lightcache " + VERSION + "\n").getBytes());
             md.update(("light.texel=" + System.getProperty("light.texel", "") + "\n").getBytes());
+            md.update(("hdr=" + Renderer.hdrBake + "\n").getBytes());   // linear bounce is another bake
             for (Path p : w.sources) md.update(Files.readAllBytes(p));
             SortedMap<String, byte[]> classes = bakeClasses();
             if (classes == null || classes.isEmpty()) return null;
