@@ -62,7 +62,7 @@ final class Capture {
     void bench() {
         int warmup = Integer.getInteger("bench.warmup", 400), frames = Integer.getInteger("bench.frames", 720);
         double saved = g.player.pitch;
-        for (double p : new double[] {0, Player.MAX_PITCH}) {   // level, and fully tilted (the most overscan)
+        for (double p : new double[] {0, g.player.pitchLimit}) {   // level, and fully tilted (the most overscan)
             g.player.pitch = p;
             for (int i = 0; i < warmup; i++) { g.player.angle += 2 * Math.PI / frames; g.frame(); }
             long[] ns = new long[frames];
@@ -80,10 +80,10 @@ final class Capture {
             double worst = sorted[frames - 1] / 1e6;
             double mean = Arrays.stream(ns).average().orElse(0) / 1e6;
             System.out.printf("BENCH %dx%d rendered %dx%d ss %d pitch %.0f %s rays %d median %.3f p95 %.3f p99 %.3f max %.3f mean %.3f ms  (median %.0f fps)%n",
-                    g.W, g.H, g.RW, g.RH, g.SS, Math.toDegrees(p), g.shear ? "shear" : "true",
+                    g.W, g.H, g.RW, g.RH, g.SS, Math.toDegrees(g.player.pitch), g.shear ? "shear" : "true",
                     g.renderer.drawnX1 - g.renderer.drawnX0, median, p95, p99, worst, mean, 1000 / median);
             g.gpuStats();
-            dump(ns, p);
+            dump(ns, g.player.pitch);
         }
         g.player.pitch = saved;
     }
@@ -179,7 +179,7 @@ final class Capture {
         // The file's own pitch column is replaced by this sweep, so a views file that names the
         // same camera at several tilts checks it several times over. That is a little wasted work
         // and no wrong answer.
-        double[] pitches = {0, 8, 17, 25, Math.toDegrees(Player.MAX_PITCH)};
+        double[] pitches = {0, 8, 17, 25, Math.toDegrees(g.player.pitchLimit)};
         int worstAll = 0;
         long failed = 0, pixels = 0, drops = 0;
         System.out.printf("%-12s %6s %10s %8s %8s %8s %8s %12s%n",

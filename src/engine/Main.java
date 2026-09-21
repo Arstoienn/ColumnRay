@@ -64,6 +64,18 @@ public final class Main {
     int RW, RH;
 
     private final World world;
+    /**
+     * The most overscan the pitch warp may grow the upright image to, as a multiple of a level
+     * frame - not as a count of pixels.
+     *
+     * A multiple, because the overscan a pitch needs is a fixed ratio of the frame at any render
+     * size, so a budget in pixels would let the camera tilt further on a small window than on a
+     * large one. The camera is a control and a control does not change its range when the
+     * resolution does. As a multiple it stops at the same angle everywhere: about 55 degrees,
+     * which is past what MAX_PITCH asks for and well short of the tangent running away - 68
+     * degrees is 1,494 level frames, where the allocation itself used to fail.
+     */
+    private static final long OVERSCAN_LIMIT = 16;
     BufferedImage image;
     int[] out;                    // the W x H pixels the window sees
     private int[] hi;             // the RW x RH tilted view after the pitch warp; same array as `out` when SS = 1
@@ -533,6 +545,13 @@ public final class Main {
     /** Work out this frame's warp, grow the render buffer if the tilt needs more overscan than it
      *  has, and tell the camera which part of that buffer to draw. See {@link Warp}. */
     private void preparePitch(Renderer.Camera c) {
+        // What the map asked for, or what the buffer can hold, whichever is less. Worked out here
+        // rather than once at startup because the render size and the field of view both change
+        // under it - dynamic resolution moves one every few frames - and the overscan a pitch
+        // needs is a function of both.
+        player.pitchLimit = Math.min(world.maxPitch,
+                Warp.fits(shear, RW, RH, renderer.focal(), OVERSCAN_LIMIT * (long) RW * RH));
+        player.pitch = Math.max(-player.pitchLimit, Math.min(player.pitchLimit, player.pitch));
         warp.plan(player.pitch, shear, RW, RH, renderer.focal());
         if (warp.needW() > srcW || warp.needH() > srcH) {        // grow only: an unused margin costs nothing
             srcW = Math.max(srcW, (int) (warp.needW() * 1.1));

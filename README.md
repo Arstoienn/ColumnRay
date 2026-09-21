@@ -59,7 +59,7 @@ the engine with `maps/school.json`. Arguments are passed through to `engine.Main
 | `--feet M` | Starting floor height in metres, e.g. to start on an upper storey |
 | `--flat` | Skip the lightmap bake and use flat shading |
 | `--shear` | Use y-shearing for pitch instead of the perspective warp |
-| `--bench` | Time the renderer over a full turn, level and pitched 30 degrees |
+| `--bench` | Time the renderer over a full turn, level and pitched all the way up |
 | `--shot out.png [x y heading pitch [column]]` | Render one frame headlessly |
 | `--shots views.txt` | Render several frames in one run, one `out.png x y feet heading` per line |
 | `--verify views.txt` | Render each view and print a digest of it instead of writing files; see Tests |
