@@ -98,7 +98,7 @@ final class Renderer {
 
     // Ray-view statistics: where each column's ray stopped, how many cells it walked, how many shapes it tested
     double[] rayEnd;
-    int[] cellsVisited, shapesTested;
+    int[] cellsVisited, shapesTested, shapesHit;
     int drawnX0, drawnX1;                    // the columns the last frame actually rendered
     volatile int traceColumn = -1;           // the column to record in detail (buffer column)
     volatile Trace trace;                    // the most recent recording
@@ -210,6 +210,7 @@ final class Renderer {
         this.rayEnd = new double[w];
         this.cellsVisited = new int[w];
         this.shapesTested = new int[w];
+        this.shapesHit = new int[w];
         this.columns.clear();                    // their row arrays are sized by H, which just changed
     }
 
@@ -494,7 +495,7 @@ final class Renderer {
         private Trace tr;
         private double endT, lastT;
         private String endReason;
-        private int cells, tests;
+        private int cells, tests, hits;
 
         void render(int x, Camera cam) {
             this.x = x;
@@ -522,7 +523,7 @@ final class Renderer {
             if (sink != null) Arrays.fill(cpuUnder, false);
             planeN = 0;
             crossings = 0;
-            cells = tests = 0;
+            cells = tests = hits = 0;
             endT = -1;
             lastT = 0;
             tr = x == traceColumn ? new Trace() : null;
@@ -546,6 +547,7 @@ final class Renderer {
             rayEnd[x] = endT;
             cellsVisited[x] = cells;
             shapesTested[x] = tests;
+            shapesHit[x] = hits;
             if (tr != null) {
                 tr.endT = endT;
                 tr.endReason = endReason;
@@ -597,7 +599,11 @@ final class Renderer {
                             }
                             tests++;
                             if (tr != null) tr.tested.add(sh);
-                            if (intersect(sh, slot())) pendN++;
+                            // Tested and hit are counted apart because the gap between them is a
+                            // number worth knowing: a shape whose bounds the ray crosses and whose
+                            // surface it misses is work that bought nothing, and a mesh's long thin
+                            // slivers produce a great many of those.
+                            if (intersect(sh, slot())) { pendN++; hits++; }
                         }
                     }
                 }

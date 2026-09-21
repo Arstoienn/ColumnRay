@@ -298,6 +298,43 @@ shading off, merges the two the way `Host` does, and compares that against the C
 That is the `merged` column, and it has to equal `worst`: a difference of two hundred and not of
 two is what a mistake about which rows those are would look like.
 
+### What a ray actually does (`WORK`)
+
+`--bench` prints a `WORK` line beside each `BENCH` one: how many grid cells a ray walks, how many
+shapes it intersection-tests, and how many of those tests hit. They are gathered over the warmup
+frames, which are the same turn and nobody is timing, and they do not move with the weather -
+which milliseconds very much do on a fanless machine. For "did that change make the rays do less",
+these are the figures to compare.
+
+What they say today, at 1920x1080, level:
+
+| | cells / ray | tested / ray | hit |
+|---|---|---|---|
+| school | 9.0 | 2.1 | 95% |
+| Haven | 25.6 | 138.9 | 86% |
+
+Haven walks under three times school's cells and tests sixty-six times its shapes, and six tests in
+seven find something. So the CPU half of a Haven frame is not lost on bounding boxes the ray misses
+and not lost on walking the grid: the ray genuinely crosses 119 surfaces. That is what the map is
+made of - the conversion turns each mesh triangle into its own slab, and the median one is 13 cm
+across and 8 cm tall, with 87 per cent of them under half a metre.
+
+Two things were tried against that and neither worked, which is worth writing down so they are not
+tried twice:
+
+- **A `maxDist` on every shape** (`tools/add_maxdist.py`, grouping coplanar fragments so a floor is
+  judged by the floor's size and not by a sliver's). At one pixel it gave 17 per cent of shapes a
+  cut-off and moved the tests from 138.9 to 138.7. At four pixels, 39 per cent of shapes, 136.5.
+  The pictures were within 67 pixels in 7.4 million, so the cut itself was safe - it simply was not
+  where the work is. The shapes a ray crosses are not the ones small enough to cull.
+- **A finer acceleration grid.** Haven's cell is 2 m; at 1 m the tests fell to 128.8 and at 0.5 m to
+  117.4, while the cells walked went from 25.6 to 49.5 to 96.8. A fifteen per cent saving for four
+  times the walking is not a trade worth making.
+
+What is left is the fragmentation itself: merging coplanar neighbours in the converter, so that a
+wall is one shape and not sixty-four stacked bands. That is a converter change, not an engine one,
+and `WORK` is how it would be judged.
+
 ### What a big map actually costs
 
 Not its size. Measured 2026-09-21 on Haven, 1920x1080, baked, on the card, standing on one spot
