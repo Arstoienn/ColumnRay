@@ -38,13 +38,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * Off macOS, or on a JVM that will not let us call out, {@link #listener} keeps a set of held keys
  * from AWT events instead, read as a plain US QWERTY board - which is what everything did before.
  */
-final class Keys {
+public final class Keys {
     /**
      * The key positions the game uses, as macOS virtual key codes, named by what a US QWERTY board
      * prints on them. These are positions, not letters: {@link #S} is the key below and right of
      * {@link #W} on every keyboard, whether it is labelled S, R or ㄙ.
      */
-    static final int A = 0, S = 1, D = 2, F = 3, G = 5, C = 8, V = 9, Q = 12, W = 13, E = 14, R = 15,
+    public static final int A = 0, S = 1, D = 2, F = 3, G = 5, C = 8, V = 9, Q = 12, W = 13, E = 14, R = 15,
             EQUALS = 24, MINUS = 27, RIGHT_BRACKET = 30, LEFT_BRACKET = 33, P = 35, L = 37,
             COMMA = 43, N = 45, M = 46, PERIOD = 47, SPACE = 49, ESCAPE = 53, SHIFT = 56,
             CONTROL = 59, RIGHT_SHIFT = 60, RIGHT_CONTROL = 62,
@@ -124,7 +124,7 @@ final class Keys {
     private Keys() { }
 
     /** Are we reading key positions from the machine, rather than guessing from AWT key codes? */
-    static boolean physical() { return KEY_STATE != null; }
+    public static boolean physical() { return KEY_STATE != null; }
 
     /**
      * Set once a key event arrives while the machine says no key at all is held. macOS answers the
@@ -140,7 +140,7 @@ final class Keys {
     private static volatile boolean nativeDead;
 
     /** Is the key in this position held down right now? */
-    static boolean down(int key) {
+    public static boolean down(int key) {
         if (KEY_STATE == null || nativeDead) return held.contains(key);
         return nativeDown(key);
     }
@@ -192,7 +192,7 @@ final class Keys {
      * by that - what a key does is a position and never changes; only its name comes from the
      * layout, and a HUD hint that still says R after a switch to Bopomofo is no great harm.
      */
-    static void readLabels() {
+    public static void readLabels() {
         foreground();
         for (int key : VK.keySet()) {
             char c = printed(key);
@@ -228,13 +228,13 @@ final class Keys {
     }
 
     /** How this keyboard labels the key in this position, e.g. "R" for {@link #S} on Colemak. */
-    static String label(int key) {
+    public static String label(int key) {
         String read = labels.get(key);
         return read != null ? read : KeyEvent.getKeyText(VK.getOrDefault(key, KeyEvent.VK_UNDEFINED));
     }
 
     /** Every position spelled out, for a hint like "WASD". */
-    static String labels(int... keys) {
+    public static String labels(int... keys) {
         StringBuilder out = new StringBuilder();
         for (int k : keys) out.append(label(k));
         return out.toString();

@@ -22,21 +22,20 @@ import java.util.function.IntConsumer;
  * Drawing it is then one image per frame. The old minimap filled every shape every frame, which
  * for Haven's 38,000 shapes was most of a second on screen.
  */
-final class Minimap {
-    static final double CELL = 0.25;                     // metres per pixel of the image
+public final class Minimap {
+    public static final double CELL = 0.25;              // metres per pixel of the image
     /** A wall claims every square whose centre is this close to it: more than half a square's
      *  diagonal, so a slanted wall leaves no corner-to-corner gap for the flood to leak through. */
     private static final double WALL = CELL * 0.75;
     private static final double CLIMB = 0.45;            // a step and a bit, not a jump
-    private static final double CLEAR = Player.EYE_CROUCH + Player.HEAD_ABOVE_EYE;
     private static final double OBSTACLE = 25;           // m2: smaller than this is a crate, bigger a building
 
     private static final int FLOOR = 0xff777777, SITE = 0xff969a73, OBST = 0xff8b8b8b, EDGE = 0xffdadada;
     /** -Dminimap.debug=true: also paint, in blue, standable ground the flood never reached. */
     private static final boolean DEBUG = Boolean.getBoolean("minimap.debug");
 
-    final BufferedImage image;                           // cropped to what is drawn, plus a margin
-    final double ix0, iy0;                               // the world corner of the image's pixel (0, 0)
+    public final BufferedImage image;                    // cropped to what is drawn, plus a margin
+    public final double ix0, iy0;                        // the world corner of the image's pixel (0, 0)
     final double x0, y0;                                 // the world corner of the whole grid
     final int nx, ny;                                    // the whole grid, in squares
     /** With -Dminimap.debug=true only: every square's surfaces (debugFirst[c] .. debugFirst[c + 1]
@@ -45,7 +44,9 @@ final class Minimap {
     float[] debugZ;
     boolean[] debugGot;
 
-    Minimap(World world, double startX, double startY, double startFeet) {
+    /** {@code clearance} is how much headroom a body needs to count a square as somewhere it
+     *  could be: the game's, because the engine does not know how tall anybody is. */
+    public Minimap(World world, double startX, double startY, double startFeet, double clearance) {
         x0 = world.minX;
         y0 = world.minY;
         nx = Math.max(1, (int) Math.ceil((world.maxX - x0) / CELL));
@@ -78,7 +79,7 @@ final class Minimap {
                     double z = q < 0 ? stack[q + k].floor : shapes[ids[from + q]].h;
                     int who = q < 0 ? -1 : ids[from + q];
                     if (q < 0 && !stack[q + k].walkable) continue;       // the bottom of the world, not ground
-                    if (!standable(z, stack, k, shapes, ids, from, to)) continue;
+                    if (!standable(z, clearance, stack, k, shapes, ids, from, to)) continue;
                     int dup = -1;
                     for (int v = first[c]; v < m; v++) if (Math.abs(sz[v] - z) < 0.05) dup = v;
                     if (dup >= 0) {
@@ -223,14 +224,15 @@ final class Minimap {
         }
     }
 
-    /** Room to crouch on z: inside a storey's air, and no shape's body in the way. */
-    private static boolean standable(double z, Region[] stack, int k, Shape[] shapes, int[] ids, int from, int to) {
+    /** Room for a body needing {@code clear} metres of headroom to stand on z: inside a storey's
+     *  air, and no shape's body in the way. */
+    private static boolean standable(double z, double clear, Region[] stack, int k, Shape[] shapes, int[] ids, int from, int to) {
         boolean air = false;
-        for (int q = 0; q < k; q++) if (stack[q].floor <= z + 1e-6 && z + CLEAR <= stack[q].ceil) air = true;
+        for (int q = 0; q < k; q++) if (stack[q].floor <= z + 1e-6 && z + clear <= stack[q].ceil) air = true;
         if (!air) return false;
         for (int q = from; q < to; q++) {
             Shape s = shapes[ids[q]];
-            if (s.zLow < z + CLEAR && s.h > z + 0.05) return false;
+            if (s.zLow < z + clear && s.h > z + 0.05) return false;
         }
         return true;
     }

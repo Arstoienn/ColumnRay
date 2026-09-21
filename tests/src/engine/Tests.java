@@ -14,7 +14,8 @@ public final class Tests {
         MaterialsTest.run();
         WorldTest.run();
         LightingTest.run();
-        PlayerTest.run();
+        game.PlayerTest.run();
+        InputTest.run();
         WarpTest.run();
         RendererTest.run();
         LightCacheTest.run();

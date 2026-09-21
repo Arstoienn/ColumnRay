@@ -1,6 +1,9 @@
-package engine;
+package game;
 
-import engine.World.Region;
+import engine.Host;
+import engine.Keys;
+import engine.Minimap;
+import engine.World;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Font;
@@ -20,36 +23,37 @@ import java.awt.geom.Rectangle2D;
  * are not something a golden test can compare. That is why --shot writes the frame without it as
  * well, and why --verify does not draw it at all.
  *
- * What it cannot read from the world or the player arrives as a {@link Status}, so nothing here
- * reaches back into the window loop for a field.
+ * It belongs to the game, not the engine: this is the first thing a game of one's own would throw
+ * away. What it cannot read from the world or the player arrives as a {@link Status}, so nothing
+ * here reaches back into the frame loop for a field.
  */
-final class Hud {
+public final class Hud {
     /** The frame's own state: what the HUD reports that is neither the map's nor the player's. */
-    record Status(double fps, int w, int h, int ss, int rays, boolean fisheye, String lighting,
-                  boolean shear, boolean autoRes) {}
+    public record Status(double fps, int w, int h, int ss, int rays, boolean fisheye, String lighting,
+                         boolean shear, boolean autoRes) {}
 
     private final World world;
-    private final Renderer renderer;
+    private final Host host;
     private final Player player;
     private Minimap minimap;                                     // built on the first frame that shows it
 
-    Hud(World world, Renderer renderer, Player player) {
+    public Hud(World world, Host host, Player player) {
         this.world = world;
-        this.renderer = renderer;
+        this.host = host;
         this.player = player;
     }
 
     /** A key hint, spelled the way this player's keyboard labels the keys in those positions. */
     private static String key(int... positions) { return Keys.labels(positions); }
 
-    void draw(Graphics2D g, int left, int top, Status st) {
-        Region r = player.here();
+    public void draw(Graphics2D g, int left, int top, Status st) {
+        String where = player.where();
         String[] lines = {
             String.format("%s   %.0f fps   %dx%d%s   %,d rays   FOV %.0f deg   %s   %s", world.name, st.fps(), st.w(), st.h(),
-                    st.ss() > 1 ? " x" + st.ss() + " AA" : "", st.rays(), renderer.fov(),
+                    st.ss() > 1 ? " x" + st.ss() + " AA" : "", st.rays(), host.fov(),
                     st.fisheye() ? "fisheye demo (straight-line distance, wrong)" : "perpendicular distance",
                     st.lighting()),
-            String.format("%s   (%.1f, %.1f)   feet %.2f m   pitch %+.0f deg %s", r == null ? "-" : r.name,
+            String.format("%s   (%.1f, %.1f)   feet %.2f m   pitch %+.0f deg %s", where == null ? "-" : where,
                     player.x, player.y, player.feet,
                     Math.toDegrees(player.pitch), st.shear() ? "y-shearing (old)" : "true perspective"),
             // The controls go by where a key sits, so name each one the way this keyboard labels it.
@@ -71,8 +75,10 @@ final class Hud {
     }
 
     /** The minimap (see Minimap): one prebuilt image, plus the player on top of it. */
-    void drawMinimap(Graphics2D g, int right, int top, int size) {
-        if (minimap == null) minimap = new Minimap(world, player.x, player.y, player.feet);
+    public void drawMinimap(Graphics2D g, int right, int top, int size) {
+        if (minimap == null)
+            minimap = new Minimap(world, player.x, player.y, player.feet,
+                    Player.EYE_CROUCH + Player.HEAD_ABOVE_EYE);
         double mw = minimap.image.getWidth() * Minimap.CELL, mh = minimap.image.getHeight() * Minimap.CELL;
         // The map may turn its minimap by quarter turns, the way Valorant shows each map the same
         // way round every time; a quarter turn swaps which side of the panel is the long one.
@@ -97,7 +103,7 @@ final class Hud {
         if (smoothing != null) g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, smoothing);
 
         double x = player.x, y = player.y;
-        double dx = Math.cos(player.angle), dy = Math.sin(player.angle), pl = renderer.planeHalfWidth(), len = 4;
+        double dx = Math.cos(player.angle), dy = Math.sin(player.angle), pl = host.planeHalfWidth(), len = 4;
         g.setColor(new Color(235, 150, 20, 220));
         g.draw(new Line2D.Double(x, y, x + (dx + dy * pl) * len, y + (dy - dx * pl) * len));
         g.draw(new Line2D.Double(x, y, x + (dx - dy * pl) * len, y + (dy + dx * pl) * len));

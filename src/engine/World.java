@@ -18,7 +18,7 @@ import java.util.function.IntConsumer;
  * The grid is a pure acceleration structure - each cell stores the shapes and regions whose
  * bounding boxes touch it, and it is rebuilt automatically on load.
  */
-final class World {
+public final class World {
     /**
      * What a map file is allowed to ask for.
      *
@@ -33,6 +33,15 @@ final class World {
     /** The furthest "maxPitch" a map may ask for. Well inside where the overscan runs away, and
      *  well past where any of it is worth looking at: school is already down to 44 fps at 55. */
     private static final double MAX_PITCH_DEG = 60;
+    /**
+     * How far up and down the engine lets a camera look, unless a map narrows it.
+     *
+     * This is the engine's number, not a budget for any one map. What it costs differs enormously
+     * between maps - a tilted frame of school is 9 ms on the card where Haven is 139 - but that is
+     * the renderer's problem to solve and dynamic resolution's to absorb, not the camera's to hide
+     * by being shorter on the map that is slow.
+     */
+    public static final double MAX_PITCH = Math.toRadians(45);
     private static final int MAX_SHAPES = 20_000_000;
     private static final int MAX_FILES = 65_536;          // chunks, images: one map's worth
     private static final int MAX_POLY_POINTS = 100_000;
@@ -233,25 +242,25 @@ final class World {
         }
     }
 
-    final String name;
+    public final String name;
     final Region[] regions;
     final Shape[] shapes;
     final Grid grid;
     final double sunX, sunY;
-    final double spawnX, spawnY, spawnAngle;
+    public final double spawnX, spawnY, spawnAngle;
     final double minX, minY, maxX, maxY;
     final Map<String, Object> lighting;   // the map's "lighting" block, or null; read by Lighting
     final List<Path> sources = new ArrayList<>();   // every file the map was read from, for LightCache's key
-    double minimapRotate;                 // "minimap": {"rotate": degrees clockwise, in quarter turns}
+    public double minimapRotate;                 // "minimap": {"rotate": degrees clockwise, in quarter turns}
     /**
      * How far up and down this map lets you look, in radians: "maxPitch", in degrees.
      *
-     * Player.MAX_PITCH is what the engine does; this only narrows it, and only when a map author
+     * {@link #MAX_PITCH} is what the engine does; this only narrows it, and only when a map author
      * wants the view held down - a corridor crawler that would show its own ceiling seams, a level
      * whose skybox stops. It is deliberately not a performance dial. A map that renders slowly
      * tilted is a renderer to fix or a frame to scale, not a camera to shorten.
      */
-    double maxPitch = Player.MAX_PITCH;
+    public double maxPitch = MAX_PITCH;
 
     private World(String name, Region[] regions, Shape[] shapes, double cell,
                   double sunX, double sunY, double spawnX, double spawnY, double spawnAngle,
@@ -440,7 +449,7 @@ final class World {
 
     // ---- JSON loading ----
 
-    static World load(Path path) throws IOException {
+    public static World load(Path path) throws IOException {
         path = path.toAbsolutePath().normalize();
         Map<String, Object> root = readJson(path);
         Assets textures = new Assets(parseTextures(root, path), parseImages(root, path));
@@ -473,7 +482,7 @@ final class World {
                 sun[0], sun[1], sp[0], sp[1], Math.toRadians(num(spawn, "angle", 0)),
                 root.get("lighting") instanceof Map ? obj(root.get("lighting")) : null);
         if (root.get("minimap") instanceof Map) world.minimapRotate = num(obj(root.get("minimap")), "rotate", 0);
-        // Only the key moves it, so a map that says nothing keeps Player.MAX_PITCH to the bit
+        // Only the key moves it, so a map that says nothing keeps MAX_PITCH to the bit
         // rather than a value that has been through degrees and back. Clamped rather than
         // refused: past the vertical the warp has no upright image left to resample from, and a
         // map asking for that has a typo in it, not an intention.

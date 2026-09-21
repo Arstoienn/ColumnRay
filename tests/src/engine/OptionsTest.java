@@ -28,7 +28,7 @@ final class OptionsTest {
 
         Options d = parse();
         Check.eq(d.map, "maps/school.json", "the default map");
-        Check.eq(d.w + "x" + d.h, Main.DEFAULT_W + "x" + Main.DEFAULT_H, "the default render size");
+        Check.eq(d.w + "x" + d.h, Host.DEFAULT_W + "x" + Host.DEFAULT_H, "the default render size");
         Check.eq(d.ss, 1, "no supersampling by default");
         Check.eq(d.targetFps, 60, "dynamic resolution aims at 60 by default");
         Check.that(Double.isNaN(d.startFeet), "no starting height until --feet says one");

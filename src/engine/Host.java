@@ -15,23 +15,19 @@ import java.awt.geom.Line2D;
 import java.awt.image.BufferStrategy;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
-import java.io.File;
-import java.nio.file.Path;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.IntStream;
 import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
 
 /**
- * The window, the frame loop and the buffers between the two.
+ * The engine, from a game's point of view: a window, a frame loop and the buffers between the two.
  *
- * What is left here is what only the running game needs: open a window, read the controls once a
- * frame, render, warp, scale, show, and stop when asked. Everything it used to do as well now has
- * a file of its own - {@link Options} reads the command line, {@link Player} moves the player,
- * {@link Warp} tilts the picture, {@link Hud} draws over it, {@link Capture} runs the headless
- * modes, and the second "ray view" window is {@link RayView}.
+ * What is here is what every game needs and no game should have to write: open a window, read the
+ * controls, ask the {@link Game} where to look, render that, tilt it, scale it, show it, and stop
+ * when asked. What is deliberately not here is anything a game would want to decide - which key
+ * walks forward, how fast, how tall the player is, what the overlay says. That lives in the
+ * {@code game} package and arrives through {@link Game} and the public methods below.
  *
  * The buffers are the reason this is still one class. What the renderer draws into, what the warp
  * resamples into, and what the window blits are three different arrays with three different sizes,
@@ -39,19 +35,16 @@ import javax.swing.SwingUtilities;
  * kept together so that nothing can be halfway through changing them. They are also why almost
  * everything here runs on one thread - see {@link Renderer}, which now enforces that rather than
  * asking for it.
- *
- * Usage: java -cp out engine.Main [map.json] [--shot out.png [x y angle pitch [column]]] [--bench]
  */
-public final class Main {
+public final class Host {
     // What is rendered and what is shown are separate: 1280x720 rays by default, scaled up into a
     // window of its own size. Tying the ray count to the window made fullscreen slow for no detail
     // anyone asked for; the frame-time controller (see steer) moves the render size, not the window.
-    static final int DEFAULT_W = 1280, DEFAULT_H = 720;
-    static final int DEFAULT_WINDOW_W = 1920, DEFAULT_WINDOW_H = 1080;
+    public static final int DEFAULT_W = 1280, DEFAULT_H = 720;
+    public static final int DEFAULT_WINDOW_W = 1920, DEFAULT_WINDOW_H = 1080;
 
     // The render size is a step on DynamicResolution.LADDER, a share of the window: the frame-time
-    // controller moves along it, and , and . step along it by hand (which turns the controller off;
-    // V turns it back on).
+    // controller moves along it, and the game may step along it by hand.
 
     /** Output resolution: the size of the image that reaches the window. Changes with the render
      *  scale, so it is not final; the window does not change, the picture in it just gets coarser
@@ -72,7 +65,7 @@ public final class Main {
      * size, so a budget in pixels would let the camera tilt further on a small window than on a
      * large one. The camera is a control and a control does not change its range when the
      * resolution does. As a multiple it stops at the same angle everywhere: about 55 degrees,
-     * which is past what MAX_PITCH asks for and well short of the tangent running away - 68
+     * which is past what World.MAX_PITCH asks for and well short of the tangent running away - 68
      * degrees is 1,494 level frames, where the allocation itself used to fail.
      */
     private static final long OVERSCAN_LIMIT = 16;
@@ -85,23 +78,23 @@ public final class Main {
     int srcW, srcH;
     final Renderer renderer;
     final RayView rayView;
-    final Renderer.Camera cam = new Renderer.Camera();
-    private final Hud hud;
+    private final Renderer.Camera cam = new Renderer.Camera();
+    private final Input input = new Input();
 
-    final Player player;
+    Game game;                                                   // set by run(), or by a Capture
+    /** The field of view the game asked for, kept so that a resize can set it again from the same
+     *  number rather than from the renderer's round trip back out of the focal length. */
+    private double fovDeg = Renderer.DEFAULT_FOV;
+    /** The view the last frame was rendered from, for the ray view and for a screenshot. */
+    private View last = new View();
 
     // Input (the mouse is written on the EDT and read by the main loop; the keys are read straight
     // from the machine by Keys, once a frame)
-    private final Set<Integer> heldLastFrame = new HashSet<>();  // so a tap fires once, not every frame
-    private boolean listening;                                   // is a window of ours in front?
-    private double mouseDX, mouseDY;
-    private volatile boolean showMap = true, fisheye = false;
-    volatile boolean shear = false;                              // P: the old y-shearing pitch, for comparison
-    private volatile boolean baked = true;                       // L: baked lighting, or the old flat model
-    Lighting lighting;                                           // null with --flat
-    private volatile double fovDeg = Renderer.DEFAULT_FOV;
     private volatile int hoverColumn = -1, hoverRow = -1;        // which pixel of the main view the mouse is over
     int traceI = -1, traceJ = -1;                                // the output pixel whose ray the ray view traces
+
+    private volatile boolean shear = false;                      // the old y-shearing pitch, for comparison
+    Lighting lighting;                                           // null with --flat
 
     private final Warp warp = new Warp();                        // this frame's pitch warp; see Warp
     /** --gpu: the card shades the frame the CPU's columns worked out. Null on the CPU path, and
@@ -145,93 +138,47 @@ public final class Main {
     private int[] gpuPixels;                                     // only when part of the frame is not ported
     private volatile int viewX, viewY, viewW, viewH;             // where the main view sits inside the window
     private final int baseW, baseH;                              // the resolution --size asked for
-    private int winW = DEFAULT_WINDOW_W, winH = DEFAULT_WINDOW_H; // --window: the output, which the picture is scaled to
+    private final int winW, winH;                                // --window: the output, which the picture is scaled to
     private int scaleIx;                                         // where on DynamicResolution.LADDER we are now
-    private int targetFps = 60;                                  // --fps: the controller's budget; 0 = off
-    private volatile boolean autoRes = true;                     // V: is the controller steering?
+    private final int targetFps;                                 // --fps: the controller's budget; 0 = off
+    private volatile boolean autoRes = true;                     // is the controller steering?
     private DynamicResolution steer;
     private volatile int wantScale = -1;                         // set by a key, applied between frames
-    /** False once something has asked the game to stop: Escape, the window's close button, or a
-     *  signal. Written from the event thread and from a shutdown hook, read by the loop. */
+    /** False once something has asked the game to stop: the game itself, the window's close
+     *  button, or a signal. Written from the event thread and from a shutdown hook, read by the
+     *  loop. */
     private volatile boolean running = true;
     private double fps;
 
-    Main(World world, int w, int h, int ss) {
+    /**
+     * Everything the command line settled, applied in the order it has to be applied in: the card
+     * is asked for before any window exists, and the bake happens before the first frame.
+     */
+    public Host(World world, Options o) {
         this.world = world;
-        this.W = w;
-        this.H = h;
-        this.baseW = w;
-        this.baseH = h;
-        this.SS = ss;
-        this.RW = w * ss;
-        this.RH = h * ss;
-        this.viewW = w;
-        this.viewH = h;
+        this.W = o.w;
+        this.H = o.h;
+        this.baseW = o.w;
+        this.baseH = o.h;
+        this.SS = o.ss;
+        this.RW = o.w * o.ss;
+        this.RH = o.h * o.ss;
+        this.viewW = o.w;
+        this.viewH = o.h;
+        this.winW = o.winW;
+        this.winH = o.winH;
+        this.targetFps = o.targetFps;
         this.image = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
         this.out = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
-        this.hi = ss == 1 ? out : new int[RW * RH];   // SS = 1: the pitch warp writes straight into the window image
+        this.hi = o.ss == 1 ? out : new int[RW * RH];   // SS = 1: the pitch warp writes straight into the window image
         this.srcW = RW;
         this.srcH = RH;
-        this.src = new int[RW * RH];                  // grows on demand, see preparePitch()
+        this.src = new int[RW * RH];                    // grows on demand, see preparePitch()
         renderer = new Renderer(world, RW, RH, src);
         rayView = new RayView(world, renderer);
-        player = new Player(world);
-        hud = new Hud(world, renderer, player);
-    }
-
-    void standOn(double z) {
-        player.standOn(z);
-    }
-
-    public static void main(String[] args) throws Exception {
-        // Before AWT starts, and only when a window is going to open - see Keys. A headless run
-        // has no HUD to name, and on a machine with no window service to ask, the question hangs.
-        if (!Options.headless(args)) Keys.readLabels();
-        Options o = Options.parse(args);
-        if (o == null) return;
-        if (Options.headless(args)) System.setProperty("java.awt.headless", "true");
-        // Before AWT. A context asked for after the toolkit has started gets no accelerated
-        // pixel format on macOS - the same ordering trap that once left the window taking no
-        // keys, in the other direction.
-        //
-        // Two different things can be missing and both end the same way: a sentence, and the CPU
-        // renderer, which runs anywhere. There may be no backend for this operating system, which
-        // GlPlatform can answer without loading Gl - deliberately, because loading Gl is what
-        // fails. Or there may be a backend and no card for it to find: a Windows machine with no
-        // OpenGL driver, a virtual machine, a CI runner that offers Microsoft's software
-        // renderer. That one only shows up when the context is actually asked for, and it
-        // arrives as an ExceptionInInitializerError out of Gl's own field initialisers, which is
-        // not a thing to let out of main().
-        if (o.gpu) {
-            String why = GlPlatform.missing();
-            if (why == null) {
-                try {
-                    Gl.context();
-                    // Which card, in one line, and on a machine with more than one, which cards
-                    // it was not. An integrated GPU draws the frame and reports success at a
-                    // fraction of the speed of the one beside it; see GlPlatform.note.
-                    System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
-                    String note = GlPlatform.get().note(Gl.device());
-                    if (note != null) System.err.println("gpu: " + note);
-                } catch (Throwable t) {
-                    if (t instanceof VirtualMachineError e) throw e;
-                    Throwable c = t.getCause() != null ? t.getCause() : t;
-                    why = c.getMessage() != null ? c.getMessage() : c.toString();
-                }
-            }
-            if (why != null) {
-                System.err.println(why);      // both messages already say what happens next
-                o.gpu = false;
-            }
-        }
-
-        Main game = new Main(World.load(Path.of(o.map)), o.w, o.h, o.ss);
-        game.winW = o.winW;
-        game.winH = o.winH;
-        game.targetFps = o.targetFps;
         // The map may ask for a grade on the way out; -Dgrade.sat / -Dgrade.lift override it while
         // one is being found. See Renderer.grade.
-        Map<String, Object> lg = game.world.lighting == null ? Map.of() : game.world.lighting;
+        Map<String, Object> lg = world.lighting == null ? Map.of() : world.lighting;
         Object gr = lg.get("grade");
         Map<String, Object> g = gr instanceof Map ? World.obj(gr) : Map.of();
         Renderer.grade(Double.parseDouble(System.getProperty("grade.sat",
@@ -239,31 +186,126 @@ public final class Main {
                 Double.parseDouble(System.getProperty("grade.lift",
                         String.valueOf(World.num(g, "lift", 0.0)))));
         Renderer.fogOn = !Boolean.FALSE.equals(lg.get("fog"));
-        game.shear = o.shear;
-        game.setUseGpu(o.gpu);
+        this.shear = o.shear;
+        setUseGpu(o.gpu);
         if (!o.flat) {
-            game.lighting = Lighting.bake(game.world);
-            game.renderer.setLighting(game.lighting);
+            lighting = Lighting.bake(world);
+            renderer.setLighting(lighting);
         }
-        if (!Double.isNaN(o.startFeet)) game.standOn(o.startFeet);
-        Capture capture = new Capture(game);
-        if (o.bench) capture.bench();
-        else if (o.verify != null) capture.verify(Path.of(o.verify));
-        else if (o.gpuVerify != null) capture.gpuVerify(Path.of(o.gpuVerify));
-        else if (o.shots != null) capture.screenshots(Path.of(o.shots));
-        else if (o.shot != null) capture.screenshot(new File(o.shot), o.at);
-        else game.run();
     }
+
+    /**
+     * Is there a graphics card here to shade on, and say so if not.
+     *
+     * Asked before AWT starts: a context asked for after the toolkit has started gets no
+     * accelerated pixel format on macOS - the same ordering trap that once left the window taking
+     * no keys, in the other direction.
+     *
+     * Two different things can be missing and both end the same way: a sentence, and the CPU
+     * renderer, which runs anywhere. There may be no backend for this operating system, which
+     * GlPlatform can answer without loading Gl - deliberately, because loading Gl is what fails.
+     * Or there may be a backend and no card for it to find: a Windows machine with no OpenGL
+     * driver, a virtual machine, a CI runner that offers Microsoft's software renderer. That one
+     * only shows up when the context is actually asked for, and it arrives as an
+     * ExceptionInInitializerError out of Gl's own field initialisers, which is not a thing to let
+     * out of main().
+     */
+    public static boolean graphicsCard() {
+        String why = GlPlatform.missing();
+        if (why == null) {
+            try {
+                Gl.context();
+                // Which card, in one line, and on a machine with more than one, which cards it was
+                // not. An integrated GPU draws the frame and reports success at a fraction of the
+                // speed of the one beside it; see GlPlatform.note.
+                System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
+                String note = GlPlatform.get().note(Gl.device());
+                if (note != null) System.err.println("gpu: " + note);
+            } catch (Throwable t) {
+                if (t instanceof VirtualMachineError e) throw e;
+                Throwable c = t.getCause() != null ? t.getCause() : t;
+                why = c.getMessage() != null ? c.getMessage() : c.toString();
+            }
+        }
+        if (why != null) System.err.println(why);      // both messages already say what happens next
+        return why == null;
+    }
+
+    // ---- What a game may ask of the engine ----
+
+    /** The map this engine was started on. */
+    public World world() { return world; }
+
+    /** Stop after this frame. */
+    public void stop() { running = false; }
+
+    /** The field of view, in degrees. Changing it is free; it only has to happen between frames,
+     *  which is where {@link Game#update} runs. */
+    public double fov() { return renderer.fov(); }
+
+    public void setFov(double degrees) {
+        fovDeg = degrees;
+        if (Math.abs(renderer.fov() - degrees) > 1e-6) renderer.setFov(degrees);
+    }
+
+    /** Half the width of the camera plane at one metre: the shape of the view fan, for a minimap. */
+    public double planeHalfWidth() { return renderer.planeHalfWidth(); }
+
+    /** Is there a bake, or was this started with --flat? A game's "baked lighting" toggle has
+     *  nothing to toggle when there is not. */
+    public boolean hasLighting() { return lighting != null; }
+
+    /** The old y-shearing pitch instead of the true projective warp, for comparison. */
+    public boolean shear() { return shear; }
+
+    public void setShear(boolean on) { shear = on; }
+
+    /**
+     * How far up and down the camera may look right now, in radians.
+     *
+     * What the map asked for, or what the render buffer can hold, whichever is less. Worked out on
+     * demand rather than once at startup because the render size and the field of view both change
+     * under it - dynamic resolution moves one every few frames - and the overscan a pitch needs is
+     * a function of both.
+     */
+    public double pitchLimit() {
+        return Math.min(world.maxPitch,
+                Warp.fits(shear, RW, RH, renderer.focal(), OVERSCAN_LIMIT * (long) RW * RH));
+    }
+
+    /** Move the render scale one step along the ladder, and stop the frame-time controller from
+     *  steering it. */
+    public void stepScale(int delta) {
+        autoRes = false;
+        wantScale = Math.max(0, Math.min(DynamicResolution.LADDER.length - 1, scaleIx + delta));
+    }
+
+    /** Hand the render scale back to the frame-time controller, or take it away again. Does
+     *  nothing when --fps 0 asked for a fixed size. */
+    public void toggleAutoRes() {
+        autoRes = targetFps > 0 && !autoRes;
+        if (autoRes) steer = new DynamicResolution(1000.0 / targetFps, scaleIx);
+    }
+
+    public boolean autoRes() { return autoRes; }
+
+    /** The second window: a top-down view of where every column's ray goes. */
+    public void toggleRayView() { rayView.toggle(); }
+
+    /** Whether that view turns with the player or keeps the map the same way up. */
+    public void toggleRayFollow() { rayView.toggleFollow(); }
 
     // ---- Main loop ----
 
-    private void run() throws Exception {
+    /** Open the window and run this game until something stops it. */
+    public void run(Game g) throws Exception {
+        this.game = g;
         Canvas canvas = new Canvas();
         canvas.enableInputMethods(false);                        // an IME (Bopomofo, Pinyin) must not eat the keys
         SwingUtilities.invokeAndWait(() -> {
             // The window is the output: --window, fitted onto the screen, whatever is being rendered.
             // present() scales the picture up into it, so a bigger window costs no rays. The ray
-            // view opens beside it, hidden until R.
+            // view opens beside it, hidden until the game asks for it.
             Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
             int rayW = (int) Math.min(640, screen.width * 0.36);
             double fit = Math.min(1, Math.min((screen.width - 16) / (double) winW, (screen.height - 48) / (double) winH));
@@ -316,7 +358,8 @@ public final class Main {
             long now = System.nanoTime();
             double dt = Math.min(0.05, (now - last) / 1e9);
             last = now;
-            update(dt);
+            input.begin(!Keys.physical() || inFront());
+            game.update(dt, input);
             frame();
             present(canvas);
             rayView.present(view());
@@ -346,7 +389,7 @@ public final class Main {
             int lx, ly;
             @Override public void mousePressed(MouseEvent e) { lx = e.getX(); ly = e.getY(); canvas.requestFocus(); }
             @Override public void mouseDragged(MouseEvent e) {
-                synchronized (Main.this) { mouseDX += e.getX() - lx; mouseDY += e.getY() - ly; }
+                input.dragged(e.getX() - lx, e.getY() - ly);
                 lx = e.getX();
                 ly = e.getY();
             }
@@ -357,9 +400,6 @@ public final class Main {
         canvas.addMouseMotionListener(drag);
     }
 
-    /** Is the key in this position held? Only while a window of ours is in front - see {@link Keys}. */
-    private boolean down(int key) { return listening && Keys.down(key); }
-
     /**
      * The key state comes from the whole machine, not from our windows, so ignore it unless one of
      * ours is the active window. AWT events came with that for free.
@@ -367,36 +407,6 @@ public final class Main {
     private static boolean inFront() {
         for (Window w : Window.getWindows()) if (w.isActive()) return true;
         return false;
-    }
-
-    private static final int[] TAPS = {Keys.ESCAPE, Keys.M, Keys.G, Keys.F, Keys.P, Keys.L, Keys.R,
-            Keys.N, Keys.LEFT_BRACKET, Keys.MINUS, Keys.RIGHT_BRACKET, Keys.EQUALS, Keys.COMMA, Keys.PERIOD, Keys.V};
-
-    /** The keys that do their work once, on the way down, rather than for as long as they are held. */
-    private void taps() {
-        for (int key : TAPS) {
-            if (!down(key)) { heldLastFrame.remove(key); continue; }
-            if (!heldLastFrame.add(key)) continue;               // still held from last frame
-            switch (key) {
-                case Keys.ESCAPE -> running = false;
-                case Keys.M -> showMap = !showMap;
-                case Keys.G -> { player.flying = !player.flying; player.vz = 0; player.grounded = false; }
-                case Keys.F -> fisheye = !fisheye;
-                case Keys.P -> shear = !shear;
-                case Keys.L -> baked = !baked;
-                case Keys.R -> rayView.toggle();
-                case Keys.N -> rayView.toggleFollow();
-                case Keys.LEFT_BRACKET, Keys.MINUS -> fovDeg = Math.max(30, fovDeg - 5);
-                case Keys.RIGHT_BRACKET, Keys.EQUALS -> fovDeg = Math.min(120, fovDeg + 5);
-                case Keys.COMMA -> { autoRes = false; wantScale = Math.max(0, scaleIx - 1); }
-                case Keys.PERIOD -> { autoRes = false; wantScale = Math.min(DynamicResolution.LADDER.length - 1, scaleIx + 1); }
-                case Keys.V -> {
-                    autoRes = targetFps > 0 && !autoRes;
-                    if (autoRes) steer = new DynamicResolution(1000.0 / targetFps, scaleIx);
-                }
-                default -> { }
-            }
-        }
     }
 
     /** Window coordinate -> column of the main view; -1 when the point is outside it. */
@@ -411,49 +421,8 @@ public final class Main {
         return r >= 0 && r < RH ? r : -1;
     }
 
-    // ---- Player physics ----
-
-    /** One frame: read the controls, hand them to the player, and tell the renderer what changed
-     *  about the view. Nothing here knows how gravity works, and Player knows nothing about keys. */
-    private void update(double dt) {
-        listening = !Keys.physical() || inFront();
-        taps();
-        double fov = fovDeg;
-        if (Math.abs(renderer.fov() - fov) > 1e-6) renderer.setFov(fov);
-        int hc = hoverColumn, hr = hoverRow;
-        traceI = hc >= 0 && hr >= 0 ? hc : -1;                   // the pixel the ray view traces; -1 = centre
-        traceJ = hc >= 0 && hr >= 0 ? hr : -1;
-        player.step(dt, controls());
-    }
-
-    /** What the keyboard and the mouse are asking for, as movement rather than as keys. */
-    private Player.Move controls() {
-        double mdx, mdy;
-        synchronized (this) { mdx = mouseDX; mdy = mouseDY; mouseDX = mouseDY = 0; }
-        return new Player.Move(
-                (down(Keys.RIGHT) || down(Keys.E) ? 1 : 0) - (down(Keys.LEFT) || down(Keys.Q) ? 1 : 0),
-                (down(Keys.UP) ? 1 : 0) - (down(Keys.DOWN) ? 1 : 0),
-                (down(Keys.W) ? 1 : 0) - (down(Keys.S) ? 1 : 0),
-                (down(Keys.D) ? 1 : 0) - (down(Keys.A) ? 1 : 0),
-                mdx, mdy,
-                down(Keys.C) || down(Keys.CONTROL) || down(Keys.RIGHT_CONTROL),
-                down(Keys.SHIFT) || down(Keys.RIGHT_SHIFT),
-                down(Keys.SPACE));
-    }
-
-    private Renderer.Camera camera() {
-        cam.x = player.x;
-        cam.y = player.y;
-        cam.dirX = Math.cos(player.angle);
-        cam.dirY = Math.sin(player.angle);
-        cam.eye = player.eye();
-        cam.fisheye = fisheye;                              // pitch and the render window: preparePitch()
-        cam.baked = baked && lighting != null;
-        return cam;
-    }
-
     RayView.View view() {
-        return new RayView.View(player.x, player.y, player.angle, fisheye, Math.toDegrees(player.pitch), shear);
+        return new RayView.View(last.x, last.y, last.heading, last.fisheye, Math.toDegrees(last.pitch), shear);
     }
 
     // ---- Rendering ----
@@ -487,15 +456,45 @@ public final class Main {
         hoverColumn = hoverRow = -1;
     }
 
-    /** Render one frame, tilt it, and when supersampling box-filter it down to the output image. */
-    void frame() {
+    private void applyWantedScale() {
         int want = wantScale;
         if (want >= 0) {
             wantScale = -1;
             setScale(want);
         }
-        Renderer.Camera c = camera();
-        preparePitch(c);
+    }
+
+    /** One frame of the running game: tell it how far it may tilt, then draw where it says. */
+    void frame() {
+        applyWantedScale();
+        double limit = pitchLimit();
+        game.pitchLimit(limit);
+        int hc = hoverColumn, hr = hoverRow;
+        traceI = hc >= 0 && hr >= 0 ? hc : -1;                   // the pixel the ray view traces; -1 = centre
+        traceJ = hc >= 0 && hr >= 0 ? hr : -1;
+        render(game.view(), limit);
+    }
+
+    /** Render one view, whoever it belongs to: a headless capture's, or a game's. */
+    public void frame(View v) {
+        applyWantedScale();
+        render(v, pitchLimit());
+    }
+
+    /** Render one frame, tilt it, and when supersampling box-filter it down to the output image. */
+    private void render(View v, double limit) {
+        last = v;
+        double pitch = Math.max(-limit, Math.min(limit, v.pitch));
+        Renderer.Camera c = cam;
+        c.x = v.x;
+        c.y = v.y;
+        c.dirX = Math.cos(v.heading);
+        c.dirY = Math.sin(v.heading);
+        c.eye = v.eye;
+        c.fisheye = v.fisheye;                              // pitch and the render window: preparePitch()
+        c.baked = v.baked && lighting != null;
+        c.captureDepth = v.captureDepth;
+        preparePitch(c, pitch);
         // Recording one column's ray costs allocations every frame; only the ray view and a
         // screenshot's -rays.png read it.
         renderer.traceColumn = rayView.visible() || c.captureDepth
@@ -544,15 +543,8 @@ public final class Main {
 
     /** Work out this frame's warp, grow the render buffer if the tilt needs more overscan than it
      *  has, and tell the camera which part of that buffer to draw. See {@link Warp}. */
-    private void preparePitch(Renderer.Camera c) {
-        // What the map asked for, or what the buffer can hold, whichever is less. Worked out here
-        // rather than once at startup because the render size and the field of view both change
-        // under it - dynamic resolution moves one every few frames - and the overscan a pitch
-        // needs is a function of both.
-        player.pitchLimit = Math.min(world.maxPitch,
-                Warp.fits(shear, RW, RH, renderer.focal(), OVERSCAN_LIMIT * (long) RW * RH));
-        player.pitch = Math.max(-player.pitchLimit, Math.min(player.pitchLimit, player.pitch));
-        warp.plan(player.pitch, shear, RW, RH, renderer.focal());
+    private void preparePitch(Renderer.Camera c, double pitch) {
+        warp.plan(pitch, shear, RW, RH, renderer.focal());
         if (warp.needW() > srcW || warp.needH() > srcH) {        // grow only: an unused margin costs nothing
             srcW = Math.max(srcW, (int) (warp.needW() * 1.1));
             srcH = Math.max(srcH, (int) (warp.needH() * 1.1));
@@ -663,6 +655,7 @@ public final class Main {
         Toolkit.getDefaultToolkit().sync();
     }
 
+    /** The finished picture, scaled into place, and whatever the game draws over it. */
     void drawFrame(Graphics2D g, int ox, int oy, int dw, int dh, boolean markColumn) {
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
         g.drawImage(image, ox, oy, dw, dh, null);
@@ -677,15 +670,7 @@ public final class Main {
             g.draw(new Line2D.Double(ox + warp.outputX(col, 0) * sx, oy + 0.5 * sy,
                                      ox + warp.outputX(col, RH - 1) * sx, oy + (RH - 0.5) * sy));
         }
-        hud.draw(g, ox + 12, oy + 20, status());
-        if (showMap) hud.drawMinimap(g, ox + dw - 12, oy + 12, (int) Math.max(160, Math.min(dw, dh) * 0.42));
+        if (game != null)
+            game.overlay(g, new Game.Overlay(ox, oy, dw, dh, fps, W, H, SS, RW, autoRes, shear));
     }
-
-    private Hud.Status status() {
-        return new Hud.Status(fps, W, H, SS, RW, fisheye,
-                lighting == null ? "flat lighting (--flat)" : baked ? "baked lighting" : "flat lighting (L)",
-                shear, autoRes);
-    }
-
-
 }

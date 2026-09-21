@@ -10,47 +10,48 @@ import java.util.function.Supplier;
  * rule: a test is a static method, a failure is a line on stdout, and the exit status is what a
  * CI job reads. Nothing here is clever enough to need testing itself.
  *
- * Tests live in package {@code engine} but under {@code tests/src}, so they can reach the
- * package-private classes they are checking without any of them being opened up for the purpose,
- * and so that {@code build.sh} never compiles them into the engine's own {@code out/}.
+ * Tests live under {@code tests/src}, in the package of whatever they are checking, so they can
+ * reach package-private classes without any of them being opened up for the purpose, and so that
+ * {@code build.sh} never compiles them into the engine's own {@code out/}. That now means two
+ * packages - {@code engine} and {@code game} - which is why this one is public.
  */
-final class Check {
+public final class Check {
     private Check() {}
 
-    static int checks, failed;
+    public static int checks, failed;
     private static String group = "";
 
-    static void group(String name) {
+    public static void group(String name) {
         group = name;
     }
 
-    static void that(boolean ok, String what) {
+    public static void that(boolean ok, String what) {
         checks++;
         if (ok) return;
         failed++;
         System.out.println("FAIL  " + group + ": " + what);
     }
 
-    static void eq(int got, int want, String what) {
+    public static void eq(int got, int want, String what) {
         that(got == want, what + " (wanted " + want + ", got " + got + ")");
     }
 
-    static void eq(Object got, Object want, String what) {
+    public static void eq(Object got, Object want, String what) {
         that(want == null ? got == null : want.equals(got),
                 what + " (wanted " + want + ", got " + got + ")");
     }
 
-    static void eq(double got, double want, double tol, String what) {
+    public static void eq(double got, double want, double tol, String what) {
         that(Math.abs(got - want) <= tol, what + " (wanted " + want + " +/- " + tol + ", got " + got + ")");
     }
 
-    static void eq(int[] got, int[] want, String what) {
+    public static void eq(int[] got, int[] want, String what) {
         that(Arrays.equals(got, want),
                 what + " (wanted " + Arrays.toString(want) + ", got " + Arrays.toString(got) + ")");
     }
 
     /** The call must fail, and its message must name the problem. */
-    static void rejects(Supplier<?> call, String messagePart, String what) {
+    public static void rejects(Supplier<?> call, String messagePart, String what) {
         checks++;
         try {
             Object v = call.get();
