@@ -319,7 +319,7 @@ and not lost on walking the grid: the ray genuinely crosses 119 surfaces. That i
 made of - the conversion turns each mesh triangle into its own slab, and the median one is 13 cm
 across and 8 cm tall, with 87 per cent of them under half a metre.
 
-Two things were tried against that and neither worked, which is worth writing down so they are not
+Three things were tried against that and none worked, which is worth writing down so they are not
 tried twice:
 
 - **A `maxDist` on every shape** (`tools/add_maxdist.py`, grouping coplanar fragments so a floor is
@@ -331,9 +331,24 @@ tried twice:
   117.4, while the cells walked went from 25.6 to 49.5 to 96.8. A fifteen per cent saving for four
   times the walking is not a trade worth making.
 
-What is left is the fragmentation itself: merging coplanar neighbours in the converter, so that a
-wall is one shape and not sixty-four stacked bands. That is a converter change, not an engine one,
-and `WORK` is how it would be judged.
+- **Merging coplanar neighbours** (`tools/merge_coplanar.py`: two polygons on the same plane in
+  world coordinates, same material, sharing an edge, welded when what they make is still convex;
+  walls stacked in height or meeting end to end). It removed 2.7 per cent of the shapes and took
+  the tests from 138.9 to 134.2, and the pictures were within 37 pixels in 7.4 million, so it
+  works - there is simply almost nothing to merge. Haven is not a set of flat surfaces cut into
+  fragments. It is a tessellated mesh: 71 per cent of its 653,000 polygons are alone on their own
+  plane in world coordinates, and 652,613 of them carry their own texture mapping, which two
+  neighbours would have to agree on to become one. Counting every pair that shares an edge inside
+  a plane-and-material group gives 26,000 possible welds out of 653,000 polygons. Three per cent
+  is the ceiling, not the result of a timid rule.
+
+All three fail for the same reason. There is no redundancy in this map to take out: every triangle
+really is its own surface, with its own plane and its own texture mapping, and a ray down an open
+sightline really does cross 119 of them. Anything that cuts that number has to be **lossy** - a
+decimated mesh with fewer, larger triangles, made in Blender before the export, and if it is to
+depend on distance, several of them used as a geometry LOD. That is what a texture's mip chain is
+for the texture, and geometry here has no equivalent: one level, 929,000 fragments, at every
+distance.
 
 ### What a big map actually costs
 
