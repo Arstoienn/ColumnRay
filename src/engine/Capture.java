@@ -190,9 +190,9 @@ public final class Capture {
         // and no wrong answer.
         double[] pitches = {0, 8, 17, 25, Math.toDegrees(h.pitchLimit())};
         int worstAll = 0;
-        long failed = 0, pixels = 0, drops = 0;
-        System.out.printf("%-12s %6s %10s %8s %8s %8s %8s %12s%n",
-                "view", "pitch", "buffer", "worst", "mean", "over 8", "dropped", "per column");
+        long failed = 0, pixels = 0, drops = 0, notGiven = 0;
+        System.out.printf("%-12s %6s %10s %8s %8s %8s %8s %8s %12s%n",
+                "view", "pitch", "buffer", "worst", "mean", "over 8", "cpu px", "dropped", "per column");
         for (String line : Files.readAllLines(list)) {
             String t = line.trim();
             if (t.isEmpty() || t.startsWith("#")) continue;
@@ -225,6 +225,7 @@ public final class Capture {
                         Double.parseDouble(f[3]), pitch);
                 h.setUseGpu(true);
                 h.frame(game.view());
+                int skipped = h.gpuSkipped();
 
                 int worst = 0, over = 0;
                 long sum = 0;
@@ -241,9 +242,10 @@ public final class Capture {
                 failed += over;
                 pixels += (long) h.W * h.H;
                 drops += h.gpuDropped();
-                System.out.printf("%-12s %6.0f %10s %8d %8.3f %8d %8d %12s%n", f[0], pitch,
+                notGiven += skipped;
+                System.out.printf("%-12s %6.0f %10s %8d %8.3f %8d %8d %8d %12s%n", f[0], pitch,
                         h.srcW + "x" + h.srcH, worst, (double) sum / (h.W * h.H), over,
-                        h.gpuDropped(), h.gpuMost());
+                        skipped, h.gpuDropped(), h.gpuMost());
             }
         }
         // What this is allowed to find, and what it is not.
@@ -256,8 +258,9 @@ public final class Capture {
         // frame where the merge kept the wrong half. Those are not two pixels, they are percents
         // of the frame, so the threshold is on how many pixels disagree and not on how much.
         double bad = 100.0 * failed / Math.max(1, pixels);
-        System.out.printf("%nworst %d of 255 anywhere; %d of %d pixels over 8 (%.4f%%); %d dropped%n",
-                worstAll, failed, pixels, bad, drops);
+        System.out.printf("%nworst %d of 255 anywhere; %d of %d pixels over 8 (%.4f%%); "
+                        + "%d pixels the card was not given; %d dropped%n",
+                worstAll, failed, pixels, bad, notGiven, drops);
         // Dropping is not failing. A column with no room for another entry hands its rows back to
         // the CPU, and this very run is the proof that the picture survives it: the frames that
         // dropped sixty thousand entries between them still agreed to within four levels. So a

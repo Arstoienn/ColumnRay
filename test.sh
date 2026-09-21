@@ -12,6 +12,10 @@
 # The golden files hold digests of the renderer's own pixels, depth, albedo and lightmap - not of
 # the PNGs, which an encoder is free to write differently between JDK releases without a pixel
 # changing. See Capture.verify and tests/golden/README.md.
+#
+# Every mode but --gpu runs on the CPU, whatever the machine has: --verify takes the CPU path by
+# itself (Options says why), so these digests are the double-precision renderer's and stay
+# comparable to the ones in tests/golden/ whether or not this machine has a card.
 set -euo pipefail
 cd "$(dirname "$0")"
 

@@ -120,6 +120,12 @@ public final class Host {
         return (spans == null ? 0 : spans.most()) + "/" + (masks == null ? 0 : masks.most());
     }
 
+    /** How many pixels of the last frame the card was not given at all, because the surface's
+     *  shading is not ported. Zero is what a finished card path looks like. */
+    int gpuSkipped() {
+        return spans == null ? 0 : spans.skipped();
+    }
+
     /** How many spans and masks a frame had to hand back to the CPU for want of room. */
     int gpuDropped() {
         return (spans == null ? 0 : spans.dropped()) + (masks == null ? 0 : masks.dropped());
@@ -560,30 +566,62 @@ public final class Host {
         // so a buffer that grew while the card was switched off would be written past its end.
         if ((useGpu || spans != null) && (gpu == null || spans == null
                 || spans.columns() != srcW || spans.rows() != srcH)) {
-            if (gpu != null) gpu.close();
-            gpu = new GpuWalls(srcW, srcH, srcW);
-            if (lighting != null) {
-                if (gpuLights == null) gpuLights = new GpuLights(lighting);
-                gpu.setLights(gpuLights);
-            }
-            if (gpuImages == null) {
-                java.util.List<Materials.Texture> imgs = GpuTextures.of(world);
-                if (!imgs.isEmpty()) {
-                    gpuImages = new GpuTextures(imgs);
-                    gpuMaterials = new GpuMaterials(world, gpuImages);
+            try {
+                if (gpu != null) gpu.close();
+                gpu = new GpuWalls(srcW, srcH, srcW);
+                if (lighting != null) {
+                    if (gpuLights == null) gpuLights = new GpuLights(lighting);
+                    gpu.setLights(gpuLights);
                 }
+                if (gpuImages == null) {
+                    java.util.List<Materials.Texture> imgs = GpuTextures.of(world);
+                    if (!imgs.isEmpty()) {
+                        gpuImages = new GpuTextures(imgs);
+                        gpuMaterials = new GpuMaterials(world, gpuImages);
+                    }
+                }
+                if (gpuImages != null) {
+                    gpu.setImages(gpuImages, gpuMaterials);
+                    renderer.setMaterials(gpuMaterials);
+                }
+                spans = new GpuSpans(srcW, srcH);
+                masks = new GpuMasks(srcW);
+                gpuPixels = null;
+                renderer.captureSpans(spans);
+                renderer.captureMasks(masks);
+                renderer.shadeUnderCard(false);
+            } catch (RuntimeException | LinkageError cannot) {
+                giveUpOnCard(cannot);
             }
-            if (gpuImages != null) {
-                gpu.setImages(gpuImages, gpuMaterials);
-                renderer.setMaterials(gpuMaterials);
-            }
-            spans = new GpuSpans(srcW, srcH);
-            masks = new GpuMasks(srcW);
-            gpuPixels = null;
-            renderer.captureSpans(spans);
-            renderer.captureMasks(masks);
-            renderer.shadeUnderCard(false);
         }
+    }
+
+    /**
+     * Put the frame back on the CPU, whatever the card just refused to do.
+     *
+     * The card became the default on 2026-09-21, and that changes what a failure here means. It
+     * used to be something you had asked for by name, so stopping and saying why was fair; now it
+     * is what every run does, and a map whose lightmaps will not pack into one atlas - which
+     * GpuLights throws about - would be a map that no longer runs at all. The CPU renderer is the
+     * whole engine and always has been, so the answer is one sentence and that path.
+     *
+     * An OutOfMemoryError is not caught: that is the JVM in trouble rather than the card refusing,
+     * and the buffers this was about to build are the reason it would be thrown.
+     */
+    private void giveUpOnCard(Throwable why) {
+        String said = why.getMessage() != null ? why.getMessage() : why.toString();
+        System.err.println("gpu: " + said);
+        System.err.println("gpu: shading this map on the CPU instead");
+        if (gpu != null) {
+            gpu.close();
+            gpu = null;
+        }
+        spans = null;
+        masks = null;
+        gpuPixels = null;
+        renderer.captureSpans(null);
+        renderer.captureMasks(null);
+        setUseGpu(false);
     }
 
     /** Average each SS x SS block of the render buffer into one output pixel. */
