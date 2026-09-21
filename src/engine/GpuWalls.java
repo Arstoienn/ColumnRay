@@ -391,26 +391,29 @@ final class GpuWalls implements AutoCloseable {
 
                 vec3 linOf3(vec3 c) { return vec3(linOf(c.r), linOf(c.g), linOf(c.b)); }
 
-                /** Renderer.toByte: light back to an sRGB number. */
-                float toByte(float v) {
+                /** Renderer.toLevel: light back to an sRGB level, unrounded. */
+                float toLevel(float v) {
                     float s = v <= 0.0031308 ? 12.92 * v : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
-                    return floor(s * 255.0 + 0.5);
+                    return s * 255.0;
                 }
+
+                float level(float v) { return v <= 0.0 ? 0.0 : (v >= 255.0 ? 255.0 : floor(v + 0.5)); }
 
                 /** Renderer.aces. */
                 float aces(float x) {
                     return x <= 0.0 ? 0.0 : min(1.0, (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
                 }
 
-                /** Renderer.hdrRgb: expose, grade, roll off, encode. c is light, not levels. */
+                /** Renderer.hdrRgb: expose, roll off, encode, and only then grade. */
                 vec3 hdrGraded(vec3 c) {
                     c *= exposure;
+                    vec3 s = vec3(toLevel(aces(c.r)), toLevel(aces(c.g)), toLevel(aces(c.b)));
                     if (satBoost != 1.0) {
-                        float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
-                        c = y + (c - y) * satBoost;
+                        float y = dot(s, vec3(0.2126, 0.7152, 0.0722));
+                        s = y + (s - y) * satBoost;
                     }
-                    if (lift != 0.0) c = lift + c * (1.0 - lift);
-                    return vec3(toByte(aces(c.r)), toByte(aces(c.g)), toByte(aces(c.b)));
+                    if (lift != 0.0) s = lift * 255.0 + s * (1.0 - lift);
+                    return vec3(level(s.r), level(s.g), level(s.b));
                 }
 
                 /** Renderer.rgb: the grade, then the tone curve. */

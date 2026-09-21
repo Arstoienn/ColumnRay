@@ -1937,18 +1937,19 @@ final class Renderer {
     /**
      * Whether the bake this run is using bounced its light in linear too.
      *
-     * Separate from {@link #hdr} because the two are decided at different times. The bake happens
-     * once, at start-up, from the command line; the shading can be switched while the game is
-     * running, which is what the H key is for. So H compares the two ways of finishing the same
-     * bake, and {@code --hdr} is the whole change - the bake included.
+     * Separate from {@link #hdr} for two reasons. It is decided once, at start-up, where the
+     * shading can be switched while the game is running (the H key). And it is a change of its
+     * own: right in principle, and not yet right for every map, so it waits behind
+     * {@code -Dhdr.bake=true} while the maps that were tuned against the old bounce catch up.
      */
     static boolean hdrBake = false;
     static double exposure = Double.parseDouble(System.getProperty("hdr.exposure", "0.696"));
 
     /** sRGB byte to light, with one spare entry so a fractional index can interpolate. */
     private static final double[] TO_LIGHT = new double[257];
-    /** Light 0..1 back to an sRGB byte, fine enough that the step is under a fifth of a level. */
-    private static final int[] TO_BYTE = new int[16385];
+    /** Light 0..1 back to an sRGB level, 0 to 255 and not yet rounded: the grade still has to be
+     *  applied to it, and rounding twice loses more than the table's own step. */
+    private static final double[] TO_BYTE = new double[16385];
 
     static {
         for (int i = 0; i <= 256; i++) {
@@ -1958,7 +1959,7 @@ final class Renderer {
         for (int i = 0; i < TO_BYTE.length; i++) {
             double v = i / (double) (TO_BYTE.length - 1);
             double s = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-            TO_BYTE[i] = (int) Math.round(s * 255);
+            TO_BYTE[i] = s * 255;
         }
     }
 
@@ -1974,7 +1975,7 @@ final class Renderer {
         return TO_LIGHT[i] + (TO_LIGHT[i + 1] - TO_LIGHT[i]) * (v - i);
     }
 
-    private static int toByte(double v) {
+    private static double toLevel(double v) {
         int i = (int) (v * (TO_BYTE.length - 1) + 0.5);
         return TO_BYTE[i < 0 ? 0 : Math.min(i, TO_BYTE.length - 1)];
     }
@@ -1984,24 +1985,37 @@ final class Renderer {
         return x <= 0 ? 0 : Math.min(1, (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
     }
 
-    /** The linear path's exit: expose, grade, roll off, and encode. r, g and b are light. */
+    /**
+     * The linear path's exit: expose, roll off, encode, and only then grade.
+     *
+     * The grade comes last because that is what a grade is. A map's "lift" is a fraction of the
+     * picture's own range - Haven asks for 0.08, which the old pipeline put at 20 levels out of
+     * 255 - and applying it to light instead makes it 0.08 of full daylight, which is 76 levels,
+     * and lays a grey sheet over the whole map. The same argument applies to saturation: it is a
+     * decision about the picture, made where colourists make it, and moving it into the light
+     * would quietly change what every map's numbers mean.
+     */
     private static int hdrRgb(double r, double g, double b) {
-        r *= exposure;
-        g *= exposure;
-        b *= exposure;
+        double sr = toLevel(aces(r * exposure));
+        double sg = toLevel(aces(g * exposure));
+        double sb = toLevel(aces(b * exposure));
         if (satBoost != 1.0) {
-            double y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-            r = y + (r - y) * satBoost;
-            g = y + (g - y) * satBoost;
-            b = y + (b - y) * satBoost;
+            double y = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
+            sr = y + (sr - y) * satBoost;
+            sg = y + (sg - y) * satBoost;
+            sb = y + (sb - y) * satBoost;
         }
         if (lift != 0) {
-            double k = 1 - lift, c = lift;
-            r = c + r * k;
-            g = c + g * k;
-            b = c + b * k;
+            double k = 1 - lift, c = lift * 255;
+            sr = c + sr * k;
+            sg = c + sg * k;
+            sb = c + sb * k;
         }
-        return (toByte(aces(r)) << 16) | (toByte(aces(g)) << 8) | toByte(aces(b));
+        return level(sr) << 16 | level(sg) << 8 | level(sb);
+    }
+
+    private static int level(double v) {
+        return v <= 0 ? 0 : v >= 255 ? 255 : (int) (v + 0.5);
     }
 
     /** An albedo pixel: the colour as it is, clamped - no grade and no tone curve. */

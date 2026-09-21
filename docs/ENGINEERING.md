@@ -556,23 +556,42 @@ colour. The bake had the same mistake one step earlier - a surface bounced `colo
 light that hit it, so a mid-grey wall returned 0.50 where it really returns 0.22, and two bounces
 of that filled every room with a flat grey glow.
 
-`--hdr` puts both right. The colour is read back into light (`Renderer.linOf`, the sRGB transfer),
-the light is applied there, the bake bounces the same way, and the result comes back out through
-a filmic curve and the sRGB encode. The old per-channel knee at 200 is still there for the old
+`--hdr` puts the shading right: the colour is read back into light (`Renderer.linOf`, the sRGB
+transfer), the light is applied there, and the result comes back out through a filmic curve and
+the sRGB encode. The bounce is a second switch, `-Dhdr.bake=true`, for the reason below. The old per-channel knee at 200 is still there for the old
 path: it compresses each channel separately, so a bright red saturates in red first and shifts hue
 on the way to white, where the ACES fit rolls the three together the way a film stock does.
 
-Measured on school's courtyard at 1280x720:
+### Why the bounce is a switch of its own
 
-| | mean level | contrast (p95 - p5) | mean chroma |
+The two halves were measured apart, on both maps. School's courtyard and Haven's spot7, 1280x720:
+
+| school | mean level | contrast (p95 - p5) | chroma |
 |---|---|---|---|
-| sRGB (the old way) | 106.9 | 137 | 27.2 |
-| `--hdr`, shading only | 140.5 | 147 | 31.2 |
-| `--hdr`, shading and bake | 119.7 | 149 | 38.8 |
+| sRGB shading, sRGB bounce | 106.9 | 137 | 27.2 |
+| linear shading, sRGB bounce | 140.5 | 147 | 31.2 |
+| linear shading, linear bounce | 119.7 | **149** | **38.8** |
 
-The middle row is the warning. Fixing the shading and leaving the bake alone makes the picture
-worse in the way that matters - the shading stops over-darkening while the bake goes on
-over-brightening, and the whole frame washes out. Both halves or neither.
+| Haven | mean level | contrast (p95 - p5) | chroma |
+|---|---|---|---|
+| sRGB shading, sRGB bounce | 77.9 | 46 | 10.6 |
+| linear shading, sRGB bounce | 81.8 | **72** | **20.6** |
+| linear shading, linear bounce | 95.4 | 56 | 5.3 |
+
+The shading wins on both, and on Haven it is not close: a grey-brown mush becomes wood with grain
+in it. The bounce wins on school and loses badly on Haven, where it flattens the picture and takes
+three quarters of the colour out of it.
+
+That is not a contradiction, it is the two maps having been tuned against the old bounce in
+different ways - school's lighting was authored by hand against it, and Haven's came out of a
+converter matched to Blender's own render. Which of them is telling the truth is not something a
+measurement of the two pictures can settle, so the bounce stays behind `-Dhdr.bake=true` until the
+maps have caught up, and `--hdr` on its own is the part that is right everywhere.
+
+The grade comes last, after the tone curve and the sRGB encode, because that is what a grade is.
+This was got wrong first: a map's `lift` is a fraction of the picture's range - Haven asks for
+0.08, which is 20 levels out of 255 - and applying it to light instead made it 0.08 of full
+daylight, or 76 levels, which laid a grey sheet over the whole map.
 
 `EXPOSURE` (0.696, `-Dhdr.exposure`) is the one number that was chosen rather than derived: it is
 what puts a mid-grey surface under full light back where the old pipeline had it, so the two can
