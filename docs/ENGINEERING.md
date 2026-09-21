@@ -346,6 +346,25 @@ worst a 673 ms humongous allocation. But none of the 1,440 timed frames is anywh
 so it fell in the warmup or the load, where a bench's percentiles cannot see it. On a map this
 size, read a percentile with the series beside it.
 
+### How far the camera looks up, and what stops it
+
+`Player.MAX_PITCH` is 45 degrees, and it is the engine's number rather than a budget for any one
+map. What a tilted frame costs differs enormously - school renders 45 degrees in 9.2 ms on the
+card where Haven takes 139 - but that is the renderer's problem to solve and dynamic resolution's
+to absorb. Shortening the camera on the map that happens to be slow would hide the problem in the
+control, and a look control whose range depends on which level is loaded is not a control. A map
+may still narrow it with `"maxPitch"` when its author wants the view held down; that is a design
+decision, and the loader clamps it at 60 degrees.
+
+Under both sits a hard ceiling that is about the machine and not about taste. The overscan grows
+as a tangent and runs away at 90 degrees less the vertical half-FOV - 69.6 degrees at the default
+field of view - so `Warp.fits` returns the furthest pitch whose upright image still fits a budget,
+and `Main` clamps to it every frame. The budget is **a multiple of a level frame (16), not a count
+of pixels**: the overscan a pitch needs is a fixed ratio of the frame at any render size, so a
+budget in pixels would let the camera tilt further on a small window than on a large one. As a
+multiple it stops at 55.1 degrees at 640x360, at 1280x720 and at 3840x2160 alike. It is worked out
+by asking `Warp.plan` itself rather than by a second copy of its formulas.
+
 ### What looking up costs, and one thing that did not help
 
 Tilting is expensive on Haven and it is not the overscan buffer. With the *same* buffer

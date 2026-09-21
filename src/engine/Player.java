@@ -20,7 +20,16 @@ final class Player {
     /** Player dimensions, in metres. */
     static final double RADIUS = 0.3, EYE_STAND = 1.6, EYE_CROUCH = 1.0, HEAD_ABOVE_EYE = 0.15;
     static final double STEP = 0.35, GRAVITY = 18, JUMP_SPEED = 5.2, WALK = 3.2, RUN = 5.5;
-    static final double MAX_PITCH = Math.toRadians(30);
+    /**
+     * How far up and down the camera goes.
+     *
+     * This is the engine's number, not a budget for any one map. What it costs differs enormously
+     * between maps - a tilted frame of school is 9 ms on the card where Haven is 139 - but that is
+     * the renderer's problem to solve and dynamic resolution's to absorb, not the camera's to hide
+     * by being shorter on the map that is slow. A map may still narrow it with "maxPitch" when its
+     * author wants the view held down, which is a design decision rather than a performance one.
+     */
+    static final double MAX_PITCH = Math.toRadians(45);
 
     /** What the controls asked for this frame, with no mention of which key any of it came from. */
     record Move(double turn, double look, double forward, double strafe,
@@ -40,9 +49,17 @@ final class Player {
     boolean flying;
 
     private double startFeet = Double.NaN;                       // --feet: which storey to start on
+    /**
+     * How far up and down this player may look: what the map asked for, unless the overscan that
+     * would need is more than the render buffer may grow to, in which case Main lowers it. Both
+     * ends of that matter - the map knows what it can afford to draw, the machine knows what it
+     * can afford to allocate, and the smaller of the two is the one you get.
+     */
+    double pitchLimit;
 
     Player(World world) {
         this.world = world;
+        pitchLimit = world.maxPitch;
         x = world.spawnX;
         y = world.spawnY;
         angle = world.spawnAngle;
@@ -89,7 +106,7 @@ final class Player {
     /** One frame of movement: turn, look, walk, fall, and ease the camera over a step. */
     void step(double dt, Move m) {
         angle += m.turn() * 2.2 * dt + m.mouseDX() * 0.004;
-        pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, pitch + m.look() * 1.2 * dt - m.mouseDY() * 0.003));
+        pitch = Math.max(-pitchLimit, Math.min(pitchLimit, pitch + m.look() * 1.2 * dt - m.mouseDY() * 0.003));
 
         boolean crouch = m.crouch();
         boolean running = m.run();
