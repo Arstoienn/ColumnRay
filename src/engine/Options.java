@@ -19,7 +19,16 @@ public final class Options {
     public String shot, shots, verify, gpuVerify;
     /** --shot's optional "x y heading pitch [column]". */
     public double[] at;
-    public boolean bench, shear, flat, gpu;
+    public boolean bench, shear, flat;
+    /**
+     * Shade the frame on the graphics card. On by default since the card was finished: it draws
+     * the same picture three to four times faster, and the CPU path stays as the thing that says
+     * what the picture should have been. --cpu asks for that path instead.
+     */
+    public boolean gpu = true;
+    /** Did the command line say --gpu out loud? Only that puts the card back for the runs
+     *  below that would otherwise take the CPU path. */
+    private boolean gpuAsked;
     public int w = Host.DEFAULT_W, h = Host.DEFAULT_H, ss = 1;
     public int winW = Host.DEFAULT_WINDOW_W, winH = Host.DEFAULT_WINDOW_H;
     public int targetFps = 60;
@@ -49,6 +58,9 @@ public final class Options {
                 shear = true;
             } else if (args[i].equals("--gpu")) {
                 gpu = true;
+                gpuAsked = true;
+            } else if (args[i].equals("--cpu")) {
+                gpu = false;
             } else if (args[i].equals("--flat")) {
                 flat = true;
             } else if (args[i].equals("--size")) {
@@ -110,6 +122,7 @@ public final class Options {
                 if (i + 1 >= args.length) { usage("--gpu-verify needs a file of views"); return false; }
                 gpuVerify = args[++i];
                 gpu = true;
+                gpuAsked = true;
             } else if (args[i].equals("--shot")) {
                 if (i + 1 >= args.length) { usage("--shot needs an output file"); return false; }
                 shot = args[++i];
@@ -125,6 +138,20 @@ public final class Options {
                 map = args[i];
             }
         }
+        // Two kinds of run take the CPU path unless the command line asks for the card by name.
+        //
+        // --verify is the golden test's instrument, and a digest of the card's pixels is not one:
+        // it works in float where the renderer works in double, so the two agree to about a level
+        // in 255 and neither is reproducible from the other. The comparison that does belong to
+        // the card is --gpu-verify, which compares pictures rather than hashing one.
+        //
+        // --shot and --shots have a duller reason: they write depth and albedo as well as a
+        // picture, and those come from the CPU walking every row itself (see Renderer, where a
+        // frame with a depth buffer shades on the CPU whether or not the card was given the
+        // surface). So a screenshot pays for the CPU's shading regardless, and handing the
+        // colours to the card afterwards buys nothing but a different rounding - and loses the
+        // byte-for-byte comparison that every change to the renderer is checked with.
+        if ((verify != null || shot != null || shots != null) && !gpuAsked) gpu = false;
         if ((long) w * ss > 16384 || (long) h * ss > 16384) {
             usage("--size times --ss must stay within 16384x16384 (that would be " + w * ss + "x" + h * ss + ")");
             return false;
@@ -141,7 +168,8 @@ public final class Options {
         System.err.println("  --window  window size; the render is scaled up to it (default " + Host.DEFAULT_WINDOW_W + "x" + Host.DEFAULT_WINDOW_H + ", fitted to the screen)");
         System.err.println("  --feet  starting floor height in metres, to begin on an upper storey (e.g. 3.6)");
         System.err.println("  --shear look up / down the old way (y-shearing) instead of true perspective");
-        System.err.println("  --gpu   shade the frame on the graphics card (the CPU still casts every ray)");
+        System.err.println("  --cpu   shade the frame on the CPU; the card does it by default, and faster");
+        System.err.println("  --gpu   shade on the card even where that is not the default (--verify, --shot)");
         System.err.println("  --flat  skip baking the lightmaps and use the old flat lighting");
         System.err.println("  --ss    supersampling factor 1-8: renders at size*N and averages down (default 1).");
         System.err.println("          Rays cast per frame = width * N.");

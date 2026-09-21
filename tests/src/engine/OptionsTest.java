@@ -32,6 +32,20 @@ final class OptionsTest {
         Check.eq(d.ss, 1, "no supersampling by default");
         Check.eq(d.targetFps, 60, "dynamic resolution aims at 60 by default");
         Check.that(Double.isNaN(d.startFeet), "no starting height until --feet says one");
+        Check.that(d.gpu, "the card shades the frame by default");
+
+        // The card is the default everywhere but --verify, whose whole job is a digest the card
+        // cannot produce twice the same way. --gpu by name is the one thing that overrides that,
+        // and it has to work whichever side of --verify it is written on.
+        Check.that(!parse("--cpu").gpu, "--cpu asks for the CPU path");
+        Check.that(!parse("--verify", "v.txt").gpu, "--verify takes the CPU path on its own");
+        Check.that(parse("--verify", "v.txt", "--gpu").gpu, "unless --gpu says otherwise after it");
+        Check.that(parse("--gpu", "--verify", "v.txt").gpu, "or before it");
+        Check.that(!parse("--shot", "a.png").gpu, "a screenshot shades on the CPU: it wants depth too");
+        Check.that(!parse("--shots", "v.txt").gpu, "and so does a file of them");
+        Check.that(parse("--shot", "a.png", "--gpu").gpu, "unless the card is asked for by name");
+        Check.that(parse("--bench").gpu, "a benchmark measures what the game does, which is the card");
+        Check.that(parse("--gpu-verify", "v.txt").gpu, "--gpu-verify is the card's by definition");
 
         Options o = parse("maps/haven/haven.json", "--size", "800x600", "--ss", "2", "--window", "1600x900",
                 "--fps", "0", "--feet", "3.6", "--flat", "--shear");
