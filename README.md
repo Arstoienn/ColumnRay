@@ -86,6 +86,7 @@ the game with `maps/school.json`. Arguments are passed through to `game.Main`:
 | `--ss N` | Supersampling factor, 1-8 (default 1) |
 | `--feet M` | Starting floor height in metres, e.g. to start on an upper storey |
 | `--cpu` | Shade on the CPU instead of the card; the same picture, three to four times slower |
+| `--hdr` | Shade in light rather than in sRGB numbers, and roll the highlights off filmically |
 | `--flat` | Skip the lightmap bake and use flat shading |
 | `--shear` | Use y-shearing for pitch instead of the perspective warp |
 | `--bench` | Time the renderer over a full turn, level and pitched all the way up |

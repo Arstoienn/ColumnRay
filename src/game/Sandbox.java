@@ -63,6 +63,7 @@ public final class Sandbox implements Game {
         if (in.tapped(Keys.F)) fisheye = !fisheye;
         if (in.tapped(Keys.P)) host.setShear(!host.shear());
         if (in.tapped(Keys.L)) baked = !baked;
+        if (in.tapped(Keys.H)) host.setHdr(!host.hdr());
         if (in.tapped(Keys.R)) host.toggleRayView();
         if (in.tapped(Keys.N)) host.toggleRayFollow();
         if (in.tapped(Keys.LEFT_BRACKET)) fovDeg = Math.max(30, fovDeg - 5);
@@ -111,7 +112,8 @@ public final class Sandbox implements Game {
 
     @Override public void overlay(java.awt.Graphics2D g, Overlay o) {
         Hud.Status st = new Hud.Status(o.fps(), o.imageW(), o.imageH(), o.ss(), o.rays(), fisheye,
-                !host.hasLighting() ? "flat lighting (--flat)" : baked ? "baked lighting" : "flat lighting (L)",
+                (!host.hasLighting() ? "flat lighting (--flat)" : baked ? "baked lighting" : "flat lighting (L)")
+                        + (host.hdr() ? ", filmic" : ", sRGB"),
                 o.shear(), o.autoRes());
         hud.draw(g, o.x() + 12, o.y() + 20, st);
         if (showMap)

@@ -44,7 +44,7 @@ public final class Keys {
      * prints on them. These are positions, not letters: {@link #S} is the key below and right of
      * {@link #W} on every keyboard, whether it is labelled S, R or ㄙ.
      */
-    public static final int A = 0, S = 1, D = 2, F = 3, G = 5, C = 8, V = 9, Q = 12, W = 13, E = 14, R = 15,
+    public static final int A = 0, S = 1, D = 2, F = 3, H = 4, G = 5, C = 8, V = 9, Q = 12, W = 13, E = 14, R = 15,
             EQUALS = 24, MINUS = 27, RIGHT_BRACKET = 30, LEFT_BRACKET = 33, P = 35, L = 37,
             COMMA = 43, N = 45, M = 46, PERIOD = 47, SPACE = 49, ESCAPE = 53, SHIFT = 56,
             CONTROL = 59, RIGHT_SHIFT = 60, RIGHT_CONTROL = 62,

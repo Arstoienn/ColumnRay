@@ -20,6 +20,8 @@ public final class Options {
     /** --shot's optional "x y heading pitch [column]". */
     public double[] at;
     public boolean bench, shear, flat;
+    /** --hdr: shade in light and tone map at the end, instead of multiplying sRGB numbers. */
+    public boolean hdr;
     /**
      * Shade the frame on the graphics card. On by default since the card was finished: it draws
      * the same picture three to four times faster, and the CPU path stays as the thing that says
@@ -61,6 +63,8 @@ public final class Options {
                 gpuAsked = true;
             } else if (args[i].equals("--cpu")) {
                 gpu = false;
+            } else if (args[i].equals("--hdr")) {
+                hdr = true;
             } else if (args[i].equals("--flat")) {
                 flat = true;
             } else if (args[i].equals("--size")) {
@@ -170,6 +174,7 @@ public final class Options {
         System.err.println("  --shear look up / down the old way (y-shearing) instead of true perspective");
         System.err.println("  --cpu   shade the frame on the CPU; the card does it by default, and faster");
         System.err.println("  --gpu   shade on the card even where that is not the default (--verify, --shot)");
+        System.err.println("  --hdr   shade in light and roll the highlights off filmically (H toggles it)");
         System.err.println("  --flat  skip baking the lightmaps and use the old flat lighting");
         System.err.println("  --ss    supersampling factor 1-8: renders at size*N and averages down (default 1).");
         System.err.println("          Rays cast per frame = width * N.");
