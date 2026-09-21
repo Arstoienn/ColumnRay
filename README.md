@@ -27,10 +27,12 @@ and textured geometry while keeping the column-based renderer.
   which is a preview feature before 22
 - Developed and tested on macOS. On other platforms, input falls back to AWT key events read
   as a US QWERTY layout
-- `--gpu` needs an OpenGL backend: macOS (CGL) and Windows (WGL) have one, Linux does not yet.
-  Without one it prints a sentence and the CPU renderer carries on. On a machine with two
-  graphics cards, which one draws is Windows' per-application preference for `java.exe`
-  (Settings > System > Display > Graphics), and `--gpu` names the card it ended up on
+- Shading on the card is the default, and needs an OpenGL backend: macOS (CGL) and Windows
+  (WGL) have one, Linux does not yet. Without one it prints a sentence and the CPU renderer
+  carries on, which is the whole engine. `--cpu` asks for that path on purpose. On a machine
+  with two graphics cards, which one draws is Windows' per-application preference for
+  `java.exe` (Settings > System > Display > Graphics), and the card it ended up on is named
+  on the first line of the run
 
 ## The engine and the game
 
@@ -83,6 +85,7 @@ the game with `maps/school.json`. Arguments are passed through to `game.Main`:
 | `--fps N` | Frame-time target for dynamic resolution; `0` disables it (default 60) |
 | `--ss N` | Supersampling factor, 1-8 (default 1) |
 | `--feet M` | Starting floor height in metres, e.g. to start on an upper storey |
+| `--cpu` | Shade on the CPU instead of the card; the same picture, three to four times slower |
 | `--flat` | Skip the lightmap bake and use flat shading |
 | `--shear` | Use y-shearing for pitch instead of the perspective warp |
 | `--bench` | Time the renderer over a full turn, level and pitched all the way up |

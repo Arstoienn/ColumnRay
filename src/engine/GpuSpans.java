@@ -80,6 +80,24 @@ final class GpuSpans {
 
     boolean skipped(int x, int y) { return blended[y * columns + x]; }
 
+    /**
+     * How many pixels of the last frame the card was not given.
+     *
+     * Counted here, by reading the marks back, rather than as {@link #skip} makes them: skip()
+     * runs on every column thread at once, so a counter in it would be either wrong or an atomic
+     * on the hottest path there is. Nothing but the verification tools asks for this, once a
+     * frame at most, so a scan is free where an increment would not have been.
+     *
+     * Zero is what finished looks like. It is a different thing from {@link #dropped}, which is
+     * the card having been able to take a surface and there being no room for it.
+     */
+    int skipped() {
+        if (!anySkip) return 0;
+        int n = 0;
+        for (boolean b : blended) if (b) n++;
+        return n;
+    }
+
     /** Did this frame paint anything the card was not given? When nothing was, the card's
      *  picture is the whole frame and it can be read straight into the render buffer. */
     boolean anySkipped() { return anySkip; }

@@ -6,10 +6,13 @@
 #   CP=old/classes CP_B=new/classes ./bench.sh ...      A/B: two builds, run alternately
 #   JAVA_OPTS_B=-XX:ActiveProcessorCount=4 ./bench.sh   A/B: one build, two sets of JVM options
 #   REST=60 ./bench.sh ...                              seconds to let the CPU cool between runs
+#   EXTRA=--cpu ./bench.sh ...                          time the CPU shading path instead of the card
 #
 # Each run is a fresh JVM that warms the JIT up with untimed frames and then times every frame of a
-# full turn on the spot, level and tilted 30 degrees (Main.bench): what it reports is that run's
-# median and 99th percentile frame.
+# full turn on the spot, level and tilted as far as the map and the buffer allow (Capture.bench):
+# what it reports is that run's median and 99th percentile frame. The card shades it, as it does
+# everywhere else now; EXTRA=--cpu measures the CPU path, which is what to use when A/B-ing a
+# change to the renderer's own shading.
 #
 # Why the rest, and why A/B. Measured on this machine, a fanless MacBook Air (M3): six identical
 # runs, JIT warmed up and medians taken, still spread by 39-55%, and they got slower as the
@@ -34,7 +37,7 @@ LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
 
 one() {   # label classes options
-    java --enable-native-access=ALL-UNNAMED $3 -cp "$2" game.Main "$MAP" --flat --size "$SIZE" --bench \
+    java --enable-native-access=ALL-UNNAMED $3 -cp "$2" game.Main "$MAP" --flat --size "$SIZE" --bench ${EXTRA:-} \
         2>/dev/null | grep '^BENCH' | sed "s/^/$1 run $r /" | tee -a "$LOG"
 }
 

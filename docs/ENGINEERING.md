@@ -22,7 +22,27 @@ Needs JDK 21 or newer (developed on JDK 26).
 ./run.sh --feet 3.6                        # start on the upper storey instead of the ground one
 ./run.sh --shear                           # look up / down the old way (y-shearing), for comparison
 ./run.sh --flat                            # skip the lightmap bake, use the old flat shading
+./run.sh --cpu                             # shade on the CPU; the card does it by default
 ```
+
+### How large a still can be
+
+A screenshot is not a frame anybody is waiting for, so the only real limit is what fits in a heap.
+`--size` caps at 16384 a side, and `--size` times `--ss` has to stay inside that too. Measured on
+an M3 with 16 GB, school, baked, from one camera, the whole run timed - JVM start, cached bake and
+PNG encoding included:
+
+| | level | tilted 45 degrees |
+|---|---|---|
+| 3840x2160 | 2.1 s | - |
+| 7680x4320 | 4.0 s | 4.6 s |
+| 7680x4320 `--ss 2` | 6.3 s | 11.3 s, and needs `JAVA_OPTS=-Xmx12g` |
+
+Only the last one needs anything said about it. Tilting is what costs memory rather than time: the
+upright image the warp resamples is about 2.5 times the width and 2.6 times the height of the
+frame at 45 degrees, so 8K by two is an overscan buffer of 38240 x 22290, and three arrays that
+size - the pixels, the depth and the albedo - do not fit the 4 GB the JVM helps itself to by
+default. Level, the same shot needs nothing.
 
 ## Controls
 
@@ -150,10 +170,22 @@ engine, so it now starts closed and `R` opens it. What made it expensive was red
 frame; the grid, regions and shape footprints never move, so they are now drawn once into an image
 (rebuilt only when you zoom) and blitted with the view transform.
 
-## Shading on the card (`--gpu`)
+## Shading on the card
 
-`--gpu` moves the *shading* of a frame to the graphics card and leaves everything else exactly
-where it was. The CPU still casts one ray per screen column, still walks the acceleration grid,
+The card shades the frame by default, and `--cpu` asks for the other path. It was `--gpu`, opt
+in, for as long as the card had surfaces it had not been given; once `--gpu-verify` reported zero
+pixels the card was not given on both school and Haven, leaving it off by default was leaving
+three quarters of the machine's speed on the floor. `--gpu` is still accepted, and now means
+"the card even here". There are two heres. `--verify` takes the CPU path because its whole output
+is a digest, and a digest of the card's float arithmetic is not one the double-precision renderer
+could ever match. `--shot` and `--shots` take it for a duller reason: they write depth and albedo
+beside the picture, and a frame with a depth buffer shades every row on the CPU whether or not the
+card was given the surface, so handing the colours to the card afterwards buys nothing but a
+different rounding - and costs the byte-for-byte comparison that every renderer change is checked
+with. A screenshot that wanted only the picture could have the card, and does not ask for it yet.
+
+Shading on the card moves the *shading* of a frame to the graphics card and leaves everything
+else exactly where it was. The CPU still casts one ray per screen column, still walks the acceleration grid,
 still tests the shapes and still decides what is visible; what it hands over is the answer - a
 handful of row intervals per column - and the card colours them in. The column constraint is not
 weakened by this. It is the reason the thing works at all: a column renderer's output is a few
