@@ -415,6 +415,7 @@ final class Renderer {
             double lo, hi, z, slope;
             final Surf surf = new Surf();
             int ia, ib, base;
+            boolean alone;                     // no other solid candidate wants any of its rows
             Plane plane;
             Region region;
             EventKind kind;
@@ -422,6 +423,31 @@ final class Renderer {
 
         private final ArrayList<Cand> cands = new ArrayList<>();
         private int nc;
+
+        /**
+         * Which candidate the ray through each row meets first, filled once for the whole stretch
+         * instead of searched for again at every row of every candidate.
+         *
+         * The question is the same either way - of the horizontal surfaces wanting this row, which
+         * is nearest - but it used to be answered by scanning every other candidate. Looking up at
+         * Haven a column crosses a hundred distinct planes, ten of them competing for a typical
+         * row, and that scan is the largest single thing in the frame. Filling the winner costs
+         * one distance per candidate per row instead of ten.
+         *
+         * Only the candidates that actually share rows with another go in it. One standing alone
+         * already wins every row it covers, and working out a distance to prove that would be new
+         * work the old code never did - which is what would make a change like this a loss on the
+         * frames where nothing overlaps. A cut-out is rare enough to keep asking the long way.
+         *
+         * The tie rule is the old one exactly: candidates are filled in index order and a later
+         * one has to be strictly nearer to take a row, so an equal distance stays with the lower
+         * index, which is what nearest() means by {@code j < i}. zbAt says which rows this stretch
+         * has written, so nothing has to be cleared between them.
+         */
+        private final double[] zbD = new double[H];
+        private final int[] zbI = new int[H];
+        private final long[] zbAt = new long[H];
+        private long zbNow;
 
         private int x;
         private double px, py, rx, ry, eye, hz;
@@ -1528,6 +1554,30 @@ final class Renderer {
                 c.ia = clampRow(c.lo);
                 c.ib = clampRow(c.hi);
             }
+            for (int i = 0; i < nc; i++) {
+                Cand c = cands.get(i);
+                c.alone = true;
+                for (int j = 0; j < nc && c.alone; j++) {
+                    Cand d = cands.get(j);
+                    if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked)) c.alone = false;
+                }
+            }
+            zbNow++;
+            for (int i = 0; i < nc; i++) {
+                Cand c = cands.get(i);
+                if (c.alone || c.ib <= c.ia || (c.plane != null && c.plane.masked)) continue;
+                for (int y = c.ia; y < c.ib; y++) {
+                    double d = depthAt(c, y);
+                    if (zbAt[y] != zbNow) {
+                        zbAt[y] = zbNow;
+                        zbD[y] = d;
+                        zbI[y] = i;
+                    } else if (d < zbD[y]) {
+                        zbD[y] = d;
+                        zbI[y] = i;
+                    }
+                }
+            }
             // A cut-out's plane first: the rows where it is nearer than every solid surface in this
             // stretch are noted, not taken, so what is behind still paints them and the cut-out is
             // blended over that afterwards. Rows already closed were closed by something nearer.
@@ -1538,11 +1588,6 @@ final class Renderer {
             for (int i = 0; i < nc; i++) {
                 Cand c = cands.get(i);
                 if (c.ib <= c.ia || (c.plane != null && c.plane.masked)) continue;
-                boolean alone = true;
-                for (int j = 0; j < nc && alone; j++) {
-                    Cand d = cands.get(j);
-                    if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked)) alone = false;
-                }
                 int rows = 0;
                 shKind = 2;
                 shSurf = c.surf;
@@ -1558,12 +1603,12 @@ final class Renderer {
                     spanMat = c.surf.mat;
                     spanRgb = c.surf.rgb;
                 }
-                if (alone) {
+                if (c.alone) {
                     rows = paint(c.ia, c.ib, 0, c.z, c.slope, c.base);
                 } else {
                     int run = -1;
                     for (int y = c.ia; y <= c.ib; y++) {
-                        boolean win = y < c.ib && nearest(i, y);
+                        boolean win = y < c.ib && zbI[y] == i;
                         if (win && run < 0) {
                             run = y;
                         } else if (!win && run >= 0) {
@@ -1580,7 +1625,10 @@ final class Renderer {
             }
         }
 
-        /** Whether candidate i is the first thing the ray through row y meets, of those wanting it. */
+        /** Whether candidate i is the first thing the ray through row y meets, of those wanting it.
+         *  Only a cut-out asks this now; the solid ones read the winner buffer, which holds the
+         *  same answer. A column carries a couple of cut-out planes and a hundred solid ones, so
+         *  the one that is worth filling a buffer for is not this one. */
         private boolean nearest(int i, int y) {
             double di = depthAt(cands.get(i), y);
             for (int j = 0; j < nc; j++) {
