@@ -2,7 +2,6 @@ package engine;
 
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
-import java.util.Arrays;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -17,18 +16,21 @@ import javax.imageio.ImageIO;
 /**
  * The headless ways of running the engine: --bench, --shot, --shots and --verify.
  *
- * None of them opens a window, none of them reads a key, and all of them work by putting the
- * player somewhere, rendering one frame and writing down what came out. That is a different job
- * from running a game, which is why it is a different file: Main is the window and the loop, and
- * has no business knowing about PNG encoders, PFM headers or how long a frame took.
+ * None of them opens a window, none of them reads a key, and all of them work by putting the game
+ * somewhere, rendering one frame and writing down what came out. That is a different job from
+ * running a game, which is why it is a different file: {@link Host} is the window and the loop,
+ * and has no business knowing about PNG encoders, PFM headers or how long a frame took.
  *
- * It drives a Main rather than replacing one. The buffers, the renderer and the player are the
- * same ones the interactive loop uses, and deliberately so - a benchmark or a golden frame that
- * went through a second, simpler path would be measuring and comparing something the game does
- * not actually do.
+ * It drives a Host and a Game rather than replacing either. The buffers, the renderer and the
+ * player are the same ones the interactive loop uses, and deliberately so - a benchmark or a
+ * golden frame that went through a second, simpler path would be measuring and comparing
+ * something the game does not actually do. The one thing it asks of the game is
+ * {@link Game#place}: a views file says where to stand, and only the game knows how tall it is
+ * and what counts as the ground.
  */
-final class Capture {
-    private final Main g;
+public final class Capture {
+    private final Host h;
+    private final Game game;
 
     /** --shots and --verify stand at exactly the height the view asks for rather than on whatever
      *  ground is there. Snapping to our own floor moved the eye up to 25 cm away from where the
@@ -37,15 +39,22 @@ final class Capture {
      *  distance. NaN means "stand on the ground", which is what --shot on its own does. */
     private double exactFeet = Double.NaN;
 
-    Capture(Main game) {
-        this.g = game;
+    /**
+     * What a views file's {@code feet} column means for a camera that has no game to ask: the eye
+     * stands this far above it. Only {@link GpuCheck} needs it - everything here goes through
+     * {@link Game#place}, which knows how tall the game's own player is.
+     */
+    static final double EYE = 1.6;
+
+    public Capture(Host host, Game game) {
+        this.h = host;
+        this.game = game;
+        host.game = game;                   // so a screenshot gets the game's overlay on it
     }
 
     /** Stand at a view from a file or the command line. */
     private void place(double px, double py, double headingDeg, double pitchDeg) {
-        g.player.look(px, py, headingDeg, pitchDeg);
-        if (Double.isNaN(exactFeet)) g.player.placeOnGround();
-        else g.player.standAt(exactFeet);
+        game.place(px, py, headingDeg, pitchDeg, exactFeet);
     }
 
     /**
@@ -59,17 +68,17 @@ final class Capture {
      * the far end of the distribution shows. bench.sh runs this several times and says how far
      * apart the runs were.
      */
-    void bench() {
+    public void bench() {
         int warmup = Integer.getInteger("bench.warmup", 400), frames = Integer.getInteger("bench.frames", 720);
-        double saved = g.player.pitch;
-        for (double p : new double[] {0, g.player.pitchLimit}) {   // level, and fully tilted (the most overscan)
-            g.player.pitch = p;
-            for (int i = 0; i < warmup; i++) { g.player.angle += 2 * Math.PI / frames; g.frame(); }
+        View v = game.view().copy();              // the game's own camera, ours to spin
+        for (double p : new double[] {0, h.pitchLimit()}) {   // level, and fully tilted (the most overscan)
+            v.pitch = p;
+            for (int i = 0; i < warmup; i++) { v.heading += 2 * Math.PI / frames; h.frame(v); }
             long[] ns = new long[frames];
             for (int i = 0; i < frames; i++) {
                 long t0 = System.nanoTime();
-                g.player.angle += 2 * Math.PI / frames;
-                g.frame();
+                v.heading += 2 * Math.PI / frames;
+                h.frame(v);
                 ns[i] = System.nanoTime() - t0;
             }
             long[] sorted = ns.clone();
@@ -80,12 +89,11 @@ final class Capture {
             double worst = sorted[frames - 1] / 1e6;
             double mean = Arrays.stream(ns).average().orElse(0) / 1e6;
             System.out.printf("BENCH %dx%d rendered %dx%d ss %d pitch %.0f %s rays %d median %.3f p95 %.3f p99 %.3f max %.3f mean %.3f ms  (median %.0f fps)%n",
-                    g.W, g.H, g.RW, g.RH, g.SS, Math.toDegrees(g.player.pitch), g.shear ? "shear" : "true",
-                    g.renderer.drawnX1 - g.renderer.drawnX0, median, p95, p99, worst, mean, 1000 / median);
-            g.gpuStats();
-            dump(ns, g.player.pitch);
+                    h.W, h.H, h.RW, h.RH, h.SS, Math.toDegrees(v.pitch), h.shear() ? "shear" : "true",
+                    h.renderer.drawnX1 - h.renderer.drawnX0, median, p95, p99, worst, mean, 1000 / median);
+            h.gpuStats();
+            dump(ns, v.pitch);
         }
-        g.player.pitch = saved;
     }
 
     /**
@@ -123,7 +131,7 @@ final class Capture {
      * on whatever ground is there. The HUD is deliberately not included: it draws text, and the
      * glyphs a machine has are not the engine's output.
      */
-    void verify(Path list) throws Exception {
+    public void verify(Path list) throws Exception {
         System.out.println("# columnray verify 1");
         for (String line : Files.readAllLines(list)) {
             String t = line.trim();
@@ -133,22 +141,23 @@ final class Capture {
             exactFeet = f.length > 5 && !f[5].equals("-") ? Double.parseDouble(f[5]) : Double.NaN;
             place(Double.parseDouble(f[1]), Double.parseDouble(f[2]),
                     Double.parseDouble(f[3]), Double.parseDouble(f[4]));
-            g.traceI = g.W / 2 * g.SS + g.SS / 2;
-            g.traceJ = -1;
-            g.cam.captureDepth = true;
+            h.traceI = h.W / 2 * h.SS + h.SS / 2;
+            h.traceJ = -1;
+            View v = game.view();
+            v.captureDepth = true;
             try {
-                g.frame();
+                h.frame(v);
             } finally {
-                g.cam.captureDepth = false;
+                v.captureDepth = false;
             }
-            System.out.printf("view %s %dx%d plain=%s albedo=%s depth=%s%n", f[0], g.W, g.H,
-                    Hash.of().add(g.out, g.W * g.H).hex(),
-                    Hash.of().add(g.albedo, g.W * g.H).hex(),
-                    Hash.of().add(g.depth, g.W * g.H).hex());
-            g.depth = g.hiDepth = g.renderer.depth = null;
-            g.albedo = g.hiAlbedo = g.renderer.albedo = null;
+            System.out.printf("view %s %dx%d plain=%s albedo=%s depth=%s%n", f[0], h.W, h.H,
+                    Hash.of().add(h.out, h.W * h.H).hex(),
+                    Hash.of().add(h.albedo, h.W * h.H).hex(),
+                    Hash.of().add(h.depth, h.W * h.H).hex());
+            h.depth = h.hiDepth = h.renderer.depth = null;
+            h.albedo = h.hiAlbedo = h.renderer.albedo = null;
         }
-        if (g.lighting != null) System.out.printf("lightmap %s rays=%d%n", g.lighting.hash(), g.lighting.rays);
+        if (h.lighting != null) System.out.printf("lightmap %s rays=%d%n", h.lighting.hash(), h.lighting.rays);
         else System.out.println("lightmap - rays=0   # --flat");
     }
 
@@ -159,8 +168,8 @@ final class Capture {
      * everything between the renderer and the window: the pitch warp, the overscan buffer growing
      * and the card's resources being rebuilt around it. That is not a small gap - it is exactly
      * where the worst bug of this branch lived, a resize that watched the width and not the
-     * height - so this runs the same views through {@link Main#frame} twice, once on each path,
-     * and compares the finished output.
+     * height - so this runs the same views through {@link Host#frame(View)} twice, once on each
+     * path, and compares the finished output.
      *
      * The pitches climb, because the overscan only ever grows: each step asks for a taller buffer
      * than the last and so exercises the rebuild, and the heights it lands on are whatever the
@@ -169,17 +178,17 @@ final class Capture {
      * One trap is worth naming. With the card on, the renderer is told to leave the rows the card
      * will draw uncoloured; turning the card off for the reference frame without undoing that
      * would compare against a picture with holes in it. Hence the pairing below, and hence
-     * {@code Main.useGpu} being a thing nothing else toggles at runtime.
+     * {@code Host.useGpu} being a thing nothing else toggles at runtime.
      */
-    void gpuVerify(Path list) throws Exception {
-        if (!g.useGpu) {
+    public void gpuVerify(Path list) throws Exception {
+        if (!h.useGpu) {
             System.err.println("--gpu-verify needs --gpu: it is the card that is being checked");
             return;
         }
         // The file's own pitch column is replaced by this sweep, so a views file that names the
         // same camera at several tilts checks it several times over. That is a little wasted work
         // and no wrong answer.
-        double[] pitches = {0, 8, 17, 25, Math.toDegrees(g.player.pitchLimit)};
+        double[] pitches = {0, 8, 17, 25, Math.toDegrees(h.pitchLimit())};
         int worstAll = 0;
         long failed = 0, pixels = 0, drops = 0;
         System.out.printf("%-12s %6s %10s %8s %8s %8s %8s %12s%n",
@@ -198,29 +207,29 @@ final class Capture {
                 for (int warm = 0; warm < 16; warm++) {
                     place(Double.parseDouble(f[1]), Double.parseDouble(f[2]),
                             Double.parseDouble(f[3]), pitch);
-                    g.setUseGpu(false);
-                    g.frame();
+                    h.setUseGpu(false);
+                    h.frame(game.view());
                     place(Double.parseDouble(f[1]), Double.parseDouble(f[2]),
                             Double.parseDouble(f[3]), pitch);
-                    g.setUseGpu(true);
-                    g.frame();
-                    if (warm > 0 && g.gpuDropped() == 0) break;
+                    h.setUseGpu(true);
+                    h.frame(game.view());
+                    if (warm > 0 && h.gpuDropped() == 0) break;
                 }
                 place(Double.parseDouble(f[1]), Double.parseDouble(f[2]),
                         Double.parseDouble(f[3]), pitch);
-                g.setUseGpu(false);
-                g.frame();
-                int[] cpu = Arrays.copyOf(g.out, g.W * g.H);
+                h.setUseGpu(false);
+                h.frame(game.view());
+                int[] cpu = Arrays.copyOf(h.out, h.W * h.H);
 
                 place(Double.parseDouble(f[1]), Double.parseDouble(f[2]),
                         Double.parseDouble(f[3]), pitch);
-                g.setUseGpu(true);
-                g.frame();
+                h.setUseGpu(true);
+                h.frame(game.view());
 
                 int worst = 0, over = 0;
                 long sum = 0;
-                for (int i = 0; i < g.W * g.H; i++) {
-                    int a = cpu[i], b = g.out[i];
+                for (int i = 0; i < h.W * h.H; i++) {
+                    int a = cpu[i], b = h.out[i];
                     int d = Math.max(Math.abs((a >> 16 & 255) - (b >> 16 & 255)),
                             Math.max(Math.abs((a >> 8 & 255) - (b >> 8 & 255)),
                                     Math.abs((a & 255) - (b & 255))));
@@ -230,11 +239,11 @@ final class Capture {
                 }
                 worstAll = Math.max(worstAll, worst);
                 failed += over;
-                pixels += (long) g.W * g.H;
-                drops += g.gpuDropped();
+                pixels += (long) h.W * h.H;
+                drops += h.gpuDropped();
                 System.out.printf("%-12s %6.0f %10s %8d %8.3f %8d %8d %12s%n", f[0], pitch,
-                        g.srcW + "x" + g.srcH, worst, (double) sum / (g.W * g.H), over,
-                        g.gpuDropped(), g.gpuMost());
+                        h.srcW + "x" + h.srcH, worst, (double) sum / (h.W * h.H), over,
+                        h.gpuDropped(), h.gpuMost());
             }
         }
         // What this is allowed to find, and what it is not.
@@ -266,7 +275,7 @@ final class Capture {
     /** Every view in a file, one per line: "out.png x y feet heading". Baking the lightmaps for
      *  a map the size of Haven takes a minute and a half, and it is the same bake for every camera,
      *  so a set of comparison shots belongs in one run rather than one run each. */
-    void screenshots(Path list) throws Exception {
+    public void screenshots(Path list) throws Exception {
         for (String line : Files.readAllLines(list)) {
             String t = line.trim();
             if (t.isEmpty() || t.startsWith("#")) continue;
@@ -278,36 +287,37 @@ final class Capture {
         }
     }
 
-    void screenshot(File out, double[] at) throws Exception {
+    public void screenshot(File out, double[] at) throws Exception {
         if (at != null) place(at[0], at[1], at[2], at[3]);
         // the column argument is an output column, so it means the same place whatever --ss is
-        int col = at != null && at.length > 4 ? Math.max(0, Math.min(g.W - 1, (int) at[4])) : g.W / 2;
-        g.traceI = col * g.SS + g.SS / 2;
-        g.traceJ = -1;
-        g.cam.captureDepth = true;
+        int col = at != null && at.length > 4 ? Math.max(0, Math.min(h.W - 1, (int) at[4])) : h.W / 2;
+        h.traceI = col * h.SS + h.SS / 2;
+        h.traceJ = -1;
+        View v = game.view();
+        v.captureDepth = true;
         try {
-            g.frame();
+            h.frame(v);
         } finally {
-            g.cam.captureDepth = false;
+            v.captureDepth = false;
         }
         File plainOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-plain.png"));
-        ImageIO.write(g.image, "png", plainOut);                  // the warped view, before any overlays or scaling
+        ImageIO.write(h.image, "png", plainOut);                  // the warped view, before any overlays or scaling
         System.out.println("wrote " + plainOut);
         File depthOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-depth.pfm"));
         writeDepth(depthOut);
         System.out.println("wrote " + depthOut);
         File albedoOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-albedo.png"));
-        BufferedImage alb = new BufferedImage(g.W, g.H, BufferedImage.TYPE_INT_RGB);
-        alb.setRGB(0, 0, g.W, g.H, g.albedo, 0, g.W);
+        BufferedImage alb = new BufferedImage(h.W, h.H, BufferedImage.TYPE_INT_RGB);
+        alb.setRGB(0, 0, h.W, h.H, h.albedo, 0, h.W);
         ImageIO.write(alb, "png", albedoOut);
         System.out.println("wrote " + albedoOut);
-        g.depth = g.hiDepth = g.renderer.depth = null;
-        g.albedo = g.hiAlbedo = g.renderer.albedo = null;
+        h.depth = h.hiDepth = h.renderer.depth = null;
+        h.albedo = h.hiAlbedo = h.renderer.albedo = null;
 
-        int scale = g.W < 1000 ? 2 : 1;          // upscale small renders so the HUD text stays readable
-        BufferedImage img = new BufferedImage(g.W * scale, g.H * scale, BufferedImage.TYPE_INT_RGB);
+        int scale = h.W < 1000 ? 2 : 1;          // upscale small renders so the HUD text stays readable
+        BufferedImage img = new BufferedImage(h.W * scale, h.H * scale, BufferedImage.TYPE_INT_RGB);
         Graphics2D gfx = img.createGraphics();
-        g.drawFrame(gfx, 0, 0, g.W * scale, g.H * scale, true);
+        h.drawFrame(gfx, 0, 0, h.W * scale, h.H * scale, true);
         gfx.dispose();
         ImageIO.write(img, "png", out);
         System.out.println("wrote " + out);
@@ -316,7 +326,7 @@ final class Capture {
         File raysOut = new File(out.getPath().replaceFirst("(\\.png)?$", "-rays.png"));
         BufferedImage rays = new BufferedImage(640, 720, BufferedImage.TYPE_INT_RGB);
         Graphics2D rg = rays.createGraphics();
-        g.rayView.draw(rg, rays.getWidth(), rays.getHeight(), g.view());
+        h.rayView.draw(rg, rays.getWidth(), rays.getHeight(), h.view());
         rg.dispose();
         ImageIO.write(rays, "png", raysOut);
         System.out.println("wrote " + raysOut);
@@ -325,11 +335,11 @@ final class Capture {
     /** Greyscale PFM: negative scale selects little endian; rows run from the bottom upwards. */
     private void writeDepth(File file) throws Exception {
         try (BufferedOutputStream stream = new BufferedOutputStream(new FileOutputStream(file))) {
-            stream.write(("Pf\n" + g.W + " " + g.H + "\n-1.0\n").getBytes(StandardCharsets.US_ASCII));
-            ByteBuffer row = ByteBuffer.allocate(g.W * Float.BYTES).order(ByteOrder.LITTLE_ENDIAN);
-            for (int y = g.H - 1; y >= 0; y--) {
+            stream.write(("Pf\n" + h.W + " " + h.H + "\n-1.0\n").getBytes(StandardCharsets.US_ASCII));
+            ByteBuffer row = ByteBuffer.allocate(h.W * Float.BYTES).order(ByteOrder.LITTLE_ENDIAN);
+            for (int y = h.H - 1; y >= 0; y--) {
                 row.clear();
-                for (int x = 0; x < g.W; x++) row.putFloat(g.depth[y * g.W + x]);
+                for (int x = 0; x < h.W; x++) row.putFloat(h.depth[y * h.W + x]);
                 stream.write(row.array());
             }
         }
