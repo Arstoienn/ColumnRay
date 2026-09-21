@@ -546,6 +546,51 @@ One GLSL note that only Windows found: `packed` is a reserved word in the langua
 compiler accepts it as an identifier anyway and Intel's does not, so the wall shader's `unpack`
 takes a `bits`.
 
+## Shading in light (`--hdr`)
+
+For as long as there has been a bake, the last step of it was wrong. A colour arrives as three
+sRGB bytes off a PNG, the light on it arrives as a float, and the renderer multiplied one by the
+other. sRGB is a transfer curve and not a quantity of light, so that multiply over-darkens
+everything it touches: a surface at a third of full light came out at about a ninth of its
+colour. The bake had the same mistake one step earlier - a surface bounced `colour / 255` of the
+light that hit it, so a mid-grey wall returned 0.50 where it really returns 0.22, and two bounces
+of that filled every room with a flat grey glow.
+
+`--hdr` puts both right. The colour is read back into light (`Renderer.linOf`, the sRGB transfer),
+the light is applied there, the bake bounces the same way, and the result comes back out through
+a filmic curve and the sRGB encode. The old per-channel knee at 200 is still there for the old
+path: it compresses each channel separately, so a bright red saturates in red first and shifts hue
+on the way to white, where the ACES fit rolls the three together the way a film stock does.
+
+Measured on school's courtyard at 1280x720:
+
+| | mean level | contrast (p95 - p5) | mean chroma |
+|---|---|---|---|
+| sRGB (the old way) | 106.9 | 137 | 27.2 |
+| `--hdr`, shading only | 140.5 | 147 | 31.2 |
+| `--hdr`, shading and bake | 119.7 | 149 | 38.8 |
+
+The middle row is the warning. Fixing the shading and leaving the bake alone makes the picture
+worse in the way that matters - the shading stops over-darkening while the bake goes on
+over-brightening, and the whole frame washes out. Both halves or neither.
+
+`EXPOSURE` (0.696, `-Dhdr.exposure`) is the one number that was chosen rather than derived: it is
+what puts a mid-grey surface under full light back where the old pipeline had it, so the two can
+be compared without one of them simply being darker.
+
+### What it cost to get the two paths to agree
+
+`--hdr --gpu-verify` failed the first time, over 22% of the frame, and what it had caught was
+real. A procedural material's texture factor was folded into the shading scalar on the CPU
+(`c * (tex * k)`) and applied to the colour on the card (`(c * tex) * k`). Those are the same
+number in the old arithmetic and different ones in linear, where the factor darkens albedo and
+belongs on the sRGB side of the conversion. Nobody could have seen it before, because before
+there was nothing to see. `Renderer.shadeS` is where that now lives, for both.
+
+H switches the shading while the game runs, which compares the two ways of finishing one bake.
+`--hdr` is the whole change, bake included, and the two bakes are different files: the light cache
+keys on the mode.
+
 ## Anti-aliasing (`--ss`)
 
 `--ss N` renders at N times the output size in both axes and box-filters each N x N block down to

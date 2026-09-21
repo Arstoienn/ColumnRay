@@ -203,6 +203,9 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "dirX", (float) cam.dirX);
         Gl.uniform(program, "dirY", (float) cam.dirY);
         Gl.uniform(program, "fogOn", Renderer.fogOn ? 1f : 0f);
+        // Per frame, not once with satBoost and lift: the H key throws this one while the game runs.
+        Gl.uniform(program, "hdr", Renderer.hdr ? 1f : 0f);
+        Gl.uniform(program, "exposure", (float) Renderer.exposure);
         Gl.uniform(program, "maxDist", (float) Renderer.MAX_DIST);
         long t2 = STATS ? System.nanoTime() : 0;
         Gl.clear();
@@ -293,7 +296,7 @@ final class GpuWalls implements AutoCloseable {
                 %s
                 uniform sampler2D spans;
                 uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
-                uniform float fogOn, maxDist;
+                uniform float fogOn, maxDist, hdr, exposure;
                 float rayX, rayY, dk;
                 out vec4 frag;
                 %s
@@ -379,6 +382,37 @@ final class GpuWalls implements AutoCloseable {
                     return floor(200.0 + 55.0 * (1.0 - exp(-(i - 200.0) / 55.0)) + 0.5);
                 }
 
+                /** Renderer.linOf: what an sRGB number, 0 to 255 and beyond, is as light. */
+                float linOf(float v) {
+                    if (v <= 0.0) return 0.0;
+                    float s = v / 255.0;
+                    return s <= 0.04045 ? s / 12.92 : pow((s + 0.055) / 1.055, 2.4);
+                }
+
+                vec3 linOf3(vec3 c) { return vec3(linOf(c.r), linOf(c.g), linOf(c.b)); }
+
+                /** Renderer.toByte: light back to an sRGB number. */
+                float toByte(float v) {
+                    float s = v <= 0.0031308 ? 12.92 * v : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+                    return floor(s * 255.0 + 0.5);
+                }
+
+                /** Renderer.aces. */
+                float aces(float x) {
+                    return x <= 0.0 ? 0.0 : min(1.0, (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
+                }
+
+                /** Renderer.hdrRgb: expose, grade, roll off, encode. c is light, not levels. */
+                vec3 hdrGraded(vec3 c) {
+                    c *= exposure;
+                    if (satBoost != 1.0) {
+                        float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+                        c = y + (c - y) * satBoost;
+                    }
+                    if (lift != 0.0) c = lift + c * (1.0 - lift);
+                    return vec3(toByte(aces(c.r)), toByte(aces(c.g)), toByte(aces(c.b)));
+                }
+
                 /** Renderer.rgb: the grade, then the tone curve. */
                 vec3 graded(vec3 c) {
                     if (satBoost != 1.0) {
@@ -397,14 +431,22 @@ final class GpuWalls implements AutoCloseable {
                 }
 
                 /** Renderer.shade: the surface's colour times a shading factor, then the grade. */
-                vec3 shade(float bits, float k) { return graded(unpack(bits) * k); }
+                vec3 shade(float bits, float k) {
+                    vec3 c = unpack(bits);
+                    return hdr != 0.0 ? hdrGraded(linOf3(c) * k) : graded(c * k);
+                }
 
                 /** Renderer.shadeL: the same, times a coloured level off a baked lightmap. */
-                vec3 shadeL(float bits, float k, vec3 L) { return graded(unpack(bits) * k * L); }
+                vec3 shadeL(float bits, float k, vec3 L) {
+                    vec3 c = unpack(bits);
+                    return hdr != 0.0 ? hdrGraded(linOf3(c) * k * L) : graded(c * k * L);
+                }
 
-                /** Renderer.shade with an image's RGB multipliers in place of a scalar. */
+                /** Renderer.shade with an image's RGB multipliers in place of a scalar. The image's
+                 *  factors go on before the colour is read as light, exactly as on the CPU. */
                 vec3 shadeT(float bits, vec3 tex, float k, vec3 L) {
-                    return graded(unpack(bits) * tex * k * L);
+                    vec3 c = unpack(bits);
+                    return hdr != 0.0 ? hdrGraded(linOf3(c * tex) * k * L) : graded(c * tex * k * L);
                 }
 
                 /** Renderer.sky: a vertical gradient over the view's own height, which is not the
@@ -416,7 +458,8 @@ final class GpuWalls implements AutoCloseable {
                 vec3 sky(int row) {
                     if (float(row) >= hz) return vec3(58.0, 60.0, 64.0);
                     float s = clamp((hz - float(row)) / (viewH * 0.9), 0.0, 1.0);
-                    return graded(vec3(205.0 - 125.0 * s, 222.0 - 87.0 * s, 238.0 - 28.0 * s));
+                    vec3 c = vec3(205.0 - 125.0 * s, 222.0 - 87.0 * s, 238.0 - 28.0 * s);
+                    return hdr != 0.0 ? hdrGraded(linOf3(c)) : graded(c);
                 }
 
                 /** Renderer.sideColor: what a vertical face is, shaded. Both a span and a
