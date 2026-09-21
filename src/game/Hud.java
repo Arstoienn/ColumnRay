@@ -62,7 +62,7 @@ public final class Hud {
             key(Keys.LEFT_BRACKET) + " " + key(Keys.RIGHT_BRACKET) + " FOV   " + key(Keys.COMMA) + " "
                     + key(Keys.PERIOD) + " rays   " + key(Keys.V) + (st.autoRes() ? " auto res on   " : " auto res off   ")
                     + key(Keys.F) + " fisheye   " + key(Keys.P) + " pitch   "
-                    + key(Keys.L) + " lighting   " + key(Keys.R) + " ray view   " + key(Keys.M)
+                    + key(Keys.L) + " lighting   " + key(Keys.H) + " HDR   " + key(Keys.R) + " ray view   " + key(Keys.M)
                     + " minimap   Esc quit   hover to pick a column",
         };
         g.setFont(new Font(Font.DIALOG, Font.PLAIN, 13));

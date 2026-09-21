@@ -1088,8 +1088,7 @@ final class Renderer {
                 return shade(rgb, T, k, light);
             }
             if (s == null || s.tex == null) {
-                double factor = sideTex(mat, u, z, t, square) * k;
-                return light == null ? shade(rgb, factor) : shadeL(rgb, factor, light);
+                return shadeS(rgb, sideTex(mat, u, z, t, square), k, light);
             }
             sideTex(s.tex, s.ts, u, z, t, square);
             if (albedo != null) textured(rgb);
@@ -1689,7 +1688,7 @@ final class Renderer {
                     if (albedo != null) textured(p.rgb);
                     return shade(p.rgb, T, p.k0 * fog(t), null);
                 }
-                return shade(p.rgb, flatTex(p.mat, t, y) * p.k0 * fog(t));
+                return shadeS(p.rgb, flatTex(p.mat, t, y), p.k0 * fog(t), null);
             }
             double wx = px + rx * t, wy = py + ry * t, f = fog(t);
             if (Materials.emissive(p.mat, wx, wy)) return shade(EMISSIVE, f);   // a light panel is its own light
@@ -1704,7 +1703,7 @@ final class Renderer {
                 if (albedo != null) textured(p.rgb);
                 return shade(p.rgb, T, f, L);
             }
-            return shadeL(p.rgb, flatTex(p.mat, t, y) * f, L);
+            return shadeS(p.rgb, flatTex(p.mat, t, y), f, L);
         }
 
         /** Whatever rows are left: sky above the horizon, distant haze below it. The card draws
@@ -1726,6 +1725,7 @@ final class Renderer {
 
         private int sky(int y) {
             double s = Math.max(0, Math.min(1, (hz - y) / (viewH * 0.9)));
+            if (hdr) return hdrRgb(linOf(205 - 125 * s), linOf(222 - 87 * s), linOf(238 - 28 * s));
             return rgb(205 - 125 * s, 222 - 87 * s, 238 - 28 * s);
         }
 
@@ -1825,16 +1825,49 @@ final class Renderer {
     }
 
     private static int shade(int c, double k) {
+        if (hdr) return hdrRgb(linOf((c >> 16) & 255) * k, linOf((c >> 8) & 255) * k, linOf(c & 255) * k);
         return rgb(((c >> 16) & 255) * k, ((c >> 8) & 255) * k, (c & 255) * k);
     }
 
     /** Colour c times k, times a coloured light level from a lightmap. */
     private static int shadeL(int c, double k, float[] L) {
+        if (hdr) return hdrRgb(linOf((c >> 16) & 255) * k * L[0], linOf((c >> 8) & 255) * k * L[1],
+                linOf(c & 255) * k * L[2]);
         return rgb(((c >> 16) & 255) * k * L[0], ((c >> 8) & 255) * k * L[1], (c & 255) * k * L[2]);
+    }
+
+    /**
+     * A procedural material's one factor, which is the same thing an image's three are: how much
+     * darker this point of the surface is than its base colour.
+     *
+     * It used to be folded into the shading scalar, because c * (tex * k) and (c * tex) * k are
+     * the same number. Under {@code --hdr} they are not: the texture darkens the surface, which is
+     * albedo and belongs on the sRGB side of the conversion, while k is light and belongs on the
+     * other. Folding it in made a tiled floor several levels brighter on the CPU than on the card,
+     * which draws it the other way round - a difference the old arithmetic had been hiding.
+     */
+    private static int shadeS(int c, double tex, double k, float[] light) {
+        if (!hdr) {                                   // the old expression, to the last bit
+            double factor = tex * k;
+            return light == null ? shade(c, factor) : shadeL(c, factor, light);
+        }
+        double r = linOf(((c >> 16) & 255) * tex) * k;
+        double g = linOf(((c >> 8) & 255) * tex) * k;
+        double b = linOf((c & 255) * tex) * k;
+        return light == null ? hdrRgb(r, g, b) : hdrRgb(r * light[0], g * light[1], b * light[2]);
     }
 
     /** Image texture factors replace only the procedural scalar; lighting and grading are shared. */
     private static int shade(int c, double[] texture, double k, float[] light) {
+        if (hdr) {
+            // The image's factors are ratios of sRGB numbers, so they are applied to the colour
+            // before it is read as light rather than after: linear(a * b) is not linear(a) times
+            // linear(b), and a texel twice as bright is not twice the light.
+            double r = linOf(((c >> 16) & 255) * texture[0]) * k;
+            double g = linOf(((c >> 8) & 255) * texture[1]) * k;
+            double b = linOf((c & 255) * texture[2]) * k;
+            return light == null ? hdrRgb(r, g, b) : hdrRgb(r * light[0], g * light[1], b * light[2]);
+        }
         double r = ((c >> 16) & 255) * (texture[0] * k);
         double g = ((c >> 8) & 255) * (texture[1] * k);
         double b = (c & 255) * (texture[2] * k);
@@ -1876,6 +1909,99 @@ final class Renderer {
     static void grade(double saturation, double blackLift) {
         satBoost = saturation;
         lift = blackLift;
+    }
+
+    /**
+     * Shade in light rather than in numbers off a PNG (`--hdr`).
+     *
+     * What the renderer has always done is multiply a colour's sRGB bytes by the light on it. That
+     * is the wrong space to multiply in: sRGB is a transfer curve, not a quantity of light, so two
+     * lamps added together come out too dark, a shadow's edge is harder than it should be, and
+     * bounced light goes grey. The bake never had that problem - Lighting works in float all the
+     * way through - so the mistake is only in the last step, which is also why it can be put right
+     * without touching the bake.
+     *
+     * So: the colour is read back into light, the light is applied there, and a filmic curve
+     * brings it back out. The curve matters as much as the space. The old one is a knee at 200
+     * applied to each channel on its own, which means a bright red surface saturates in red first
+     * and shifts hue on its way to white; this is the usual ACES fit, which rolls the three
+     * together the way a film stock or a camera does, and that roll is most of what makes a
+     * rendered picture read as a photographed one.
+     *
+     * EXPOSURE is the one number that had to be chosen rather than derived: 0.696 is what puts a
+     * mid-grey surface under full light back where the old pipeline had it, so the two can be
+     * compared without one of them simply being darker. Everything brighter than mid-grey is where
+     * they differ, which is the point.
+     */
+    static boolean hdr = false;
+    /**
+     * Whether the bake this run is using bounced its light in linear too.
+     *
+     * Separate from {@link #hdr} because the two are decided at different times. The bake happens
+     * once, at start-up, from the command line; the shading can be switched while the game is
+     * running, which is what the H key is for. So H compares the two ways of finishing the same
+     * bake, and {@code --hdr} is the whole change - the bake included.
+     */
+    static boolean hdrBake = false;
+    static double exposure = Double.parseDouble(System.getProperty("hdr.exposure", "0.696"));
+
+    /** sRGB byte to light, with one spare entry so a fractional index can interpolate. */
+    private static final double[] TO_LIGHT = new double[257];
+    /** Light 0..1 back to an sRGB byte, fine enough that the step is under a fifth of a level. */
+    private static final int[] TO_BYTE = new int[16385];
+
+    static {
+        for (int i = 0; i <= 256; i++) {
+            double v = Math.min(1.0, i / 255.0);
+            TO_LIGHT[i] = v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+        }
+        for (int i = 0; i < TO_BYTE.length; i++) {
+            double v = i / (double) (TO_BYTE.length - 1);
+            double s = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+            TO_BYTE[i] = (int) Math.round(s * 255);
+        }
+    }
+
+    /** How much light an sRGB number stands for. Takes fractions, and numbers past 255: an image's
+     *  factor can brighten a colour past white before anything has been tone mapped. */
+    static double linOf(double v) {
+        if (v <= 0) return 0;
+        if (v >= 255) {
+            double s = v / 255;
+            return Math.pow((s + 0.055) / 1.055, 2.4);
+        }
+        int i = (int) v;
+        return TO_LIGHT[i] + (TO_LIGHT[i + 1] - TO_LIGHT[i]) * (v - i);
+    }
+
+    private static int toByte(double v) {
+        int i = (int) (v * (TO_BYTE.length - 1) + 0.5);
+        return TO_BYTE[i < 0 ? 0 : Math.min(i, TO_BYTE.length - 1)];
+    }
+
+    /** The ACES fit everybody uses (Krzysztof Narkowicz's): five constants, the right shape. */
+    private static double aces(double x) {
+        return x <= 0 ? 0 : Math.min(1, (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
+    }
+
+    /** The linear path's exit: expose, grade, roll off, and encode. r, g and b are light. */
+    private static int hdrRgb(double r, double g, double b) {
+        r *= exposure;
+        g *= exposure;
+        b *= exposure;
+        if (satBoost != 1.0) {
+            double y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            r = y + (r - y) * satBoost;
+            g = y + (g - y) * satBoost;
+            b = y + (b - y) * satBoost;
+        }
+        if (lift != 0) {
+            double k = 1 - lift, c = lift;
+            r = c + r * k;
+            g = c + g * k;
+            b = c + b * k;
+        }
+        return (toByte(aces(r)) << 16) | (toByte(aces(g)) << 8) | toByte(aces(b));
     }
 
     /** An albedo pixel: the colour as it is, clamped - no grade and no tone curve. */
