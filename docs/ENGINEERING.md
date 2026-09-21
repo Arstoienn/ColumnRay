@@ -298,6 +298,34 @@ shading off, merges the two the way `Host` does, and compares that against the C
 That is the `merged` column, and it has to equal `worst`: a difference of two hundred and not of
 two is what a mistake about which rows those are would look like.
 
+### What a big map actually costs
+
+Not its size. Measured 2026-09-21 on Haven, 1920x1080, baked, on the card, standing on one spot
+and turning all the way round with `-Dbench.dump` - one frame per degree, the medians of each 30
+degree arc:
+
+| heading | ms | | heading | ms |
+|---|---|---|---|---|
+| 0-30 | 35.5 | | 180-210 | 55.8 |
+| 30-60 | 46.2 | | 210-240 | 74.4 |
+| 60-90 | 47.8 | | 240-270 | 32.2 |
+| 90-120 | 55.5 | | 270-300 | 15.2 |
+| 120-150 | 46.2 | | 300-330 | 12.4 |
+| 150-180 | 47.9 | | 330-360 | 23.1 |
+
+The cheapest frame of the turn is 8.6 ms and the dearest that is not a collection is 74 - six
+times, from the same point in the same map with the same 1,924 rays. Nothing about the map
+changed between those two frames except which way the camera faced, so the 3.8 million surfaces
+are not what the frame is paying for. What it pays for is how far the rays get before their
+columns fill: face a wall and a column is full after a few cells and the ray stops, face down an
+open sightline and every ray walks to `MAX_DIST` through every cell on the way, testing what is
+in them and painting what it finds.
+
+That is worth keeping in mind next to the note that chunk loading does nothing for frame time -
+the same fact from the other side - and it says where the levers are for a map that has to be
+dense: a shape's `maxDist`, coarser geometry with distance, and anything that fills a column
+sooner. Not a smaller map.
+
 ### Where the time goes
 
 `-Dgpu.stats=true` with `--bench` prints the card's share of a frame. Measured on an M3 at
