@@ -346,6 +346,36 @@ worst a 673 ms humongous allocation. But none of the 1,440 timed frames is anywh
 so it fell in the warmup or the load, where a bench's percentiles cannot see it. On a map this
 size, read a percentile with the series beside it.
 
+### What looking up costs, and one thing that did not help
+
+Tilting is expensive on Haven and it is not the overscan buffer. With the *same* buffer
+(2884x1675) and the same 2,888 rays, a level frame is 18.0 ms and a 45-degree frame is 130.4 ms.
+What changes is what a column crosses. Counted per column on Haven at `--feet 3`:
+
+| per column | level | 30 deg | 45 deg |
+|---|---|---|---|
+| shapes drawn | 36.0 | 154.3 | 223.4 |
+| candidate planes made | 109.7 | 901.9 | 1,474.7 |
+| distinct planes among them | 11.2 | 73.7 | 101.0 |
+
+A level ray dies on the first wall - the column fills, `open` reaches 0 and the walk stops. An
+upward ray clears the rooftops and runs to the far distance, so it meets six times as much.
+
+The candidate count being fifteen times the number of distinct planes looks like the obvious
+thing to attack, and `nearest` is 19.4% of a 45-degree frame. It was attacked, by filling a
+winner-per-row buffer once per stretch instead of searching per candidate per row, bit-for-bit
+identical. **It measured 9% slower at level and 4% slower at 45 degrees**, five alternating runs
+with rest, and was reverted.
+
+Two reasons, both worth remembering. `nearest` short-circuits - it returns the moment anything
+nearer turns up - so the scan it does is nothing like the length of the candidate list, and an
+instrumentation counter that adds `nc` per call (as ours did) overstates it several times over.
+And a buffer pays one distance for every row of every competing candidate, where the search often
+pays one or two; the arithmetic it removes was not there to remove.
+
+So the 19.4% in `nearest` is mostly distances that have to be computed, not a wasteful search.
+Lowering it means fewer surfaces to compare - which is the map, not the loop.
+
 ### Platform
 
 The GL entry points are the same C functions everywhere. Two things are not - which library holds
