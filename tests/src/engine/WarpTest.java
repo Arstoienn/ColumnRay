@@ -91,5 +91,38 @@ final class WarpTest {
                 roundTrip &= Math.abs(tilt.outputX(col, j) - (i + 0.5)) <= 1;
             }
         Check.that(roundTrip, "sourceColumn and outputX are inverses, to within the pixel they round to");
+
+        budget();
+    }
+
+    /** The ceiling that stops the warp asking for more overscan than the machine can allocate. */
+    private static void budget() {
+        Check.group("Warp.fits");
+        long budget = 16L * RW * RH;
+        double cap = Warp.fits(false, RW, RH, F, budget);
+        Warp at = new Warp(), over = new Warp();
+        at.plan(cap, false, RW, RH, F);
+        over.plan(cap * 1.02, false, RW, RH, F);
+        Check.that((long) at.needW() * at.needH() <= budget,
+                "the pitch it returns fits the budget, got " + at.needW() + "x" + at.needH());
+        Check.that((long) over.needW() * over.needH() > budget,
+                "and two percent more does not, got " + over.needW() + "x" + over.needH());
+
+        // The property the camera depends on: a budget that is a multiple of a level frame buys the
+        // same angle at any render size. A budget in absolute pixels would not, and the range of
+        // the look control would then depend on the window, which is no way to build a control.
+        // Only the same to within a fraction of a degree, because needW and needH carry a fixed
+        // four-pixel margin that is a larger share of a small frame than of a large one.
+        double at720 = Math.toDegrees(Warp.fits(false, 1280, 720, 640 / 0.66, 16L * 1280 * 720));
+        for (int[] size : new int[][] {{640, 360}, {1920, 1080}, {3840, 2160}}) {
+            int w = size[0], h = size[1];
+            Check.eq(Math.toDegrees(Warp.fits(false, w, h, (w / 2.0) / 0.66, 16L * w * h)), at720, 0.05,
+                    w + "x" + h + " reaches the same angle as 1280x720");
+        }
+
+        // Y-shearing never widens the picture, so far more of it fits.
+        Check.that(Warp.fits(true, RW, RH, F, budget) > cap, "y-shearing reaches further on the same budget");
+        // A budget below one level frame leaves nothing: it must not hand back a tilt that overflows.
+        Check.eq(Warp.fits(false, RW, RH, F, 1), 0, 0, "an impossible budget returns no tilt at all");
     }
 }

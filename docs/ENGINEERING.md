@@ -22,7 +22,27 @@ Needs JDK 21 or newer (developed on JDK 26).
 ./run.sh --feet 3.6                        # start on the upper storey instead of the ground one
 ./run.sh --shear                           # look up / down the old way (y-shearing), for comparison
 ./run.sh --flat                            # skip the lightmap bake, use the old flat shading
+./run.sh --cpu                             # shade on the CPU; the card does it by default
 ```
+
+### How large a still can be
+
+A screenshot is not a frame anybody is waiting for, so the only real limit is what fits in a heap.
+`--size` caps at 16384 a side, and `--size` times `--ss` has to stay inside that too. Measured on
+an M3 with 16 GB, school, baked, from one camera, the whole run timed - JVM start, cached bake and
+PNG encoding included:
+
+| | level | tilted 45 degrees |
+|---|---|---|
+| 3840x2160 | 2.1 s | - |
+| 7680x4320 | 4.0 s | 4.6 s |
+| 7680x4320 `--ss 2` | 6.3 s | 11.3 s, and needs `JAVA_OPTS=-Xmx12g` |
+
+Only the last one needs anything said about it. Tilting is what costs memory rather than time: the
+upright image the warp resamples is about 2.5 times the width and 2.6 times the height of the
+frame at 45 degrees, so 8K by two is an overscan buffer of 38240 x 22290, and three arrays that
+size - the pixels, the depth and the albedo - do not fit the 4 GB the JVM helps itself to by
+default. Level, the same shot needs nothing.
 
 ## Controls
 
@@ -150,10 +170,22 @@ engine, so it now starts closed and `R` opens it. What made it expensive was red
 frame; the grid, regions and shape footprints never move, so they are now drawn once into an image
 (rebuilt only when you zoom) and blitted with the view transform.
 
-## Shading on the card (`--gpu`)
+## Shading on the card
 
-`--gpu` moves the *shading* of a frame to the graphics card and leaves everything else exactly
-where it was. The CPU still casts one ray per screen column, still walks the acceleration grid,
+The card shades the frame by default, and `--cpu` asks for the other path. It was `--gpu`, opt
+in, for as long as the card had surfaces it had not been given; once `--gpu-verify` reported zero
+pixels the card was not given on both school and Haven, leaving it off by default was leaving
+three quarters of the machine's speed on the floor. `--gpu` is still accepted, and now means
+"the card even here". There are two heres. `--verify` takes the CPU path because its whole output
+is a digest, and a digest of the card's float arithmetic is not one the double-precision renderer
+could ever match. `--shot` and `--shots` take it for a duller reason: they write depth and albedo
+beside the picture, and a frame with a depth buffer shades every row on the CPU whether or not the
+card was given the surface, so handing the colours to the card afterwards buys nothing but a
+different rounding - and costs the byte-for-byte comparison that every renderer change is checked
+with. A screenshot that wanted only the picture could have the card, and does not ask for it yet.
+
+Shading on the card moves the *shading* of a frame to the graphics card and leaves everything
+else exactly where it was. The CPU still casts one ray per screen column, still walks the acceleration grid,
 still tests the shapes and still decides what is visible; what it hands over is the answer - a
 handful of row intervals per column - and the card colours them in. The column constraint is not
 weakened by this. It is the reason the thing works at all: a column renderer's output is a few
@@ -229,7 +261,7 @@ buffer and the window sit the pitch warp, the overscan growing under it and the 
 buffers being rebuilt around that, and none of it was covered - which is where the worst bug of
 this branch lived, a resize that watched the width and not the height.
 
-`--gpu-verify views.txt` draws each view through `Main.frame` twice, once on each path, at five
+`--gpu-verify views.txt` draws each view through `Host.frame` twice, once on each path, at five
 tilts, and compares the finished output:
 
 ```bash
@@ -262,7 +294,7 @@ come from the CPU.
 
 That is a saving that could hide a mistake - a row the CPU skipped that the card turns out not to
 have drawn would come back black - so `GpuCheck` renders every camera a second time with the
-shading off, merges the two the way `Main` does, and compares that against the CPU-only frame.
+shading off, merges the two the way `Host` does, and compares that against the CPU-only frame.
 That is the `merged` column, and it has to equal `worst`: a difference of two hundred and not of
 two is what a mistake about which rows those are would look like.
 
@@ -346,6 +378,55 @@ worst a 673 ms humongous allocation. But none of the 1,440 timed frames is anywh
 so it fell in the warmup or the load, where a bench's percentiles cannot see it. On a map this
 size, read a percentile with the series beside it.
 
+### How far the camera looks up, and what stops it
+
+`World.MAX_PITCH` is 45 degrees, and it is the engine's number rather than a budget for any one
+map. What a tilted frame costs differs enormously - school renders 45 degrees in 9.2 ms on the
+card where Haven takes 139 - but that is the renderer's problem to solve and dynamic resolution's
+to absorb. Shortening the camera on the map that happens to be slow would hide the problem in the
+control, and a look control whose range depends on which level is loaded is not a control. A map
+may still narrow it with `"maxPitch"` when its author wants the view held down; that is a design
+decision, and the loader clamps it at 60 degrees.
+
+Under both sits a hard ceiling that is about the machine and not about taste. The overscan grows
+as a tangent and runs away at 90 degrees less the vertical half-FOV - 69.6 degrees at the default
+field of view - so `Warp.fits` returns the furthest pitch whose upright image still fits a budget,
+and `Host` clamps to it every frame. The budget is **a multiple of a level frame (16), not a count
+of pixels**: the overscan a pitch needs is a fixed ratio of the frame at any render size, so a
+budget in pixels would let the camera tilt further on a small window than on a large one. As a
+multiple it stops at 55.1 degrees at 640x360, at 1280x720 and at 3840x2160 alike. It is worked out
+by asking `Warp.plan` itself rather than by a second copy of its formulas.
+
+### What looking up costs, and one thing that did not help
+
+Tilting is expensive on Haven and it is not the overscan buffer. With the *same* buffer
+(2884x1675) and the same 2,888 rays, a level frame is 18.0 ms and a 45-degree frame is 130.4 ms.
+What changes is what a column crosses. Counted per column on Haven at `--feet 3`:
+
+| per column | level | 30 deg | 45 deg |
+|---|---|---|---|
+| shapes drawn | 36.0 | 154.3 | 223.4 |
+| candidate planes made | 109.7 | 901.9 | 1,474.7 |
+| distinct planes among them | 11.2 | 73.7 | 101.0 |
+
+A level ray dies on the first wall - the column fills, `open` reaches 0 and the walk stops. An
+upward ray clears the rooftops and runs to the far distance, so it meets six times as much.
+
+The candidate count being fifteen times the number of distinct planes looks like the obvious
+thing to attack, and `nearest` is 19.4% of a 45-degree frame. It was attacked, by filling a
+winner-per-row buffer once per stretch instead of searching per candidate per row, bit-for-bit
+identical. **It measured 9% slower at level and 4% slower at 45 degrees**, five alternating runs
+with rest, and was reverted.
+
+Two reasons, both worth remembering. `nearest` short-circuits - it returns the moment anything
+nearer turns up - so the scan it does is nothing like the length of the candidate list, and an
+instrumentation counter that adds `nc` per call (as ours did) overstates it several times over.
+And a buffer pays one distance for every row of every competing candidate, where the search often
+pays one or two; the arithmetic it removes was not there to remove.
+
+So the 19.4% in `nearest` is mostly distances that have to be computed, not a wasteful search.
+Lowering it means fewer surfaces to compare - which is the map, not the loop.
+
 ### Platform
 
 The GL entry points are the same C functions everywhere. Two things are not - which library holds
@@ -360,7 +441,7 @@ system is a question `GlPlatform` answers before `Gl` is loaded, which matters b
 `Gl` is what would fail. A backend with no card behind it - a Windows machine with no OpenGL
 driver, a virtual machine, a CI runner offering Microsoft's software renderer - only shows up
 when the context is asked for, and it comes out of `Gl`'s field initialisers as an
-`ExceptionInInitializerError`. `Main` catches both and prints one sentence. The Windows CI job
+`ExceptionInInitializerError`. `Host.graphicsCard` catches both and prints one sentence. The Windows CI job
 runs `--gpu` on a runner that has no card precisely so that the second path is exercised by
 something other than hope.
 
@@ -539,7 +620,7 @@ tilts back sees verticals converge towards the top of the picture. Without that,
 of the screen get stretched - looking down from the first floor, the pool comes out far too wide -
 which feels like a vertical fisheye.
 
-So the renderer still y-shears, and `Main.warp()` turns the result into a real tilt. Both are
+So the renderer still y-shears, and the `Warp` turns the result into a real tilt. Both are
 pinhole cameras at the same eye point, one with an upright image plane and one with a tilted one, so
 the tilted picture is an exact projective warp of the upright one, and for pitch alone that warp
 works row by row. Output row `v` (measured up from the centre) reads a single upright row `v'`,
@@ -564,6 +645,46 @@ Press `P` to switch to the old y-shearing and compare; `--shear` does the same f
 `--bench`. The red line marking the traced column in the main view leans with the tilt: one ray is a
 vertical line in the world, so it converges like every other vertical.
 
+## The engine and the game
+
+The engine is a library and `game` is the program that uses it. `engine` has no `main`: the order
+things have to happen in at start-up - ask the keyboard what its keys are called before AWT starts,
+ask for a graphics context before AWT starts, load the map, open a window - is the game's to get
+right, because it is the game that knows whether a window is going to open at all. `game.Main` is
+those ten lines.
+
+Where the line falls, and why it falls there:
+
+- **`Host` owns the frame, `Game` owns what is in it.** The buffers, the overscan, the pitch warp,
+  the render scale and the window are one tangle that has to change together, and none of it is a
+  decision a game should be making. What the game hands back is a `View`: a position, an eye
+  height, a heading and a pitch, in metres and radians. The horizon-in-pixels the renderer actually
+  wants is the warp's arithmetic, and a game that had to fill it in would be doing the engine's
+  work for it.
+- **The pitch limit is pushed, not pulled.** How far the camera may tilt depends on the map and on
+  how much overscan the render buffer can hold at the size it is now - which dynamic resolution
+  moves every few frames. So `Host` works it out and calls `Game.pitchLimit` before it takes the
+  view, rather than clamping the view behind the game's back: a game whose own idea of where it is
+  looking had quietly drifted away from the picture would be a horrible thing to debug.
+- **`Body` is the engine's, `Player` is the game's.** Asking what can be stood on at a point, what
+  is over your head and what is in the way is a question about the map, and the map is the
+  engine's. How fast a walk is, how hard a jump is, how low a crouch goes and how quickly the
+  camera eases over a step are not. So `Body` takes the size of the body from whoever asks - a
+  player, a crate, a guard - and knows nothing else about them.
+- **`Input` reads the keyboard; nothing in the engine knows what a key means.** `Keys` reports
+  positions rather than letters, and `Input` adds the two things every game wants and nobody wants
+  to write twice: ignore the keyboard while another application is in front, and fire a tap once
+  rather than on every frame the key is held.
+- **A headless capture asks the game to stand somewhere.** `--shot`, `--shots` and `--verify` read
+  a views file whose `feet` column may say "stand on whatever ground is here", which needs a
+  collision query and a body height - neither of which `Capture` has any business knowing. So it
+  calls `Game.place` and then renders whatever `Game.view` says, which is also what keeps a golden
+  frame a picture of the game rather than of a second, simpler path.
+
+The test of all this was that it had to change no pixel: the golden digests, the Haven digests and
+the `--shot` images - including the HUD and the minimap drawn over them - are byte-for-byte what
+they were before the split.
+
 ## Files
 
 | File | Contents |
@@ -575,11 +696,13 @@ vertical line in the world, so it converges like every other vertical.
 | `src/engine/Lighting.java` | the baked lightmaps: sun, sky, lamps, shadows and bounced light |
 | `src/engine/LightCache.java` | those lightmaps on disk, keyed by the map, the settings and the bake's own code |
 | `src/engine/Occluder.java` | line of sight and nearest hit for a ray anywhere in the world |
-| `src/engine/Main.java` | the window, the frame loop, and the buffers between the two |
+| `src/engine/Body.java` | what the map lets a body of a given size stand on, and what blocks it |
+| `src/engine/Host.java` | the window, the frame loop, and the buffers between the two |
+| `src/engine/Game.java` | what a game implements: update, view, overlay, place |
+| `src/engine/View.java` | where to look from, in metres and radians |
+| `src/engine/Input.java` | the keys and the mouse, with no bindings in them |
 | `src/engine/Options.java` | the command line, read once into one object |
-| `src/engine/Player.java` | movement, gravity, steps and collision |
 | `src/engine/Warp.java` | the pitch warp: the tilted view resampled from the upright one |
-| `src/engine/Hud.java` | the overlay text and the minimap, drawn over the frame |
 | `src/engine/Minimap.java` | the minimap itself, flooded from walkable space |
 | `src/engine/Capture.java` | the headless modes: `--bench`, `--shot`, `--shots`, `--verify` |
 | `src/engine/DynamicResolution.java` | the render scale, picked from measured frame time |
@@ -587,6 +710,10 @@ vertical line in the world, so it converges like every other vertical.
 | `src/engine/Keys.java` | physical key state: the controls go by where a key sits, not by its letter |
 | `src/engine/Hash.java` | digests of a frame and of a bake, for the golden test |
 | `src/engine/Json.java` | minimal JSON parser (`//` comments allowed) |
+| `src/game/Main.java` | where a run starts: the command line, the map, the engine, then play or capture |
+| `src/game/Sandbox.java` | the game: the bindings, the toggles, and the camera it hands the engine |
+| `src/game/Player.java` | movement, gravity, steps, crouch and jump |
+| `src/game/Hud.java` | the overlay text and the minimap, drawn over the frame |
 | `src/engine/Gl.java` | the OpenGL entry points, one line each |
 | `src/engine/GlPlatform.java` | which library holds them and how to get a context; the only per-OS part |
 | `src/engine/GlCgl.java` | the macOS backend: OpenGL.framework and CGL |
@@ -608,7 +735,7 @@ vertical line in the world, so it converges like every other vertical.
    normalised, so the intersection parameter t *is* the perpendicular distance and there is no
    fisheye. -> `Renderer.Column.render`
 2. **Projection**: `rowZ(z, t) = hz - (z - eye) * F / t`, with `hz = H/2 + pitch` (y-shearing).
-   -> `rowZ`. The renderer only ever y-shears; `Main.warp()` turns that into a true tilt (see
+   -> `rowZ`. The renderer only ever y-shears; `Warp` turns that into a true tilt (see
    "Looking up and down").
 3. **Intersection**: segments, circles (enter t1, exit t2), convex polygons (test every edge, take
    the smallest and largest t). A negative t1 means the eye is inside the shape's footprint.

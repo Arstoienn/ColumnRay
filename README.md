@@ -27,10 +27,38 @@ and textured geometry while keeping the column-based renderer.
   which is a preview feature before 22
 - Developed and tested on macOS. On other platforms, input falls back to AWT key events read
   as a US QWERTY layout
-- `--gpu` needs an OpenGL backend: macOS (CGL) and Windows (WGL) have one, Linux does not yet.
-  Without one it prints a sentence and the CPU renderer carries on. On a machine with two
-  graphics cards, which one draws is Windows' per-application preference for `java.exe`
-  (Settings > System > Display > Graphics), and `--gpu` names the card it ended up on
+- Shading on the card is the default, and needs an OpenGL backend: macOS (CGL) and Windows
+  (WGL) have one, Linux does not yet. Without one it prints a sentence and the CPU renderer
+  carries on, which is the whole engine. `--cpu` asks for that path on purpose. On a machine
+  with two graphics cards, which one draws is Windows' per-application preference for
+  `java.exe` (Settings > System > Display > Graphics), and the card it ended up on is named
+  on the first line of the run
+
+## The engine and the game
+
+They are two packages, and the boundary is meant to be used rather than admired. `engine` owns the
+window, the frame loop, the buffers, the renderer, the map and the bake; it has no `main`, no idea
+which key walks forward, and no player. `game` owns all of that, and reaches the engine through
+`Game` - four methods, of which two matter - and through the public methods on `Host`.
+
+```java
+public final class MyGame implements Game {
+    private final View view = new View();
+
+    @Override public void update(double dt, Input in) { /* move whatever moves */ }
+    @Override public View view() { return view; }          // x, y, eye, heading, pitch
+}
+```
+
+```java
+Host host = new Host(World.load(Path.of("maps/school.json")), Options.parse(args));
+host.run(new MyGame(host));
+```
+
+`Sandbox` is the game this repository ships with - walk about a map and look at it - and it is
+worth reading as the worked example: about two hundred lines, none of which the engine knows
+anything about. Collision against the map is `Body`, line of sight is `Occluder`, and both take
+the size of the body from whoever asks, because the engine does not know how tall anybody is.
 
 ## Building and running
 
@@ -39,7 +67,7 @@ and textured geometry while keeping the column-based renderer.
 ```
 
 `run.sh` compiles `src/` into `out/` when a source file has changed (see `build.sh`) and starts
-the engine with `maps/school.json`. Arguments are passed through to `engine.Main`:
+the game with `maps/school.json`. Arguments are passed through to `game.Main`:
 
 ```bash
 ./run.sh maps/school.json --size 1920x1080
@@ -57,9 +85,10 @@ the engine with `maps/school.json`. Arguments are passed through to `engine.Main
 | `--fps N` | Frame-time target for dynamic resolution; `0` disables it (default 60) |
 | `--ss N` | Supersampling factor, 1-8 (default 1) |
 | `--feet M` | Starting floor height in metres, e.g. to start on an upper storey |
+| `--cpu` | Shade on the CPU instead of the card; the same picture, three to four times slower |
 | `--flat` | Skip the lightmap bake and use flat shading |
 | `--shear` | Use y-shearing for pitch instead of the perspective warp |
-| `--bench` | Time the renderer over a full turn, level and pitched 30 degrees |
+| `--bench` | Time the renderer over a full turn, level and pitched all the way up |
 | `--shot out.png [x y heading pitch [column]]` | Render one frame headlessly |
 | `--shots views.txt` | Render several frames in one run, one `out.png x y feet heading` per line |
 | `--verify views.txt` | Render each view and print a digest of it instead of writing files; see Tests |
@@ -196,11 +225,13 @@ how many rows it filled.
 | `src/engine/Lighting.java` | Lightmap bake |
 | `src/engine/LightCache.java` | Baked lightmaps on disk, keyed by the map, settings and bake code |
 | `src/engine/Occluder.java` | Line of sight and nearest-hit queries |
-| `src/engine/Main.java` | Window, frame loop and buffers |
+| `src/engine/Body.java` | What the map lets a body of a given size stand on, and what blocks it |
+| `src/engine/Host.java` | Window, frame loop and buffers: the engine a game runs on |
+| `src/engine/Game.java` | What a game implements: update, view, overlay |
+| `src/engine/View.java` | Where to look from, in metres and radians |
+| `src/engine/Input.java` | Keys and mouse, with no bindings in them |
 | `src/engine/Options.java` | Command line |
-| `src/engine/Player.java` | Movement, gravity and collision |
 | `src/engine/Warp.java` | The pitch warp |
-| `src/engine/Hud.java` | Overlay text and minimap drawing |
 | `src/engine/Capture.java` | Headless modes: `--bench`, `--shot`, `--shots`, `--verify` |
 | `src/engine/DynamicResolution.java` | Frame-time-driven render scaling |
 | `src/engine/Minimap.java` | Minimap |
@@ -208,6 +239,10 @@ how many rows it filled.
 | `src/engine/Keys.java` | Physical key state |
 | `src/engine/Hash.java` | Digests for the golden test |
 | `src/engine/Json.java` | JSON parser (supports `//` comments) |
+| `src/game/Main.java` | Where a run starts: command line, map, engine, then play or capture |
+| `src/game/Sandbox.java` | The game: bindings, toggles, the camera it hands the engine |
+| `src/game/Player.java` | Movement, gravity, crouch and jump |
+| `src/game/Hud.java` | Overlay text and minimap drawing |
 | `maps/school.json` | Demo map |
 | `maps/haven/` | Submodule: the Haven map, in [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven) |
 | `docs/images/` | README screenshots |
