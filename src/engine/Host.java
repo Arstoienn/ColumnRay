@@ -192,6 +192,13 @@ public final class Host {
                 Double.parseDouble(System.getProperty("grade.lift",
                         String.valueOf(World.num(g, "lift", 0.0)))));
         Renderer.fogOn = !Boolean.FALSE.equals(lg.get("fog"));
+        Renderer.hdr = o.hdr;
+        // The bounce is a switch of its own, and off by default. It is right in principle - a
+        // surface returns the light its colour says it returns, not the sRGB number the colour is
+        // written as - but which picture it improves depends on the map: school gains by it and
+        // Haven loses badly, because the two maps' lighting was tuned against the old bounce in
+        // different ways. See docs/ENGINEERING.md, which has both measurements.
+        Renderer.hdrBake = o.hdr && Boolean.getBoolean("hdr.bake");
         this.shear = o.shear;
         setUseGpu(o.gpu);
         if (!o.flat) {
@@ -260,6 +267,15 @@ public final class Host {
     /** Is there a bake, or was this started with --flat? A game's "baked lighting" toggle has
      *  nothing to toggle when there is not. */
     public boolean hasLighting() { return lighting != null; }
+
+    /**
+     * Shade in light and roll the highlights off filmically, instead of multiplying the sRGB
+     * numbers a texture is stored in. See {@code Renderer.hdr}, which is where it is explained;
+     * this is only the switch, and it may be thrown between frames like the rest of them.
+     */
+    public boolean hdr() { return Renderer.hdr; }
+
+    public void setHdr(boolean on) { Renderer.hdr = on; }
 
     /** The old y-shearing pitch instead of the true projective warp, for comparison. */
     public boolean shear() { return shear; }
