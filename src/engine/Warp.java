@@ -56,6 +56,27 @@ final class Warp {
 
     int needH() { return needH; }
 
+    /**
+     * The largest pitch whose upright image still fits in a budget of pixels.
+     *
+     * The overscan grows as a tangent and runs away at 90 degrees less the vertical half-FOV -
+     * 69.6 degrees at the default field of view - so a map that asks to look further up than the
+     * machine can hold would not be slow, it would fail to allocate. This is the ceiling that
+     * stops it, and it is worked out by asking plan() itself rather than by a second copy of the
+     * same formulas, which is the sort of pair that drifts.
+     */
+    static double fits(boolean shear, int rw, int rh, double focal, long budget) {
+        Warp w = new Warp();
+        double lo = 0, hi = Math.PI / 2;
+        for (int i = 0; i < 40; i++) {                  // 40 halvings: the answer to a millionth of a degree
+            double mid = 0.5 * (lo + hi);
+            w.plan(mid, shear, rw, rh, focal);
+            if ((long) w.needW() * w.needH() <= budget) lo = mid;
+            else hi = mid;
+        }
+        return lo;
+    }
+
     /** Pin the warp to the buffer the renderer will draw into, and set the window it must fill. */
     void place(double centerX, int srcW, int srcH, Renderer.Camera c) {
         cx = centerX;
