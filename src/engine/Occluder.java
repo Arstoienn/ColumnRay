@@ -18,7 +18,7 @@ import java.util.Arrays;
  * every thing it crosses is checked against the height the segment has at that point. Lighting uses
  * it from each lit point towards each light. One instance per thread.
  */
-final class Occluder {
+public final class Occluder {
     private final World w;
     private final int[] stamp;
     private final int[] nodes = new int[128];                // tree walk stack, as in Renderer
@@ -28,13 +28,13 @@ final class Occluder {
     private final double[] exitT = new double[Renderer.MAX_STOREYS];
     private final int[] exitE = new int[Renderer.MAX_STOREYS];
 
-    Occluder(World w) {
+    public Occluder(World w) {
         this.w = w;
         this.stamp = new int[w.shapes.length];
     }
 
     /** Is (x, y, z) in open air: inside a storey, and not inside a slab, a wall or furniture? */
-    boolean open(double x, double y, double z) {
+    public boolean open(double x, double y, double z) {
         int n = w.regionsAt(x, y, stack);
         if (n > 0 && !inSpan(stack, n, z, z)) return false;
         Grid g = w.grid;
@@ -69,7 +69,7 @@ final class Occluder {
 
     /** Is the segment from a to b clear? Storeys first - indoors a ceiling usually settles it
      *  straight away - then the shapes along the way. */
-    boolean clear(double ax, double ay, double az, double bx, double by, double bz) {
+    public boolean clear(double ax, double ay, double az, double bx, double by, double bz) {
         rays++;
         double dx = bx - ax, dy = by - ay, dz = bz - az;
         return storeysClear(ax, ay, az, dx, dy, dz) && shapesClear(ax, ay, az, dx, dy, dz);

@@ -102,7 +102,7 @@ final class GpuCheck {
                 double heading = Math.toRadians(Double.parseDouble(v[3]));
                 cam.dirX = Math.cos(heading);
                 cam.dirY = Math.sin(heading);
-                cam.eye = Double.parseDouble(v[4]) + Player.EYE_STAND;
+                cam.eye = Double.parseDouble(v[4]) + Capture.EYE;
                 cam.baked = lighting != null;
                 renderer.render(cam);
                 walls.draw(spans, masks, gpu, cam, h / 2.0 + cam.pitch, renderer.focal(), renderer.viewH);

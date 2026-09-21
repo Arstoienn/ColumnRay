@@ -37,7 +37,9 @@ import java.util.zip.InflaterInputStream;
  * changes the key. A key that does not match is simply a different file; nothing is ever patched.
  *
  * Which classes those are is decided by two lists, BAKES and BAKES_NOT, and every class in the
- * engine must be in one of them: a class in neither turns the cache off and says so. Getting that
+ * engine must be in one of them: a class in neither turns the cache off and says so. Only the
+ * engine package is looked at - a game cannot move a texel, so a game's own classes are
+ * deliberately not part of the key, and a bake survives being played by a different game. Getting that
  * backwards is how a cache like this goes quietly wrong, and it fails in the direction that costs
  * a bake rather than the one that hands back light from before the change you are measuring.
  *
@@ -67,7 +69,7 @@ final class LightCache {
      * merely slow, rather than wrong light, which is invisible.
      */
     private static final Set<String> BAKES_NOT = Set.of(
-            "Main", "Options", "Renderer", "Warp", "Player", "Hud", "Capture",
+            "Host", "Game", "View", "Input", "Body", "Options", "Renderer", "Warp", "Capture",
             "Minimap", "RayView", "DynamicResolution", "Keys", "LightCache", "Hash",
             "Gl", "GlMaterials", "GpuSpike", "GpuMatCheck", "GpuCheck", "GpuSpans", "GpuWalls",
             "GpuLights", "GpuTextures", "GpuMaterials", "GpuTable", "GpuMasks",
