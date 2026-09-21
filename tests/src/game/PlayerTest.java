@@ -1,4 +1,7 @@
-package engine;
+package game;
+
+import engine.Check;
+import engine.World;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -11,7 +14,7 @@ import java.nio.file.Path;
  * loop that read the keyboard itself, so the only way to find out what happened when you walked
  * into a wall was to walk into one.
  */
-final class PlayerTest {
+public final class PlayerTest {
     private PlayerTest() {}
 
     /**
@@ -41,7 +44,7 @@ final class PlayerTest {
         for (int i = 0; i < 60; i++) p.step(1 / 60.0, m);
     }
 
-    static void run() throws IOException {
+    public static void run() throws IOException {
         Check.group("Player");
 
         Path file = Files.createTempFile("columnray-player", ".json");
@@ -108,9 +111,9 @@ final class PlayerTest {
         // Looking up and down stops at the pitch the warp is built for.
         Player looker = new Player(w);
         for (int i = 0; i < 600; i++) looker.step(1 / 60.0, new Player.Move(0, 1, 0, 0, 0, 0, false, false, false));
-        Check.eq(looker.pitch, Player.MAX_PITCH, 1e-9, "looking up stops at MAX_PITCH");
+        Check.eq(looker.pitch, World.MAX_PITCH, 1e-9, "looking up stops at MAX_PITCH");
         for (int i = 0; i < 1200; i++) looker.step(1 / 60.0, new Player.Move(0, -1, 0, 0, 0, 0, false, false, false));
-        Check.eq(looker.pitch, -Player.MAX_PITCH, 1e-9, "and looking down at -MAX_PITCH");
+        Check.eq(looker.pitch, -World.MAX_PITCH, 1e-9, "and looking down at -MAX_PITCH");
 
         // Crouching lowers the eye; standing up again raises it.
         Player crouch = new Player(w);
@@ -124,7 +127,7 @@ final class PlayerTest {
         upstairs.x = 7;
         upstairs.standOn(0.3);
         Check.eq(upstairs.feet, 0.3, 1e-9, "--feet starts on the platform");
-        Check.eq(upstairs.here() == null ? "-" : upstairs.here().name, "platform",
+        Check.eq(upstairs.where(), "platform",
                 "and the HUD names the storey they are actually on");
 
         // --shots and --verify stand exactly where they are told, floor or no floor.

@@ -14,21 +14,21 @@ import java.util.Arrays;
  * wanted and stops. A render size that quietly clamped itself would be worse than one that
  * refuses: the picture would come out, and be the wrong size, and nothing would say why.
  */
-final class Options {
-    String map = "maps/school.json";
-    String shot, shots, verify, gpuVerify;
+public final class Options {
+    public String map = "maps/school.json";
+    public String shot, shots, verify, gpuVerify;
     /** --shot's optional "x y heading pitch [column]". */
-    double[] at;
-    boolean bench, shear, flat, gpu;
-    int w = Main.DEFAULT_W, h = Main.DEFAULT_H, ss = 1;
-    int winW = Main.DEFAULT_WINDOW_W, winH = Main.DEFAULT_WINDOW_H;
-    int targetFps = 60;
-    double startFeet = Double.NaN;
+    public double[] at;
+    public boolean bench, shear, flat, gpu;
+    public int w = Host.DEFAULT_W, h = Host.DEFAULT_H, ss = 1;
+    public int winW = Host.DEFAULT_WINDOW_W, winH = Host.DEFAULT_WINDOW_H;
+    public int targetFps = 60;
+    public double startFeet = Double.NaN;
 
     private Options() {}
 
     /** Does this command line open a window? A headless run must not ask about the keyboard. */
-    static boolean headless(String[] args) {
+    public static boolean headless(String[] args) {
         return Arrays.stream(args).anyMatch(a ->
                 a.equals("--shot") || a.equals("--shots") || a.equals("--bench")
                         || a.equals("--verify") || a.equals("--gpu-verify"));
@@ -36,7 +36,7 @@ final class Options {
 
     /** The settings this command line asks for, or null when it has already been refused and
      *  explained. */
-    static Options parse(String[] args) {
+    public static Options parse(String[] args) {
         Options o = new Options();
         return o.read(args) ? o : null;
     }
@@ -134,11 +134,11 @@ final class Options {
 
     private static void usage(String problem) {
         System.err.println(problem);
-        System.err.println("usage: java -cp out engine.Main [map.json] [--size WxH] [--ss N] [--bench]");
-        System.err.println("       java -cp out engine.Main [map.json] [--size WxH] [--ss N] --shot out.png [x y angle pitch [column]]");
-        System.err.println("       java -cp out engine.Main [map.json] [--size WxH] --shots views.txt   (one \"out.png x y feet heading\" per line)");
-        System.err.println("  --size  render resolution, the ray count (default " + Main.DEFAULT_W + "x" + Main.DEFAULT_H + ")");
-        System.err.println("  --window  window size; the render is scaled up to it (default " + Main.DEFAULT_WINDOW_W + "x" + Main.DEFAULT_WINDOW_H + ", fitted to the screen)");
+        System.err.println("usage: java -cp out game.Main [map.json] [--size WxH] [--ss N] [--bench]");
+        System.err.println("       java -cp out game.Main [map.json] [--size WxH] [--ss N] --shot out.png [x y angle pitch [column]]");
+        System.err.println("       java -cp out game.Main [map.json] [--size WxH] --shots views.txt   (one \"out.png x y feet heading\" per line)");
+        System.err.println("  --size  render resolution, the ray count (default " + Host.DEFAULT_W + "x" + Host.DEFAULT_H + ")");
+        System.err.println("  --window  window size; the render is scaled up to it (default " + Host.DEFAULT_WINDOW_W + "x" + Host.DEFAULT_WINDOW_H + ", fitted to the screen)");
         System.err.println("  --feet  starting floor height in metres, to begin on an upper storey (e.g. 3.6)");
         System.err.println("  --shear look up / down the old way (y-shearing) instead of true perspective");
         System.err.println("  --gpu   shade the frame on the graphics card (the CPU still casts every ray)");

@@ -34,7 +34,7 @@ LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
 
 one() {   # label classes options
-    java --enable-native-access=ALL-UNNAMED $3 -cp "$2" engine.Main "$MAP" --flat --size "$SIZE" --bench \
+    java --enable-native-access=ALL-UNNAMED $3 -cp "$2" game.Main "$MAP" --flat --size "$SIZE" --bench \
         2>/dev/null | grep '^BENCH' | sed "s/^/$1 run $r /" | tee -a "$LOG"
 }
 

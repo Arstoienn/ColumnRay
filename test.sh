@@ -11,7 +11,7 @@
 #
 # The golden files hold digests of the renderer's own pixels, depth, albedo and lightmap - not of
 # the PNGs, which an encoder is free to write differently between JDK releases without a pixel
-# changing. See Main.verify and tests/golden/README.md.
+# changing. See Capture.verify and tests/golden/README.md.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -42,7 +42,7 @@ HAVEN_VIEWS=tests/views/haven.txt
 
 ./build.sh
 
-run() { java --enable-native-access=ALL-UNNAMED ${JAVA_OPTS:-} -cp out engine.Main "$@"; }
+run() { java --enable-native-access=ALL-UNNAMED ${JAVA_OPTS:-} -cp out game.Main "$@"; }
 frames() { run maps/school.json --verify "$VIEWS" --size "$SIZE" "$@" | grep -E '^(#|view |lightmap )'; }
 havenFrames() { JAVA_OPTS="-Xmx12g ${JAVA_OPTS:-}" run "$HAVEN" --verify "$HAVEN_VIEWS" --size "$SIZE" --flat "$@" \
     | grep -E '^(#|view |lightmap )'; }
