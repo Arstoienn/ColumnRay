@@ -21,7 +21,15 @@ final class Renderer {
     static final double NEAR = 1e-3;
     static final double MAX_DIST = 80;
     static final int MAX_STOREYS = 8;      // how many storeys can stack at one (x, y)
+    /** Two faces on one plane never tie exactly: a ray meets each through its own endpoints, so
+     *  the two distances differ in the last bits and which is nearer flips as the camera moves.
+     *  Inside this relative distance they are the same surface, and the lower id settles it. */
+    private static final double COPLANAR = Double.parseDouble(System.getProperty("coplanar", "1e-9"));
+
     private static final double TIE = 1e-6;   // when a wall sits exactly on a region boundary, draw the wall first
+
+    /** -Ddebug.who: the albedo buffer carries which surface painted a pixel, not its colour. */
+    static final boolean WHO = Boolean.getBoolean("debug.who");
 
     static final class Camera {
         double x, y;          // position
@@ -292,6 +300,8 @@ final class Renderer {
      * -0.0 and for a NaN distance.
      */
     private static boolean after(Hit a, Hit b) {
+        if (a.t1 - b.t1 <= COPLANAR * a.t1 && b.t1 - a.t1 <= COPLANAR * b.t1)
+            return a.s.id > b.s.id;
         int c = Double.compare(a.t1, b.t1);
         return c > 0 || (c == 0 && a.s.id > b.s.id);
     }
@@ -1628,6 +1638,17 @@ final class Renderer {
             return shKind == 1 ? sideRow(y) : planeRow(y);
         }
 
+        /**
+         * -Ddebug.who: what the albedo buffer carries instead of a colour - the surface kind in
+         * two high bits and the shape's id below them. Two frames a hair apart can then be
+         * differenced to say whether a pixel that changed changed surface or only its shading,
+         * and to name the shape either way. A debugging aid, not part of any picture.
+         */
+        private int who() {
+            Shape s = shKind == 1 ? shShape : shSurf == null ? null : shSurf.owner;
+            return ((shKind & 3) << 21) | (s == null ? 0x1FFFFF : s.id & 0x1FFFFF);
+        }
+
         /** A vertical face: the whole column shares its distance and its u, so only the height
          *  changes down it. */
         private int sideRow(int y) {
@@ -1745,7 +1766,7 @@ final class Renderer {
                     for (int y = s0; y < s1; y++) {
                         texAlbedoSet = false;
                         pixels[y * W + x] = shadeRow(y);
-                        albedo[y * W + x] = texAlbedoSet ? texAlbedo : baseColor;
+                        albedo[y * W + x] = WHO ? who() : texAlbedoSet ? texAlbedo : baseColor;
                     }
                     if (t > 0) {
                         for (int y = s0; y < s1; y++) depth[y * W + x] = (float) t;
