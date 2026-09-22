@@ -1,9 +1,9 @@
 # columnray verify 1
-view classroom 320x180 plain=7fb8f1deda32e770 albedo=46b20d4f57312e1c depth=876ff9ddd83a8173
-view corridor 320x180 plain=0c9eefe0eb1e772c albedo=20608f0974ae1b31 depth=441784dc59ee32ae
-view courtyard 320x180 plain=865923ca0595e63a albedo=574a32a062a8dee2 depth=f857d1f178892eff
-view courtyard-up 320x180 plain=53c315be80d1a661 albedo=db24fbaddf186673 depth=2f8ce9b35c9c3012
-view courtyard-down 320x180 plain=2de39367263e30e8 albedo=e3f26517d6e1762d depth=24d1e143e536bea9
-view pool 320x180 plain=426e8694cf54043c albedo=06428cb17fbae303 depth=8929cacbaec61e05
-view landing 320x180 plain=72ef396300ad3176 albedo=397494f1923ef5db depth=400c72466f089700
-lightmap b7e139a609d5b6ed rays=21640212
+view classroom 320x180 plain=82fbd36dace73f23 albedo=46b20d4f57312e1c depth=876ff9ddd83a8173
+view corridor 320x180 plain=e49de1726f2a04ec albedo=20608f0974ae1b31 depth=441784dc59ee32ae
+view courtyard 320x180 plain=403f4ee91c2edfea albedo=574a32a062a8dee2 depth=f857d1f178892eff
+view courtyard-up 320x180 plain=d3749e24a353f4e9 albedo=db24fbaddf186673 depth=2f8ce9b35c9c3012
+view courtyard-down 320x180 plain=21b21c5534b6dc34 albedo=e3f26517d6e1762d depth=24d1e143e536bea9
+view pool 320x180 plain=8453c82878b68f12 albedo=06428cb17fbae303 depth=8929cacbaec61e05
+view landing 320x180 plain=2a73e28384403145 albedo=397494f1923ef5db depth=400c72466f089700
+lightmap e0c6e0f727337760 rays=19913014

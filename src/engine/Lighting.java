@@ -313,10 +313,12 @@ final class Lighting {
             double zTop = r.sky ? roof : r.ceil;
             edge[r.id] = new LightMap[r.xs.length];
             if (zTop > r.floor) {
+                LightMap[] edges = edge[r.id];
                 for (int e = 0; e < r.xs.length; e++) {
+                    final int fe = e;
                     Face f = face(r.xs, r.ys, e, false);
-                    edge[r.id][e] = add(jobs, new LightMap(0, r.floor, f.len, zTop, texel), f,
-                            r.wallColor, r.wallMat);
+                    walls.add(new Wall(f.ax(), f.ay(), f.ex() / f.len(), f.ey() / f.len(), f.len(), f,
+                            r.wallMat, r.wallColor, r.floor, zTop, m -> edges[fe] = m));
                 }
             }
         }
@@ -328,9 +330,9 @@ final class Lighting {
                     LightMap[] faces = new LightMap[2];
                     side[s.id] = faces;
                     double dx = f0.ex() / f0.len(), dy = f0.ey() / f0.len();
-                    walls.add(new Wall(s.ax, s.ay, dx, dy, s.len, f0, 0, s.mat, s.color, s.zLow, s.hTop,
+                    walls.add(new Wall(s.ax, s.ay, dx, dy, s.len, f0, s.mat, s.color, s.zLow, s.hTop,
                             m -> faces[0] = m));
-                    walls.add(new Wall(s.ax, s.ay, dx, dy, s.len, f1, 1, s.mat, s.color, s.zLow, s.hTop,
+                    walls.add(new Wall(s.ax, s.ay, dx, dy, s.len, f1, s.mat, s.color, s.zLow, s.hTop,
                             m -> faces[1] = m));
                 }
                 case CIRCLE -> {
@@ -343,10 +345,13 @@ final class Lighting {
                             }, s.color, s.mat)};
                 }
                 case POLY -> {
-                    side[s.id] = new LightMap[s.xs.length];
+                    LightMap[] faces = new LightMap[s.xs.length];
+                    side[s.id] = faces;
                     for (int e = 0; e < s.xs.length; e++) {
+                        final int fe = e;
                         Face f = face(s.xs, s.ys, e, true);
-                        side[s.id][e] = add(jobs, new LightMap(0, s.zLow, f.len, s.hTop, texel), f, s.color, s.mat);
+                        walls.add(new Wall(f.ax(), f.ay(), f.ex() / f.len(), f.ey() / f.len(), f.len(), f,
+                                s.mat, s.color, s.zLow, s.hTop, m -> faces[fe] = m));
                     }
                 }
             }
@@ -932,15 +937,18 @@ final class Lighting {
      *  origin would need the u axis reversed, which a view cannot express, and a converter's bands
      *  come off one mesh face and run together anyway. */
     private record Wall(double ax, double ay, double dx, double dy, double len, Face face,
-                        int side, int mat, int color, double z0, double z1,
+                        int mat, int color, double z0, double z1,
                         java.util.function.Consumer<LightMap> slot) implements Piece {
 
         double t() { return ax * dx + ay * dy; }
 
+        // Keyed on the way it faces rather than on which face of which shape it is, so that a
+        // wall segment and the edge of a slab that lie on one line and look the same way are one
+        // surface to the bake, which is what they are to the eye.
         public String plane() {
             double off = -dy * ax + dx * ay;              // how far the line is off the origin
-            return Math.round(dx * 1e6) + "/" + Math.round(dy * 1e6) + "/"
-                    + Math.round(off * 1e4) + "/" + side + "/" + mat;
+            return Math.round(dx * 1e6) + "/" + Math.round(dy * 1e6) + "/" + Math.round(off * 1e4)
+                    + "/" + Math.round(face.nx() * 1e6) + "/" + Math.round(face.ny() * 1e6) + "/" + mat;
         }
 
         public double u0() { return t(); }
