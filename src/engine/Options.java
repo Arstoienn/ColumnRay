@@ -58,14 +58,25 @@ public final class Options {
                 bench = true;
             } else if (args[i].equals("--shear")) {
                 shear = true;
-            } else if (args[i].equals("--gpu")) {
+            } else if (args[i].equals("--shade")) {
+                // One switch rather than two, because it is one choice. Which way it goes by
+                // default depends on the mode - the card for a window, the CPU for anything that
+                // writes depth and albedo - so both directions have to be sayable.
+                if (i + 1 >= args.length) { usage("--shade needs card or cpu"); return false; }
+                String who = args[++i];
+                if (who.equals("card")) { gpu = true; gpuAsked = true; }
+                else if (who.equals("cpu")) gpu = false;
+                else { usage("--shade wants card or cpu, not " + who); return false; }
+            } else if (args[i].equals("--gpu")) {                // the old spelling of --shade card
                 gpu = true;
                 gpuAsked = true;
-            } else if (args[i].equals("--cpu")) {
+            } else if (args[i].equals("--cpu")) {                // and of --shade cpu
                 gpu = false;
             } else if (args[i].equals("--hdr")) {
                 hdr = true;
-            } else if (args[i].equals("--flat")) {
+            } else if (args[i].equals("--unlit") || args[i].equals("--flat")) {
+                // --flat was the old name, and it reads like a camera that does not tilt rather
+                // than a world with no lightmaps in it. Kept, because the scripts say it.
                 flat = true;
             } else if (args[i].equals("--size")) {
                 if (i + 1 >= args.length) { usage("--size needs a WxH value, e.g. 1280x720"); return false; }
@@ -172,10 +183,12 @@ public final class Options {
         System.err.println("  --window  window size; the render is scaled up to it (default " + Host.DEFAULT_WINDOW_W + "x" + Host.DEFAULT_WINDOW_H + ", fitted to the screen)");
         System.err.println("  --feet  starting floor height in metres, to begin on an upper storey (e.g. 3.6)");
         System.err.println("  --shear look up / down the old way (y-shearing) instead of true perspective");
-        System.err.println("  --cpu   shade the frame on the CPU; the card does it by default, and faster");
-        System.err.println("  --gpu   shade on the card even where that is not the default (--verify, --shot)");
+        System.err.println("  --shade card|cpu   where the frame is shaded: the card by default and faster,");
+        System.err.println("          the CPU by default for --verify, --shot and --shots, which write");
+        System.err.println("          depth and albedo. --gpu and --cpu are the old spellings of the two");
         System.err.println("  --hdr   shade in light and roll the highlights off filmically (H toggles it)");
-        System.err.println("  --flat  skip baking the lightmaps and use the old flat lighting");
+        System.err.println("  --unlit skip baking the lightmaps and use the old flat lighting");
+        System.err.println("          (--flat was its old name, and the scripts still say it)");
         System.err.println("  --ss    supersampling factor 1-8: renders at size*N and averages down (default 1).");
         System.err.println("          Rays cast per frame = width * N.");
         System.err.println("  --verify views.txt   print a digest of each view instead of writing files (see test.sh)");
