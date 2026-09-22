@@ -38,23 +38,28 @@ final class GpuLights {
     /** Pack every map into one atlas, tallest first, and record where each one landed. */
     GpuLights(Lighting lighting) {
         Gl.context();
-        List<Lighting.LightMap> maps = lighting.maps();
-        count = maps.size();
-        for (int i = 0; i < count; i++) maps.get(i).gpuIndex = i;
+        // The baked maps are what goes into the atlas; the views onto them get a record each and
+        // no texels of their own, because a view is the same rectangle read from a different u0.
+        List<Lighting.LightMap> maps = lighting.maps(), shown = lighting.shown();
+        int packed = maps.size();
+        count = shown.size();
+        for (int i = 0; i < count; i++) shown.get(i).gpuIndex = i;
+        java.util.IdentityHashMap<Lighting.LightMap, Integer> where = new java.util.IdentityHashMap<>();
+        for (int i = 0; i < packed; i++) where.put(maps.get(i), i);
 
         // Tallest first. A shelf is as tall as the tallest map on it, so one large map among the
         // small ones wastes the whole width of a shelf, and Haven's 3.8 million maps are mostly
         // at the 2x2 floor with a few large ones scattered through them: in the bake's own order
         // that waste alone overflowed a 16384 square, which is the largest a card will allocate.
-        long[] order = new long[count];
-        for (int i = 0; i < count; i++)
+        long[] order = new long[packed];
+        for (int i = 0; i < packed; i++)
             order[i] = ((long) (Integer.MAX_VALUE - maps.get(i).h) << 32) | i;
         Arrays.sort(order);
 
         // Then simply try each square until one holds them, rather than guessing the size from
         // the area and a fudge factor for the waste: the packer itself is the only honest answer
         // to how much room the waste needs, and it runs in a few million steps.
-        int[] px = new int[count], py = new int[count];
+        int[] px = new int[packed], py = new int[packed];
         int want = 64, most = Gl.maxTextureSize();
         while (!packs(maps, order, px, py, want)) {
             if (want >= most)
@@ -69,7 +74,7 @@ final class GpuLights {
         Gl.bindTexture(atlas);
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment texels = arena.allocate((long) side * side * 3 * Float.BYTES);
-            for (int i = 0; i < count; i++) {
+            for (int i = 0; i < packed; i++) {
                 Lighting.LightMap m = maps.get(i);
                 for (int j = 0; j < m.h; j++) {
                     long at = ((long) (py[i] + j) * side + px[i]) * 3;
@@ -86,10 +91,11 @@ final class GpuLights {
             table = new GpuTable(RECORD_TEXELS, count);
             MemorySegment rec = arena.allocate((long) table.width() * table.rows() * 4 * Float.BYTES);
             for (int i = 0; i < count; i++) {
-                Lighting.LightMap m = maps.get(i);
+                Lighting.LightMap m = shown.get(i);
+                int k = where.get(m.base != null ? m.base : m);   // a view borrows its base's rectangle
                 long at = table.at(i);
-                rec.setAtIndex(ValueLayout.JAVA_FLOAT, at, px[i]);
-                rec.setAtIndex(ValueLayout.JAVA_FLOAT, at + 1, py[i]);
+                rec.setAtIndex(ValueLayout.JAVA_FLOAT, at, px[k]);
+                rec.setAtIndex(ValueLayout.JAVA_FLOAT, at + 1, py[k]);
                 rec.setAtIndex(ValueLayout.JAVA_FLOAT, at + 2, m.w);
                 rec.setAtIndex(ValueLayout.JAVA_FLOAT, at + 3, m.h);
                 rec.setAtIndex(ValueLayout.JAVA_FLOAT, at + 4, (float) m.u0);
