@@ -193,12 +193,11 @@ public final class Host {
                         String.valueOf(World.num(g, "lift", 0.0)))));
         Renderer.fogOn = !Boolean.FALSE.equals(lg.get("fog"));
         Renderer.hdr = o.hdr;
-        // The bounce is a switch of its own, and off by default. It is right in principle - a
-        // surface returns the light its colour says it returns, not the sRGB number the colour is
-        // written as - but which picture it improves depends on the map: school gains by it and
-        // Haven loses badly, because the two maps' lighting was tuned against the old bounce in
-        // different ways. See docs/ENGINEERING.md, which has both measurements.
-        Renderer.hdrBake = o.hdr && Boolean.getBoolean("hdr.bake");
+        // The bounce comes with the shading now, because a surface returns the light its colour
+        // says it returns and not the sRGB number the colour is written as. It was a switch of its
+        // own for as long as the maps were tuned against the old bounce; -Dhdr.bake=false is what
+        // is left of that, and it is what the measurements in docs/ENGINEERING.md were taken with.
+        Renderer.hdrBake = o.hdr && !"false".equals(System.getProperty("hdr.bake"));
         this.shear = o.shear;
         setUseGpu(o.gpu);
         if (!o.flat) {
