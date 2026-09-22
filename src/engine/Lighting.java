@@ -43,6 +43,9 @@ final class Lighting {
         final int w, h;
         final float[] rgb;                       // w * h texels, three floats each
         final float[] albedo = new float[3];     // the surface's own colour: what it bounces back
+        float[] pal;                             // when coplanar surfaces share this map: their
+        byte[] own;                              // colours, and which one owns each texel
+        final LightMap base;                     // for a view: the map whose texels these are
         int mat;                                 // its material, for the ceiling panels that glow
         int gpuIndex = -1;                       // where GpuLights packed it, or -1 if it never did
 
@@ -51,7 +54,31 @@ final class Lighting {
          *  before the allocation is refused. Checked in double, and refused with the size in it. */
         private static final long MAX_TEXELS = 1L << 28;
 
+        /**
+         * A wall's u is measured from its own end, and the renderer and the card both hand it over
+         * that way. A view is the same texels read from a different origin: several segments of one
+         * long wall then share one map - one grid, one smooth, one dilate - while each still asks
+         * for its own u. Everything downstream sees an ordinary map, which is why neither the
+         * renderer nor the shader had to learn about any of this.
+         */
+        private LightMap(LightMap base, double u0) {
+            this.base = base;
+            this.u0 = u0;
+            this.v0 = base.v0;
+            this.step = base.step;
+            this.w = base.w;
+            this.h = base.h;
+            this.rgb = base.rgb;
+            this.pal = base.pal;
+            this.own = base.own;
+            this.mat = base.mat;
+            System.arraycopy(base.albedo, 0, albedo, 0, 3);
+        }
+
+        LightMap view(double u0) { return new LightMap(this, u0); }
+
         LightMap(double u0, double v0, double u1, double v1, double step) {
+            this.base = null;
             this.u0 = u0;
             this.v0 = v0;
             this.step = step;
@@ -63,6 +90,20 @@ final class Lighting {
             this.w = (int) wide;
             this.h = (int) tall;
             this.rgb = new float[w * h * 3];
+        }
+
+        /** What the surface under (u, v) bounces back. Nearest texel, not bilinear: a colour
+         *  belongs to a whole surface, so blending two of them across a seam would invent a
+         *  third that nothing in the map is painted. */
+        void albedoMul(double u, double v, float[] out) {
+            float r = albedo[0], g = albedo[1], b = albedo[2];
+            if (pal != null) {
+                int i = (int) Math.max(0, Math.min(w - 1.0, (u - u0) / step + 0.5));
+                int j = (int) Math.max(0, Math.min(h - 1.0, (v - v0) / step + 0.5));
+                int k = (own[j * w + i] & 255) * 3;
+                r = pal[k]; g = pal[k + 1]; b = pal[k + 2];
+            }
+            out[0] *= r; out[1] *= g; out[2] *= b;
         }
 
         double u(int i) { return u0 + i * step; }
@@ -83,6 +124,12 @@ final class Lighting {
             }
         }
     }
+
+    /** Every lightmap that is parameterised in world coordinates - the horizontal ones - starts on
+     *  one lattice shared by the whole map, rather than on its own bounding box. Two surfaces that
+     *  meet then have their texel centres at the same places, so the bilinear filter crosses the
+     *  seam in phase instead of stepping. It is also what lets coplanar surfaces share a map. */
+    private static double snap(double v, double step) { return Math.floor(v / step) * step; }
 
     /** Where a surface's point (u, v) is in the world, and which way the surface faces there. */
     private interface Place { void at(double u, double v, double[] p, double[] n); }
@@ -125,20 +172,28 @@ final class Lighting {
     private final int samples, bounces, shadow, blurs;
     long rays;                                       // shadow and gather rays cast by the bake
     private List<LightMap> allMaps = List.of();      // every map in bake order, for the cache and hash()
+    private final List<LightMap> shownMaps = new ArrayList<>();   // those, plus every view onto them
+    private final List<LightMap> viewMaps = new ArrayList<>();    // the views, made while merging
     private java.nio.file.Path fromCache;            // set when the texels were read back rather than baked
     private final double reach, reflect, sunSoft, lampSize;
 
     /** Every map, in bake order: what GpuLights packs and what LightCache serialises. */
     List<LightMap> maps() { return allMaps; }
 
+    /** Every map the renderer can be handed, which is the baked ones plus the views onto them.
+     *  The bake and the cache want {@link #maps()}; the card's atlas wants these, because a view
+     *  needs a record of its own - the same rectangle read from a different u0. */
+    List<LightMap> shown() { return shownMaps; }
+
     static Lighting bake(World w) {
         long t0 = System.nanoTime();
         Lighting l = new Lighting(w);
-        int texels = 0, maps = 0;
-        for (LightMap[] ms : new LightMap[][] {l.floor, l.ceil, l.top, l.bottom})
-            for (LightMap m : ms) if (m != null) { texels += m.w * m.h; maps++; }
-        for (LightMap[][] ms : new LightMap[][][] {l.side, l.edge})
-            for (LightMap[] f : ms) if (f != null) for (LightMap m : f) if (m != null) { texels += m.w * m.h; maps++; }
+        // Counted over the maps themselves, not over the surfaces that point at them: coplanar
+        // surfaces now share one, and counting them once each would report the texels of a bake
+        // that is no longer being done.
+        long texels = 0;
+        int maps = l.maps().size();
+        for (LightMap m : l.maps()) texels += (long) m.w * m.h;
         double s = (System.nanoTime() - t0) / 1e9;
         if (Boolean.getBoolean("light.stats")) {
             double sum = 0, mx = 0; long n = 0;
@@ -171,6 +226,7 @@ final class Lighting {
         for (LightMap m : allMaps) {
             h.add(m.w).add(m.h).add(m.rgb, m.rgb.length);
             h.add(m.albedo, m.albedo.length).add(m.mat);
+            if (m.pal != null) { h.add(m.pal, m.pal.length); for (byte b : m.own) h.add(b & 255); }
         }
         return h.hex();
     }
@@ -239,6 +295,8 @@ final class Lighting {
         bottom = new LightMap[ns];
         side = new LightMap[ns][];
         List<Job> jobs = new ArrayList<>();
+        List<Flat> flats = new ArrayList<>();                    // collected rather than allocated,
+        List<Wall> walls = new ArrayList<>();                    // so that a plane can share one map
 
         double roof = Double.NEGATIVE_INFINITY;                  // the top of the building
         for (Region r : w.regions) {
@@ -246,10 +304,10 @@ final class Lighting {
             if (r.ceil < Double.POSITIVE_INFINITY) roof = Math.max(roof, r.ceil);
         }
         for (Region r : w.regions) {
-            floor[r.id] = add(jobs, new LightMap(r.minX, r.minY, r.maxX, r.maxY, texel), flat(r.floor, 1),
-                    r.floorColor, r.floorMat);
-            if (!r.sky) ceil[r.id] = add(jobs, new LightMap(r.minX, r.minY, r.maxX, r.maxY, texel),
-                    flat(r.ceil, -1), r.ceilColor, r.ceilMat);
+            flats.add(new Flat(r.floor, 1, r.floorMat, r.floorColor, r.minX, r.minY, r.maxX, r.maxY,
+                    r.xs, r.ys, 0, 0, 0, m -> floor[r.id] = m));
+            if (!r.sky) flats.add(new Flat(r.ceil, -1, r.ceilMat, r.ceilColor, r.minX, r.minY, r.maxX, r.maxY,
+                    r.xs, r.ys, 0, 0, 0, m -> ceil[r.id] = m));
             // Walls seen across this region's boundary can only show between its own floor and
             // ceiling - or, under open sky, up to the roofline.
             double zTop = r.sky ? roof : r.ceil;
@@ -267,9 +325,13 @@ final class Lighting {
                 case SEG -> {
                     double[] xs = {s.ax, s.bx}, ys = {s.ay, s.by};
                     Face f0 = face(xs, ys, 0, true), f1 = f0.flipped();
-                    side[s.id] = new LightMap[] {
-                        add(jobs, new LightMap(0, s.zLow, s.len, s.hTop, texel), f0, s.color, s.mat),
-                        add(jobs, new LightMap(0, s.zLow, s.len, s.hTop, texel), f1, s.color, s.mat)};
+                    LightMap[] faces = new LightMap[2];
+                    side[s.id] = faces;
+                    double dx = f0.ex() / f0.len(), dy = f0.ey() / f0.len();
+                    walls.add(new Wall(s.ax, s.ay, dx, dy, s.len, f0, 0, s.mat, s.color, s.zLow, s.hTop,
+                            m -> faces[0] = m));
+                    walls.add(new Wall(s.ax, s.ay, dx, dy, s.len, f1, 1, s.mat, s.color, s.zLow, s.hTop,
+                            m -> faces[1] = m));
                 }
                 case CIRCLE -> {
                     final double cx = s.cx, cy = s.cy, rad = s.r;
@@ -289,12 +351,31 @@ final class Lighting {
                 }
             }
             if (s.kind != Kind.SEG) {
-                top[s.id] = add(jobs, new LightMap(s.minX, s.minY, s.maxX, s.maxY, texel), topFace(s),
-                        s.color, s.topMat);
-                if (s.zLow > 0.01) bottom[s.id] = add(jobs, new LightMap(s.minX, s.minY, s.maxX, s.maxY, texel),
-                        bottomFace(s), s.color, s.mat);
+                // A sloped top or bottom is its own plane and keeps its own map; only the truly
+                // horizontal ones can share a lattice with their neighbours.
+                double[] pxs = s.kind == Kind.POLY ? s.xs : null, pys = s.kind == Kind.POLY ? s.ys : null;
+                double ccx = s.kind == Kind.CIRCLE ? s.cx : 0, ccy = s.kind == Kind.CIRCLE ? s.cy : 0,
+                        crad = s.kind == Kind.CIRCLE ? s.r : 0;
+                if (s.hx == 0 && s.hy == 0)
+                    flats.add(new Flat(s.h, 1, s.topMat, s.color, s.minX, s.minY, s.maxX, s.maxY,
+                            pxs, pys, ccx, ccy, crad, m -> top[s.id] = m));
+                else
+                    top[s.id] = add(jobs, new LightMap(snap(s.minX, texel), snap(s.minY, texel), s.maxX, s.maxY, texel),
+                            topFace(s), s.color, s.topMat);
+                if (s.zLow > 0.01) {
+                    if (s.zx == 0 && s.zy == 0)
+                        flats.add(new Flat(s.z0, -1, s.mat, s.color, s.minX, s.minY, s.maxX, s.maxY,
+                                pxs, pys, ccx, ccy, crad, m -> bottom[s.id] = m));
+                    else
+                        bottom[s.id] = add(jobs, new LightMap(snap(s.minX, texel), snap(s.minY, texel),
+                                s.maxX, s.maxY, texel), bottomFace(s), s.color, s.mat);
+                }
             }
         }
+
+        List<Piece> pieces = new ArrayList<>(flats);
+        pieces.addAll(walls);
+        merge(jobs, pieces, texel);
 
         // One task per texel row across every surface, spread over all cores. The direct pass
         // stands alone; every gather pass after it reads the totals the pass before wrote, so each
@@ -304,6 +385,8 @@ final class Lighting {
         java.nio.file.Path cacheFile = key == null ? null : LightCache.file(w, key);
         List<LightMap> maps = jobs.stream().map(Job::map).toList();
         allMaps = maps;
+        shownMaps.addAll(maps);
+        shownMaps.addAll(viewMaps);
         if (cacheFile != null) {
             long[] cached = new long[1];
             if (LightCache.load(cacheFile, key, maps, cached)) {
@@ -647,9 +730,7 @@ final class Lighting {
             return;
         }
         m.sample(u, v, out);
-        out[0] *= m.albedo[0];
-        out[1] *= m.albedo[1];
-        out[2] *= m.albedo[2];
+        m.albedoMul(u, v, out);
     }
 
     /** How far along edge e of a polygon the point (x, y) lies - the lightmap's u for that face. */
@@ -782,6 +863,217 @@ final class Lighting {
     }
 
     /** Register a surface to be baked, with the colour and material it bounces light as. */
+
+    /** A horizontal surface waiting for the others on its plane. Its own outline comes along so
+     *  that a texel in the shared map can say which surface it belongs to, and therefore what
+     *  colour it bounces: a region and a shape are polygons, a circle is a centre and a radius,
+     *  and anything else falls back to its bounding box. */
+    /**
+     * One surface waiting for the others in its plane.
+     *
+     * What a plane is depends on the kind of surface - a height and a facing for the horizontal
+     * ones, a line and a side for the upright ones - and each kind measures its (u, v) its own way.
+     * The merge below needs to know none of that. It needs a box, an outline to test a texel
+     * against, where the surface's own u = 0 sits, and somewhere to hand the finished map back.
+     */
+    private interface Piece {
+        String plane();                     // surfaces that answer the same string share a map
+        double u0();
+        double v0();
+        double u1();
+        double v1();                        // its box, in the plane's own frame
+        double origin();                    // where its own u = 0 sits in that frame
+        boolean has(double u, double v);
+        int color();
+        int mat();
+        Place place(double from, double len);   // the plane itself, read from `from`, `len` long
+        LightMap alone(double step);        // the map it would have had with nobody to share with
+        void take(LightMap m);
+
+        default double texels(double step) {
+            return Math.max(2, Math.ceil((u1() - u0()) / step) + 1)
+                 * Math.max(2, Math.ceil((v1() - v0()) / step) + 1);
+        }
+    }
+
+    /** A horizontal surface: (u, v) is (x, y) in the world, so its own u = 0 is the world's. Its
+     *  outline comes along because a region and a shape are polygons and a circle is a radius. */
+    private record Flat(double z, int dir, int mat, int color,
+                        double minX, double minY, double maxX, double maxY,
+                        double[] xs, double[] ys, double cx, double cy, double rad,
+                        java.util.function.Consumer<LightMap> slot) implements Piece {
+
+        public String plane() { return dir + "/" + mat + "/" + Math.round(z * 1000); }
+        public double u0() { return minX; }
+        public double v0() { return minY; }
+        public double u1() { return maxX; }
+        public double v1() { return maxY; }
+        public double origin() { return 0; }
+        public int color() { return color; }
+        public int mat() { return mat; }
+        public Place place(double from, double len) { return flat(z, dir); }
+        public void take(LightMap m) { slot.accept(m); }
+
+        public LightMap alone(double step) {
+            return new LightMap(snap(minX, step), snap(minY, step), maxX, maxY, step);
+        }
+
+        public boolean has(double x, double y) {
+            if (x < minX || x > maxX || y < minY || y > maxY) return false;
+            if (xs != null) return Geometry.pointInPoly(x, y, xs, ys);
+            if (rad > 0) return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= rad * rad;
+            return true;
+        }
+    }
+
+    /** One face of one wall segment: (u, v) is (along the line, height), and its own u = 0 is its
+     *  own end, which is what a view of the shared map has to undo. A segment that runs the other
+     *  way along the line answers a different plane and is left alone - reading it from the shared
+     *  origin would need the u axis reversed, which a view cannot express, and a converter's bands
+     *  come off one mesh face and run together anyway. */
+    private record Wall(double ax, double ay, double dx, double dy, double len, Face face,
+                        int side, int mat, int color, double z0, double z1,
+                        java.util.function.Consumer<LightMap> slot) implements Piece {
+
+        double t() { return ax * dx + ay * dy; }
+
+        public String plane() {
+            double off = -dy * ax + dx * ay;              // how far the line is off the origin
+            return Math.round(dx * 1e6) + "/" + Math.round(dy * 1e6) + "/"
+                    + Math.round(off * 1e4) + "/" + side + "/" + mat;
+        }
+
+        public double u0() { return t(); }
+        public double v0() { return z0; }
+        public double u1() { return t() + len; }
+        public double v1() { return z1; }
+        public double origin() { return t(); }
+        public int color() { return color; }
+        public int mat() { return mat; }
+        public boolean has(double u, double v) { return u >= t() && u <= t() + len && v >= z0 && v <= z1; }
+        public void take(LightMap m) { slot.accept(m); }
+
+        // A wall's u is its own, so its lattice starts at its own end rather than on the world's.
+        public LightMap alone(double step) { return new LightMap(0, z0, len, z1, step); }
+
+        public Place place(double from, double len) {
+            double d = from - t();
+            return new Face(ax + dx * d, ay + dy * d, dx * len, dy * len, len, face.nx(), face.ny());
+        }
+    }
+
+    /**
+     * One lightmap for a plane rather than one for each of the fragments in it.
+     *
+     * A converted map arrives in pieces: Haven's walls and its ground are millions of fragments
+     * that a mesh had to cut and that lie in the same plane. Every piece used to get a map of its
+     * own, its own grid, and its own smooth and dilate, none of which reach across to a neighbour -
+     * so each settled on its own estimate of the same light, and the seams showed as a patchwork of
+     * flat rectangles that no texture has. Sharing one map makes the two sides of a seam one
+     * arithmetic instead of two that agree only as well as their sampling does.
+     *
+     * Only pieces that touch are merged, so a plane with two of them at opposite ends of the map
+     * does not pay for the empty rectangle between them, and a run that would still cost four times
+     * its pieces is left as it was.
+     */
+    private void merge(List<Job> jobs, List<Piece> pieces, double texel) {
+        Map<String, List<Piece>> planes = new java.util.LinkedHashMap<>();
+        for (Piece p : pieces) planes.computeIfAbsent(p.plane(), k -> new ArrayList<>()).add(p);
+        for (List<Piece> plane : planes.values())
+            for (List<Piece> run : runs(plane, texel)) share(jobs, run, texel);
+    }
+
+    /** The pieces of one plane, split into runs whose boxes touch. Comparing every pair would be
+     *  quadratic and a converted plane has hundreds of thousands of pieces on it, so each box is
+     *  hashed into a coarse grid and compared only against what shares a cell with it. */
+    private static List<List<Piece>> runs(List<Piece> plane, double texel) {
+        int n = plane.size();
+        int[] up = new int[n];
+        for (int i = 0; i < n; i++) up[i] = i;
+        double cell = Math.max(texel * 8, 2.0);
+        Map<Long, List<Integer>> grid = new java.util.HashMap<>();
+        for (int i = 0; i < n; i++) {
+            Piece a = plane.get(i);
+            for (long cu = (long) Math.floor((a.u0() - texel) / cell); cu <= (long) Math.floor((a.u1() + texel) / cell); cu++)
+                for (long cv = (long) Math.floor((a.v0() - texel) / cell); cv <= (long) Math.floor((a.v1() + texel) / cell); cv++)
+                    grid.computeIfAbsent(cu * 1_000_003L + cv, k -> new ArrayList<>()).add(i);
+        }
+        for (List<Integer> cellOf : grid.values())
+            for (int x = 0; x < cellOf.size(); x++)
+                for (int y = x + 1; y < cellOf.size(); y++) {
+                    int i = cellOf.get(x), j = cellOf.get(y);
+                    int ra = find(up, i), rb = find(up, j);
+                    if (ra == rb) continue;
+                    Piece a = plane.get(i), b = plane.get(j);
+                    if (a.u1() + texel < b.u0() || b.u1() + texel < a.u0()
+                            || a.v1() + texel < b.v0() || b.v1() + texel < a.v0()) continue;
+                    up[ra] = rb;
+                }
+        Map<Integer, List<Piece>> out = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < n; i++) out.computeIfAbsent(find(up, i), k -> new ArrayList<>()).add(plane.get(i));
+        return new ArrayList<>(out.values());
+    }
+
+    private static int find(int[] up, int i) {
+        while (up[i] != i) i = up[i] = up[up[i]];
+        return i;
+    }
+
+    /** One run: one map if that is worth it, otherwise the map each piece would have had. */
+    private void share(List<Job> jobs, List<Piece> run, double texel) {
+        double u0 = Double.POSITIVE_INFINITY, v0 = Double.POSITIVE_INFINITY;
+        double u1 = Double.NEGATIVE_INFINITY, v1 = Double.NEGATIVE_INFINITY, apart = 0;
+        List<Integer> colors = new ArrayList<>();
+        for (Piece p : run) {
+            u0 = Math.min(u0, p.u0());
+            v0 = Math.min(v0, p.v0());
+            u1 = Math.max(u1, p.u1());
+            v1 = Math.max(v1, p.v1());
+            apart += p.texels(texel);
+            if (!colors.contains(p.color())) colors.add(p.color());
+        }
+        u0 = snap(u0, texel);
+        v0 = snap(v0, texel);
+        double together = Math.max(2, Math.ceil((u1 - u0) / texel) + 1)
+                        * Math.max(2, Math.ceil((v1 - v0) / texel) + 1);
+        if (run.size() == 1 || colors.size() > 256 || together > 4 * apart) {
+            for (Piece p : run)
+                p.take(add(jobs, p.alone(texel), p.place(p.origin(), p.u1() - p.origin()),
+                        p.color(), p.mat()));
+            return;
+        }
+        Piece first = run.get(0);
+        LightMap m = new LightMap(u0, v0, u1, v1, texel);
+        m.mat = first.mat();
+        System.arraycopy(rgb(first.color(), reflect), 0, m.albedo, 0, 3);
+        m.pal = new float[colors.size() * 3];
+        for (int c = 0; c < colors.size(); c++)
+            System.arraycopy(rgb(colors.get(c), reflect), 0, m.pal, c * 3, 3);
+        m.own = new byte[m.w * m.h];
+        // Stamped piece by piece, each over its own box rather than over the whole map, so the work
+        // is the pieces' own texels and not their number times the map's. Later pieces win where two
+        // outlines overlap, and where none of them reaches, the first one's colour stands so that
+        // dilate has something honest to spread.
+        for (Piece p : run) {
+            byte c = (byte) colors.indexOf(p.color());
+            int i0 = (int) Math.max(0, Math.floor((p.u0() - u0) / texel));
+            int i1 = (int) Math.min(m.w - 1, Math.ceil((p.u1() - u0) / texel));
+            int j0 = (int) Math.max(0, Math.floor((p.v0() - v0) / texel));
+            int j1 = (int) Math.min(m.h - 1, Math.ceil((p.v1() - v0) / texel));
+            for (int j = j0; j <= j1; j++)
+                for (int i = i0; i <= i1; i++)
+                    if (p.has(m.u(i), m.v(j))) m.own[j * m.w + i] = c;
+        }
+        jobs.add(new Job(m, first.place(u0, u1 - u0), new boolean[m.w * m.h],
+                new float[m.w * m.h * 3], new float[m.w * m.h * 3]));
+        for (Piece p : run) {
+            if (p.origin() == 0) { p.take(m); continue; }
+            LightMap v = m.view(u0 - p.origin());
+            viewMaps.add(v);
+            p.take(v);
+        }
+    }
+
     private LightMap add(List<Job> jobs, LightMap m, Place place, int color, int mat) {
         float[] a = rgb(color, reflect);
         System.arraycopy(a, 0, m.albedo, 0, 3);
