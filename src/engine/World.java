@@ -274,6 +274,16 @@ public final class World {
             throw new IllegalArgumentException("cell must be a finite positive size in metres");
         for (int i = 0; i < regions.length; i++) regions[i].id = i;
         for (int i = 0; i < shapes.length; i++) shapes[i].id = i;
+        // -Ddebug.shapes=12,34: what those ids are, for reading back an id a debug buffer caught.
+        String want = System.getProperty("debug.shapes", "");
+        if (!want.isEmpty())
+            for (String t : want.split(",")) {
+                Shape s = shapes[Integer.parseInt(t.trim())];
+                System.out.printf("shape %d %s %s a=(%.4f,%.4f) b=(%.4f,%.4f) z=%.4f..%.4f "
+                                + "mat=%d tex=%s img=%s imgB=%s label=%s%n",
+                        s.id, s.kind, s.label, s.ax, s.ay, s.bx, s.by, s.zLow, s.hTop,
+                        s.mat, s.tex != null, s.img != null, s.imgB != null, s.label);
+            }
         double len = Math.hypot(sunX, sunY);
         // Every shading term divides by this. A sun of [0, 0] would make the whole map NaN, which
         // draws as a black frame with nothing to say why.
