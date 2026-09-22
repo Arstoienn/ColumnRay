@@ -85,9 +85,9 @@ the game with `maps/school.json`. Arguments are passed through to `game.Main`:
 | `--fps N` | Frame-time target for dynamic resolution; `0` disables it (default 60) |
 | `--ss N` | Supersampling factor, 1-8 (default 1) |
 | `--feet M` | Starting floor height in metres, e.g. to start on an upper storey |
-| `--cpu` | Shade on the CPU instead of the card; the same picture, three to four times slower |
+| `--shade card\|cpu` | Where the frame is shaded. The card by default and three to four times faster; the CPU by default for `--verify`, `--shot` and `--shots`. `--gpu` and `--cpu` are the old spellings |
 | `--hdr` | Shade in light rather than in sRGB numbers, and roll the highlights off filmically |
-| `--flat` | Skip the lightmap bake and use flat shading |
+| `--unlit` | Skip the lightmap bake and use flat shading (`--flat` was its old name) |
 | `--shear` | Use y-shearing for pitch instead of the perspective warp |
 | `--bench` | Time the renderer over a full turn, level and pitched all the way up |
 | `--shot out.png [x y heading pitch [column]]` | Render one frame headlessly |
