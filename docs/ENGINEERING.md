@@ -557,36 +557,44 @@ light that hit it, so a mid-grey wall returned 0.50 where it really returns 0.22
 of that filled every room with a flat grey glow.
 
 `--hdr` puts the shading right: the colour is read back into light (`Renderer.linOf`, the sRGB
-transfer), the light is applied there, and the result comes back out through a filmic curve and
-the sRGB encode. The bounce is a second switch, `-Dhdr.bake=true`, for the reason below. The old per-channel knee at 200 is still there for the old
+transfer), the light is applied there, the bake bounces the same way, and the result comes back
+out through a filmic curve and the sRGB encode. The old per-channel knee at 200 is still there for the old
 path: it compresses each channel separately, so a bright red saturates in red first and shifts hue
 on the way to white, where the ACES fit rolls the three together the way a film stock does.
 
-### Why the bounce is a switch of its own
+### What the maps had to catch up on
 
-The two halves were measured apart, on both maps. School's courtyard and Haven's spot7, 1280x720:
+The two halves were measured apart, and for a while the bounce was a switch of its own because
+Haven lost badly by it while school gained. School's courtyard, 1280x720:
 
 | school | mean level | contrast (p95 - p5) | chroma |
 |---|---|---|---|
-| sRGB shading, sRGB bounce | 106.9 | 137 | 27.2 |
-| linear shading, sRGB bounce | 140.5 | 147 | 31.2 |
-| linear shading, linear bounce | 119.7 | **149** | **38.8** |
+| sRGB shading, sRGB bounce | 116.3 | 130.7 | 29.0 |
+| linear shading, sRGB bounce | 140.2 | 149.0 | 28.9 |
+| linear shading, linear bounce | 120.3 | **144.1** | **37.3** |
 
-| Haven | mean level | contrast (p95 - p5) | chroma |
-|---|---|---|---|
-| sRGB shading, sRGB bounce | 77.9 | 46 | 10.6 |
-| linear shading, sRGB bounce | 81.8 | **72** | **20.6** |
-| linear shading, linear bounce | 95.4 | 56 | 5.3 |
+The middle row is the warning: fixing the shading and leaving the bake alone makes the picture
+worse in the way that matters - the shading stops over-darkening while the bake goes on
+over-brightening, and the frame washes out. Both halves or neither.
 
-The shading wins on both, and on Haven it is not close: a grey-brown mush becomes wood with grain
-in it. The bounce wins on school and loses badly on Haven, where it flattens the picture and takes
-three quarters of the colour out of it.
+What Haven was losing turned out not to be the bounce at all. `Lighting.rgb` converts *every*
+colour the bake is given, and a light's colour is a colour: the sun's, the sky's, the ambient
+term's and each of the 189 lamps'. Reading them properly makes every source dimmer, and the
+transfer is steepest at the bottom, so the darkest lose the most. Haven's sun, nearly white, lost
+8 per cent. A lamp at `#ffc4ad` lost 20. The ambient term, `#3a3f46`, kept a fifth of what it had -
+and in a corner with no sun in it the ambient term is most of the light there is.
 
-That is not a contradiction, it is the two maps having been tuned against the old bounce in
-different ways - school's lighting was authored by hand against it, and Haven's came out of a
-converter matched to Blender's own render. Which of them is telling the truth is not something a
-measurement of the two pictures can settle, so the bounce stays behind `-Dhdr.bake=true` until the
-maps have caught up, and `--hdr` on its own is the part that is right everywhere.
+The bounce had very little to do with it. Pushing `reflectance` to 0.95 and taking a third bounce,
+which is most of what that end of the map has to give, closed a tenth of the gap on the enclosed
+cameras. Writing the map's light colours as sRGB - the exact inverse, nothing chosen by eye - closed
+all of it: spot7, spot8 and spot9 go from 93.8 / 81.0 / 106.0 mean to 93.2 / 80.9 / 105.0, and from
+23.7 / 13.7 / 26.0 chroma to 23.5 / 13.7 / 25.8, against the same bake reading the old colours as
+light. A map's surfaces are not touched by any of this: a surface's colour is what it reflects, and
+reading that as light is the arithmetic being corrected.
+
+So `--hdr` is the whole change, bake included. `-Dhdr.bake=false` is what is left of the switch,
+and it is there to take the middle row of that table again, not because a map should be run that
+way.
 
 The grade comes last, after the tone curve and the sRGB encode, because that is what a grade is.
 This was got wrong first: a map's `lift` is a fraction of the picture's range - Haven asks for
