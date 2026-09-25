@@ -55,7 +55,7 @@ final class LightCache {
 
     /** The classes whose code decides a texel: the bake, its rays, the geometry, parsing, masks. */
     private static final Set<String> BAKES = Set.of(
-            "Lighting", "Occluder", "World", "Geometry", "Materials", "Json");
+            "Lighting", "Occluder", "World", "Geometry", "Materials", "Json", "Srgb");
 
     /**
      * The classes that deliberately do not, each one a decision that a change to it cannot move a

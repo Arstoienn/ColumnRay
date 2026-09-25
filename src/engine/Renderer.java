@@ -1725,7 +1725,7 @@ final class Renderer {
 
         private int sky(int y) {
             double s = Math.max(0, Math.min(1, (hz - y) / (viewH * 0.9)));
-            if (hdr) return hdrRgb(linOf(205 - 125 * s), linOf(222 - 87 * s), linOf(238 - 28 * s));
+            if (hdr) return hdrRgb(Srgb.linOf(205 - 125 * s), Srgb.linOf(222 - 87 * s), Srgb.linOf(238 - 28 * s));
             return rgb(205 - 125 * s, 222 - 87 * s, 238 - 28 * s);
         }
 
@@ -1825,14 +1825,14 @@ final class Renderer {
     }
 
     private static int shade(int c, double k) {
-        if (hdr) return hdrRgb(linOf((c >> 16) & 255) * k, linOf((c >> 8) & 255) * k, linOf(c & 255) * k);
+        if (hdr) return hdrRgb(Srgb.linOf((c >> 16) & 255) * k, Srgb.linOf((c >> 8) & 255) * k, Srgb.linOf(c & 255) * k);
         return rgb(((c >> 16) & 255) * k, ((c >> 8) & 255) * k, (c & 255) * k);
     }
 
     /** Colour c times k, times a coloured light level from a lightmap. */
     private static int shadeL(int c, double k, float[] L) {
-        if (hdr) return hdrRgb(linOf((c >> 16) & 255) * k * L[0], linOf((c >> 8) & 255) * k * L[1],
-                linOf(c & 255) * k * L[2]);
+        if (hdr) return hdrRgb(Srgb.linOf((c >> 16) & 255) * k * L[0], Srgb.linOf((c >> 8) & 255) * k * L[1],
+                Srgb.linOf(c & 255) * k * L[2]);
         return rgb(((c >> 16) & 255) * k * L[0], ((c >> 8) & 255) * k * L[1], (c & 255) * k * L[2]);
     }
 
@@ -1851,9 +1851,9 @@ final class Renderer {
             double factor = tex * k;
             return light == null ? shade(c, factor) : shadeL(c, factor, light);
         }
-        double r = linOf(((c >> 16) & 255) * tex) * k;
-        double g = linOf(((c >> 8) & 255) * tex) * k;
-        double b = linOf((c & 255) * tex) * k;
+        double r = Srgb.linOf(((c >> 16) & 255) * tex) * k;
+        double g = Srgb.linOf(((c >> 8) & 255) * tex) * k;
+        double b = Srgb.linOf((c & 255) * tex) * k;
         return light == null ? hdrRgb(r, g, b) : hdrRgb(r * light[0], g * light[1], b * light[2]);
     }
 
@@ -1863,9 +1863,9 @@ final class Renderer {
             // The image's factors are ratios of sRGB numbers, so they are applied to the colour
             // before it is read as light rather than after: linear(a * b) is not linear(a) times
             // linear(b), and a texel twice as bright is not twice the light.
-            double r = linOf(((c >> 16) & 255) * texture[0]) * k;
-            double g = linOf(((c >> 8) & 255) * texture[1]) * k;
-            double b = linOf((c & 255) * texture[2]) * k;
+            double r = Srgb.linOf(((c >> 16) & 255) * texture[0]) * k;
+            double g = Srgb.linOf(((c >> 8) & 255) * texture[1]) * k;
+            double b = Srgb.linOf((c & 255) * texture[2]) * k;
             return light == null ? hdrRgb(r, g, b) : hdrRgb(r * light[0], g * light[1], b * light[2]);
         }
         double r = ((c >> 16) & 255) * (texture[0] * k);
@@ -1937,42 +1937,29 @@ final class Renderer {
     /**
      * Whether the bake this run is using bounced its light in linear too.
      *
-     * Separate from {@link #hdr} for two reasons. It is decided once, at start-up, where the
-     * shading can be switched while the game is running (the H key). And it is a change of its
-     * own: right in principle, and not yet right for every map, so it waits behind
-     * {@code -Dhdr.bake=true} while the maps that were tuned against the old bounce catch up.
+     * Separate from {@link #hdr} because it is decided once, at start-up, where the shading can be
+     * switched while the game is running (the H key): the bake is on disk by the time the first
+     * frame is drawn, so the H key cannot change what bounced it.
+     *
+     * It followed {@code --hdr} once the maps that had been tuned against the old bounce caught
+     * up, so the two halves now travel together and {@code -Dhdr.bake=false} is what parts them:
+     * shade in light but bounce in sRGB, which is the middle row of the table in
+     * docs/ENGINEERING.md and is there to reproduce it, not to run a map with.
      */
     static boolean hdrBake = false;
     static double exposure = Double.parseDouble(System.getProperty("hdr.exposure", "0.696"));
 
-    /** sRGB byte to light, with one spare entry so a fractional index can interpolate. */
-    private static final double[] TO_LIGHT = new double[257];
     /** Light 0..1 back to an sRGB level, 0 to 255 and not yet rounded: the grade still has to be
-     *  applied to it, and rounding twice loses more than the table's own step. */
+     *  applied to it, and rounding twice loses more than the table's own step. The other
+     *  direction is {@link Srgb#linOf}, which is a class of its own because the bake reads it. */
     private static final double[] TO_BYTE = new double[16385];
 
     static {
-        for (int i = 0; i <= 256; i++) {
-            double v = Math.min(1.0, i / 255.0);
-            TO_LIGHT[i] = v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-        }
         for (int i = 0; i < TO_BYTE.length; i++) {
             double v = i / (double) (TO_BYTE.length - 1);
             double s = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
             TO_BYTE[i] = s * 255;
         }
-    }
-
-    /** How much light an sRGB number stands for. Takes fractions, and numbers past 255: an image's
-     *  factor can brighten a colour past white before anything has been tone mapped. */
-    static double linOf(double v) {
-        if (v <= 0) return 0;
-        if (v >= 255) {
-            double s = v / 255;
-            return Math.pow((s + 0.055) / 1.055, 2.4);
-        }
-        int i = (int) v;
-        return TO_LIGHT[i] + (TO_LIGHT[i + 1] - TO_LIGHT[i]) * (v - i);
     }
 
     private static double toLevel(double v) {
