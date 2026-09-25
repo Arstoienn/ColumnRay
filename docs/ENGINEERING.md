@@ -442,6 +442,20 @@ the fix this section first recommended. What would actually help is making the m
 boundaries themselves agree - snapping the scaled coordinate before `floor` and `frac` with the
 same epsilon on both sides - and that is a change to `Materials`, not to the buffer.
 
+**The width does not cancel, and that one was real (2026-09-25).** The paragraph above is about
+rows, and it is right about rows; the same question about columns has the opposite answer. The
+warp reads the window `[cx - needW/2, cx + needW/2)` out of the render buffer, `cx` is
+`Renderer.centerX()` and therefore `srcW / 2.0`, and `needW` is even by construction - so an odd
+`srcW` puts `x0 = floor(cx - needW/2)` half a column off the centre the rays are measured from,
+and every ray in the frame moves with it. The overscan only ever grows, so this is a picture that
+depends on what was rendered before it: look up until the buffer grows to an odd width, look level
+again, and the frame is not the one you were looking at a moment ago. `--shots` hid it by forcing
+every camera level, and the golden frames held it rather than caught it - `landing` is level and
+comes after two tilted cameras, and its digest was the shifted one. `Host.preparePitch` now rounds
+`srcW` up to even, which costs at most one column and makes the window exact at every size; the
+golden frames were re-blessed onto the values that no longer depend on the order they are rendered
+in, and `tests/views/school.txt` says so.
+
 **The frame-time tail on Haven is mostly where the camera is pointing, not the collector.** This
 was first written down the other way round, on the strength of a p99 and a `-Xlog:gc` log read
 side by side, and `-Dbench.dump` exists to tell the two apart: it writes every frame of the turn
@@ -845,6 +859,7 @@ they were before the split.
 | `src/engine/Geometry.java` | ray vs segment / circle / convex polygon; distance helpers for collision |
 | `src/engine/World.java` | region and shape data, JSON loading, acceleration grid, point queries |
 | `src/engine/Materials.java` | procedural and image textures, mip levels, anisotropic filtering, masks |
+| `src/engine/Srgb.java` | an sRGB number as light; its own class because `LightCache` has to key a bake on it |
 | `src/engine/Lighting.java` | the baked lightmaps: sun, sky, lamps, shadows and bounced light |
 | `src/engine/LightCache.java` | those lightmaps on disk, keyed by the map, the settings and the bake's own code |
 | `src/engine/Occluder.java` | line of sight and nearest hit for a ray anywhere in the world |
