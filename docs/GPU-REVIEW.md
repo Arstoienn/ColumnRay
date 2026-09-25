@@ -73,6 +73,14 @@ is a good idea and it is not done. The present check renders at a fixed size wit
 level, so nothing it says covers the warp or the growth path, and the resize bug above is exactly
 the kind of thing it would have caught. It is the first thing to pick up.
 
+> **Done, and this paragraph outlived it.** `--gpu-verify` is that check: it drives `Host.frame`
+> on both paths at five tilts a camera and exits non-zero on the picture, and since 2026-09-25 it
+> also steps the render size one rung of the ladder per comparison, odd widths included. `GpuCheck`
+> stayed what it was and is now the diagnostic rather than the gate - it is the one that names the
+> surface behind the worst pixel. This note is here because the paragraph above was read as current
+> on 2026-09-25 and sent somebody off to build what already existed; the rest of this document is a
+> record of one day and is left as it was written.
+
 **Its reading of the timing columns.** It objected to `GpuCheck` publishing a minimum of twelve
 runs as a performance number. That is fair, and it is worth saying that no performance claim on
 this branch comes from there: every number quoted in `ENGINEERING.md` is from `--bench`, which is

@@ -274,6 +274,18 @@ last and lands on whatever height the warp asks for rather than a round number. 
 away at each tilt until the per-column lists stop growing, because those start small and double
 when a column runs out, so the first frames at a new tilt hand rows back to the CPU as designed.
 
+**The render size moves too, one rung of `DynamicResolution.LADDER` per comparison (2026-09-25).**
+That is the other half of the same rebuild: a tilt grows the overscan buffer under a fixed render
+size, while a rung change throws the render size itself away and remakes every buffer from the
+renderer's pixels outward. It costs no extra frames - the frames are being rendered anyway - and
+the rungs wrap rather than climb, so the card's resources are built smaller as well as larger,
+which a ladder that only went up would never ask for. `./test.sh --gpu` passes `--window` at the
+render size so the ladder lands on 160 to 320 columns instead of 960 to 1920: eight sizes, three
+of them an odd number of columns wide, and 180x101 odd in both. The last is the case nothing else
+here reaches, and the one the render buffer's width being rounded up to even exists to survive.
+The trade is fewer pixels compared at any one size for many more configurations compared, which
+is the right way round for a check whose job is structural.
+
 Its verdict is about the picture and not about the rounding. The two are never identical, and a
 few pixels a frame land exactly on the hard edge of a procedural material - a plank line, a brick
 course - where float and double fall on opposite sides and disagree by tens of levels. So the
@@ -441,6 +453,20 @@ an even number of rows would therefore change nothing, which is worth writing do
 the fix this section first recommended. What would actually help is making the material
 boundaries themselves agree - snapping the scaled coordinate before `floor` and `frac` with the
 same epsilon on both sides - and that is a change to `Materials`, not to the buffer.
+
+**The width does not cancel, and that one was real (2026-09-25).** The paragraph above is about
+rows, and it is right about rows; the same question about columns has the opposite answer. The
+warp reads the window `[cx - needW/2, cx + needW/2)` out of the render buffer, `cx` is
+`Renderer.centerX()` and therefore `srcW / 2.0`, and `needW` is even by construction - so an odd
+`srcW` puts `x0 = floor(cx - needW/2)` half a column off the centre the rays are measured from,
+and every ray in the frame moves with it. The overscan only ever grows, so this is a picture that
+depends on what was rendered before it: look up until the buffer grows to an odd width, look level
+again, and the frame is not the one you were looking at a moment ago. `--shots` hid it by forcing
+every camera level, and the golden frames held it rather than caught it - `landing` is level and
+comes after two tilted cameras, and its digest was the shifted one. `Host.preparePitch` now rounds
+`srcW` up to even, which costs at most one column and makes the window exact at every size; the
+golden frames were re-blessed onto the values that no longer depend on the order they are rendered
+in, and `tests/views/school.txt` says so.
 
 **The frame-time tail on Haven is mostly where the camera is pointing, not the collector.** This
 was first written down the other way round, on the strength of a p99 and a `-Xlog:gc` log read
@@ -845,6 +871,7 @@ they were before the split.
 | `src/engine/Geometry.java` | ray vs segment / circle / convex polygon; distance helpers for collision |
 | `src/engine/World.java` | region and shape data, JSON loading, acceleration grid, point queries |
 | `src/engine/Materials.java` | procedural and image textures, mip levels, anisotropic filtering, masks |
+| `src/engine/Srgb.java` | an sRGB number as light; its own class because `LightCache` has to key a bake on it |
 | `src/engine/Lighting.java` | the baked lightmaps: sun, sky, lamps, shadows and bounced light |
 | `src/engine/LightCache.java` | those lightmaps on disk, keyed by the map, the settings and the bake's own code |
 | `src/engine/Occluder.java` | line of sight and nearest hit for a ray anywhere in the world |
