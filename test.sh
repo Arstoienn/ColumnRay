@@ -140,7 +140,10 @@ fi
 # growing under it, the card's buffers being rebuilt around that - at five tilts per camera.
 if [ "$mode" = gpu ]; then
     echo "== gpu =="
-    run maps/school.json --gpu-verify "$VIEWS" --size "$SIZE" || fail=1
+    # --window at the render size so that DynamicResolution's ladder lands on sizes worth
+    # checking rather than on eight steps between 960 and 1920: the rungs are then 160 to 320
+    # columns, three of them odd, and the whole sweep stays as quick as the rest of this script.
+    run maps/school.json --gpu-verify "$VIEWS" --size "$SIZE" --window "$SIZE" || fail=1
 fi
 
 exit $fail
