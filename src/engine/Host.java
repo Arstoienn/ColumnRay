@@ -568,6 +568,20 @@ public final class Host {
         warp.plan(pitch, shear, RW, RH, renderer.focal());
         if (warp.needW() > srcW || warp.needH() > srcH) {        // grow only: an unused margin costs nothing
             srcW = Math.max(srcW, (int) (warp.needW() * 1.1));
+            // An even number of columns, always.
+            //
+            // The warp reads the window [cx - needW/2, cx + needW/2) out of the buffer, cx is the
+            // renderer's centerX() and therefore srcW/2.0, and needW is even by construction. So
+            // an odd buffer puts the window half a column off the centre the rays are measured
+            // from, and every ray in the frame moves with it. Which is a picture that depends on
+            // how tall an earlier frame was: look up until the overscan grows the buffer to an odd
+            // width, look level again, and the frame is not the one you were looking at before.
+            //
+            // The height has no such problem and is left alone. The warp sets c.pitch to
+            // hz - srcH/2.0 and the renderer puts the horizon at srcH/2.0 + c.pitch, so srcH
+            // cancels exactly - which is what docs/GPU-REVIEW.md found when it went looking for
+            // this in the wrong dimension.
+            srcW += srcW & 1;
             srcH = Math.max(srcH, (int) (warp.needH() * 1.1));
             src = new int[srcW * srcH];
             renderer.resize(srcW, srcH, src);

@@ -4,6 +4,12 @@
 # A closed room with a lit ceiling panel; an open-air region with sky, water and a lawn; the
 # pitch warp at both extremes, which is where the overscan and the row resampling bite; and an
 # upper storey, so the acceleration grid is asked for cells with two floors in them.
+#
+# The order matters as much as the cameras. `landing` is level and comes last, after the two
+# tilted ones, because the overscan buffer only ever grows: a level frame rendered after a tilted
+# frame is rendered into a bigger buffer than one rendered on its own, and until the buffer was
+# made an even number of columns wide it was half a column off for it. So these four digests are
+# also the test that a frame does not depend on which frames came before it.
 classroom       13      4      90      0     -
 corridor        16     9.8      0      0     -
 courtyard       16    21.6   -100      0     -
