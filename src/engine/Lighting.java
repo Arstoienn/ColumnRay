@@ -1099,7 +1099,7 @@ final class Lighting {
     /**
      * A surface's reflectance, which is how much of the light that lands on it comes back.
      *
-     * Under {@code --hdr} that is read out of the colour as light (Renderer.linOf). The old way
+     * Under {@code --hdr} that is read out of the colour as light (Srgb.linOf). The old way
      * takes the sRGB byte over 255 and uses it as a fraction, which for a mid-grey wall is 0.50
      * where the wall really returns 0.22 - so every bounce puts back more than twice the light it
      * should, and two bounces of that is what fills a room with a flat grey glow. It is the same
@@ -1109,8 +1109,8 @@ final class Lighting {
      */
     private static float[] rgb(int c, double k) {
         if (Renderer.hdrBake)
-            return new float[] {(float) (Renderer.linOf((c >> 16) & 255) * k),
-                    (float) (Renderer.linOf((c >> 8) & 255) * k), (float) (Renderer.linOf(c & 255) * k)};
+            return new float[] {(float) (Srgb.linOf((c >> 16) & 255) * k),
+                    (float) (Srgb.linOf((c >> 8) & 255) * k), (float) (Srgb.linOf(c & 255) * k)};
         return new float[] {(float) (((c >> 16) & 255) / 255.0 * k), (float) (((c >> 8) & 255) / 255.0 * k),
                 (float) ((c & 255) / 255.0 * k)};
     }
