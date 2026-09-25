@@ -195,6 +195,15 @@ public final class Capture {
      * than the last and so exercises the rebuild, and the heights it lands on are whatever the
      * warp asks for rather than round numbers.
      *
+     * The render size moves too, one rung of {@link DynamicResolution#LADDER} per comparison. That
+     * is the other half of the same rebuild and it costs nothing extra: the frames are being
+     * rendered anyway, and rendering each of them at a different size means every comparison here
+     * is also a resize, with the card's textures, its span mask and the overscan buffer all made
+     * again underneath it. It matters that the sizes are the ladder's own and not round numbers -
+     * with {@code --window} at the render size the rungs land on 213, 267 and 293 columns wide as
+     * well as 320, so an odd render width is covered, which is a case nothing else here reaches
+     * and which the buffer's own width being rounded up to even is there to survive.
+     *
      * One trap is worth naming. With the card on, the renderer is told to leave the rows the card
      * will draw uncoloured; turning the card off for the reference frame without undoing that
      * would compare against a picture with holes in it. Hence the pairing below, and hence
@@ -209,10 +218,11 @@ public final class Capture {
         // same camera at several tilts checks it several times over. That is a little wasted work
         // and no wrong answer.
         double[] pitches = {0, 8, 17, 25, Math.toDegrees(h.pitchLimit())};
-        int worstAll = 0;
+        int worstAll = 0, rung = h.scaleIndex();
+        java.util.Set<String> sizes = new java.util.LinkedHashSet<>();
         long failed = 0, pixels = 0, drops = 0, notGiven = 0;
-        System.out.printf("%-12s %6s %10s %8s %8s %8s %8s %8s %12s%n",
-                "view", "pitch", "buffer", "worst", "mean", "over 8", "cpu px", "dropped", "per column");
+        System.out.printf("%-12s %6s %10s %10s %8s %8s %8s %8s %8s %12s%n",
+                "view", "pitch", "render", "buffer", "worst", "mean", "over 8", "cpu px", "dropped", "per column");
         for (String line : Files.readAllLines(list)) {
             String t = line.trim();
             if (t.isEmpty() || t.startsWith("#")) continue;
@@ -220,6 +230,12 @@ public final class Capture {
             if (f.length < 5) { System.err.println("skipping: " + t); continue; }
             exactFeet = f.length > 5 && !f[5].equals("-") ? Double.parseDouble(f[5]) : Double.NaN;
             for (double pitch : pitches) {
+                // One rung along before anything is rendered, so the pair below is compared at one
+                // size and the resize happens between comparisons rather than inside one. It wraps
+                // rather than climbing, because a step down tears the card's resources out and
+                // builds them smaller, which a ladder that only ever went up would never ask for.
+                rung = (rung + 1) % Host.scaleRungs();
+                h.stepScale(rung - h.scaleIndex());
                 // Frames thrown away until the lists stop growing: they start small and double
                 // when a column runs out, so the first frames at a new tilt legitimately hand rows
                 // back to the CPU. What is being checked is the steady state, not the climb to it,
@@ -263,9 +279,10 @@ public final class Capture {
                 pixels += (long) h.W * h.H;
                 drops += h.gpuDropped();
                 notGiven += skipped;
-                System.out.printf("%-12s %6.0f %10s %8d %8.3f %8d %8d %8d %12s%n", f[0], pitch,
-                        h.srcW + "x" + h.srcH, worst, (double) sum / (h.W * h.H), over,
-                        skipped, h.gpuDropped(), h.gpuMost());
+                sizes.add(h.W + "x" + h.H);
+                System.out.printf("%-12s %6.0f %10s %10s %8d %8.3f %8d %8d %8d %12s%n", f[0], pitch,
+                        h.W + "x" + h.H, h.srcW + "x" + h.srcH, worst, (double) sum / (h.W * h.H),
+                        over, skipped, h.gpuDropped(), h.gpuMost());
             }
         }
         // What this is allowed to find, and what it is not.
@@ -281,6 +298,9 @@ public final class Capture {
         System.out.printf("%nworst %d of 255 anywhere; %d of %d pixels over 8 (%.4f%%); "
                         + "%d pixels the card was not given; %d dropped%n",
                 worstAll, failed, pixels, bad, notGiven, drops);
+        System.out.printf("%d render sizes, %d of them an odd number of columns wide: %s%n",
+                sizes.size(), sizes.stream().filter(z -> Integer.parseInt(z.split("x")[0]) % 2 == 1).count(),
+                String.join(" ", sizes));
         // Dropping is not failing. A column with no room for another entry hands its rows back to
         // the CPU, and this very run is the proof that the picture survives it: the frames that
         // dropped sixty thousand entries between them still agreed to within four levels. So a
