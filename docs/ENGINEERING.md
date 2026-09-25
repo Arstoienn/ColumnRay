@@ -274,6 +274,18 @@ last and lands on whatever height the warp asks for rather than a round number. 
 away at each tilt until the per-column lists stop growing, because those start small and double
 when a column runs out, so the first frames at a new tilt hand rows back to the CPU as designed.
 
+**The render size moves too, one rung of `DynamicResolution.LADDER` per comparison (2026-09-25).**
+That is the other half of the same rebuild: a tilt grows the overscan buffer under a fixed render
+size, while a rung change throws the render size itself away and remakes every buffer from the
+renderer's pixels outward. It costs no extra frames - the frames are being rendered anyway - and
+the rungs wrap rather than climb, so the card's resources are built smaller as well as larger,
+which a ladder that only went up would never ask for. `./test.sh --gpu` passes `--window` at the
+render size so the ladder lands on 160 to 320 columns instead of 960 to 1920: eight sizes, three
+of them an odd number of columns wide, and 180x101 odd in both. The last is the case nothing else
+here reaches, and the one the render buffer's width being rounded up to even exists to survive.
+The trade is fewer pixels compared at any one size for many more configurations compared, which
+is the right way round for a check whose job is structural.
+
 Its verdict is about the picture and not about the rounding. The two are never identical, and a
 few pixels a frame land exactly on the hard edge of a procedural material - a plank line, a brick
 course - where float and double fall on opposite sides and disagree by tens of levels. So the
