@@ -1,10 +1,11 @@
+# maps/haven a881d8dbd937d54b61ed77f49306e5097b9f46a6
 # columnray verify 1
-view spot4 320x180 plain=778985401954d048 albedo=c09314bf26fe1b1f depth=c4a51134c6b513d3
-view spot6 320x180 plain=248d8ef1691c16a1 albedo=c1953f469cbb4df3 depth=9f93cff0bfdf5f79
-view spot7 320x180 plain=47d639993e66ba1a albedo=030c07a62ef8e95e depth=02699a2331b41914
-view spot8 320x180 plain=b01cd81306d0f4d2 albedo=fd15f70470941ed5 depth=de2ef91ffb24ebff
-view spot9 320x180 plain=65e1af5b49107bd9 albedo=2570920e5ca2ad4f depth=1c55ebf901c268ee
-view spot10 320x180 plain=47a7c1fdea56b210 albedo=cd13ab3cfb15e610 depth=885e9761f12aa15a
-view spot8-up 320x180 plain=f196d8f65faf852a albedo=158eadaa0474d053 depth=4bad6c80609f4346
-view spot6-down 320x180 plain=96004025f1945ee4 albedo=adb69f52f13673e4 depth=72c664f5248fecb7
+view spot4 320x180 plain=7ceb9180d3753151 albedo=989eee5b640f9118 depth=c4a51134c6b513d3
+view spot6 320x180 plain=8359fb23352ae798 albedo=50a40aade97ee696 depth=9f93cff0bfdf5f79
+view spot7 320x180 plain=73d62ff3f9ca6c0a albedo=030c07a62ef8e95e depth=02699a2331b41914
+view spot8 320x180 plain=a73916e2df68afcf albedo=fd15f70470941ed5 depth=de2ef91ffb24ebff
+view spot9 320x180 plain=cebd802839659f36 albedo=e20bdc2640bcbe6b depth=1c55ebf901c268ee
+view spot10 320x180 plain=d22019481491c9e7 albedo=efe0a9da21742ae0 depth=885e9761f12aa15a
+view spot8-up 320x180 plain=01d5f00030c32fe8 albedo=158eadaa0474d053 depth=4bad6c80609f4346
+view spot6-down 320x180 plain=4ce5de22ebb9913a albedo=adb69f52f13673e4 depth=72c664f5248fecb7
 lightmap - rays=0   # --flat
