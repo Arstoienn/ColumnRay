@@ -178,10 +178,11 @@ public final class Options {
         System.err.println(problem);
         System.err.println("usage: java -cp out game.Main [map.json] [--size WxH] [--ss N] [--bench]");
         System.err.println("       java -cp out game.Main [map.json] [--size WxH] [--ss N] --shot out.png [x y angle pitch [column]]");
-        System.err.println("       java -cp out game.Main [map.json] [--size WxH] --shots views.txt   (one \"out.png x y feet heading\" per line)");
+        System.err.println("       java -cp out game.Main [map.json] [--size WxH] --shots views.txt   (one \"out.png x y feet heading [pitch]\" per line)");
         System.err.println("  --size  render resolution, the ray count (default " + Host.DEFAULT_W + "x" + Host.DEFAULT_H + ")");
         System.err.println("  --window  window size; the render is scaled up to it (default " + Host.DEFAULT_WINDOW_W + "x" + Host.DEFAULT_WINDOW_H + ", fitted to the screen)");
         System.err.println("  --feet  starting floor height in metres, to begin on an upper storey (e.g. 3.6)");
+        System.err.println("  --fps   frame-time target the render size is driven to; 0 keeps it fixed (default 60)");
         System.err.println("  --shear look up / down the old way (y-shearing) instead of true perspective");
         System.err.println("  --shade card|cpu   where the frame is shaded: the card by default and faster,");
         System.err.println("          the CPU by default for --verify, --shot and --shots, which write");
