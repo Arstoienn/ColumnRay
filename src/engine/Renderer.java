@@ -1688,7 +1688,7 @@ final class Renderer {
                     if (albedo != null) textured(p.rgb);
                     return shade(p.rgb, T, p.k0 * fog(t), null);
                 }
-                return shadeS(p.rgb, flatTex(p.mat, t, y), p.k0 * fog(t), null);
+                return shadeS(p.rgb, flatTex(p.mat, t, y), p.k0, fog(t), null);
             }
             double wx = px + rx * t, wy = py + ry * t, f = fog(t);
             if (Materials.emissive(p.mat, wx, wy)) return shade(EMISSIVE, f);   // a light panel is its own light
@@ -1855,6 +1855,22 @@ final class Renderer {
         double g = Srgb.linOf(((c >> 8) & 255) * tex) * k;
         double b = Srgb.linOf((c & 255) * tex) * k;
         return light == null ? hdrRgb(r, g, b) : hdrRgb(r * light[0], g * light[1], b * light[2]);
+    }
+
+    /**
+     * The same, for the one caller whose old expression multiplied by two scalars rather than one.
+     *
+     * They are passed apart rather than multiplied at the call site because double multiplication
+     * is not associative: {@code (tex * k0) * k1} is not bit-for-bit {@code tex * (k0 * k1)}, and
+     * this one caller was folded into the second form when the linear path was added, under a
+     * comment saying the sRGB branch was the old expression to the last bit. It was not. No frame
+     * measured here moved for it - not school's goldens, not Haven's eight `--flat` cameras - which
+     * is why nothing caught it and also why it is worth putting back rather than arguing about: the
+     * branch exists to leave the old picture exactly where it was, and a bit-exact claim is only
+     * worth having if it is true. The linear path folds them, which is what it has always done.
+     */
+    private static int shadeS(int c, double tex, double k0, double k1, float[] light) {
+        return hdr ? shadeS(c, tex, k0 * k1, light) : shadeS(c, tex * k0, k1, light);
     }
 
     /** Image texture factors replace only the procedural scalar; lighting and grading are shared. */
