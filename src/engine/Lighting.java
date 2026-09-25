@@ -1031,14 +1031,19 @@ final class Lighting {
     private void share(List<Job> jobs, List<Piece> run, double texel) {
         double u0 = Double.POSITIVE_INFINITY, v0 = Double.POSITIVE_INFINITY;
         double u1 = Double.NEGATIVE_INFINITY, v1 = Double.NEGATIVE_INFINITY, apart = 0;
-        List<Integer> colors = new ArrayList<>();
+        // Colour to its place in the palette, in the order the pieces brought them. A list and
+        // contains() said the same thing and cost a scan of the palette per piece, which on a run
+        // that turns out to have thousands of colours - it is rejected below, but only once they
+        // have all been counted - is the pieces times the colours, on a plane that can hold
+        // hundreds of thousands of pieces.
+        Map<Integer, Integer> colors = new java.util.LinkedHashMap<>();
         for (Piece p : run) {
             u0 = Math.min(u0, p.u0());
             v0 = Math.min(v0, p.v0());
             u1 = Math.max(u1, p.u1());
             v1 = Math.max(v1, p.v1());
             apart += p.texels(texel);
-            if (!colors.contains(p.color())) colors.add(p.color());
+            colors.putIfAbsent(p.color(), colors.size());
         }
         u0 = snap(u0, texel);
         v0 = snap(v0, texel);
@@ -1055,15 +1060,15 @@ final class Lighting {
         m.mat = first.mat();
         System.arraycopy(rgb(first.color(), reflect), 0, m.albedo, 0, 3);
         m.pal = new float[colors.size() * 3];
-        for (int c = 0; c < colors.size(); c++)
-            System.arraycopy(rgb(colors.get(c), reflect), 0, m.pal, c * 3, 3);
+        for (Map.Entry<Integer, Integer> c : colors.entrySet())
+            System.arraycopy(rgb(c.getKey(), reflect), 0, m.pal, c.getValue() * 3, 3);
         m.own = new byte[m.w * m.h];
         // Stamped piece by piece, each over its own box rather than over the whole map, so the work
         // is the pieces' own texels and not their number times the map's. Later pieces win where two
         // outlines overlap, and where none of them reaches, the first one's colour stands so that
         // dilate has something honest to spread.
         for (Piece p : run) {
-            byte c = (byte) colors.indexOf(p.color());
+            byte c = (byte) (int) colors.get(p.color());
             int i0 = (int) Math.max(0, Math.floor((p.u0() - u0) / texel));
             int i1 = (int) Math.min(m.w - 1, Math.ceil((p.u1() - u0) / texel));
             int j0 = (int) Math.max(0, Math.floor((p.v0() - v0) / texel));
@@ -1099,7 +1104,7 @@ final class Lighting {
     /**
      * A surface's reflectance, which is how much of the light that lands on it comes back.
      *
-     * Under {@code --hdr} that is read out of the colour as light (Renderer.linOf). The old way
+     * Under {@code --hdr} that is read out of the colour as light (Srgb.linOf). The old way
      * takes the sRGB byte over 255 and uses it as a fraction, which for a mid-grey wall is 0.50
      * where the wall really returns 0.22 - so every bounce puts back more than twice the light it
      * should, and two bounces of that is what fills a room with a flat grey glow. It is the same
@@ -1109,8 +1114,8 @@ final class Lighting {
      */
     private static float[] rgb(int c, double k) {
         if (Renderer.hdrBake)
-            return new float[] {(float) (Renderer.linOf((c >> 16) & 255) * k),
-                    (float) (Renderer.linOf((c >> 8) & 255) * k), (float) (Renderer.linOf(c & 255) * k)};
+            return new float[] {(float) (Srgb.linOf((c >> 16) & 255) * k),
+                    (float) (Srgb.linOf((c >> 8) & 255) * k), (float) (Srgb.linOf(c & 255) * k)};
         return new float[] {(float) (((c >> 16) & 255) / 255.0 * k), (float) (((c >> 8) & 255) / 255.0 * k),
                 (float) ((c & 255) / 255.0 * k)};
     }

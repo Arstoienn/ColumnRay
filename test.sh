@@ -80,14 +80,22 @@ if [ "$mode" = haven ] || { [ "$mode" = bless ] && [ -f "$HAVEN" ]; }; then
         echo "skip  haven: $HAVEN is not there. git submodule update --init maps/haven"
     else
         echo "== haven =="
-        got=$(havenFrames)
+        # Which map these digests are of, on the line above them. Haven is a submodule, so it can
+        # move under the golden file without a source file changing, and then a diff here is the
+        # map having been re-exported rather than the engine having drifted - which is a different
+        # thing to do about it. That happened once and went unnoticed for a week: the map's grade
+        # went from 1.0/0.08 to 0.8/0.0 and every camera's pixels with it, while the file here
+        # still held the old map's, because nothing runs --haven unless somebody types it.
+        got=$(printf '# maps/haven %s\n%s' "$(git -C maps/haven rev-parse HEAD 2>/dev/null || echo unknown)" "$(havenFrames)")
         if [ "$mode" = bless ]; then
             printf '%s\n' "$got" > tests/golden/haven-flat.txt
             echo "blessed tests/golden/haven-flat.txt"
         elif diff -u tests/golden/haven-flat.txt <(printf '%s\n' "$got"); then
             echo "ok    haven-flat"
         else
-            echo "FAIL  haven-flat: see the note under the school golden failure; the same applies." >&2
+            echo "FAIL  haven-flat: if only the maps/haven line moved, the map was re-exported and" >&2
+            echo "      this wants ./test.sh --bless in the commit that moves the submodule pointer." >&2
+            echo "      Otherwise see the note under the school golden failure; the same applies." >&2
             fail=1
         fi
     fi
@@ -122,6 +130,7 @@ MSG
     }
     golden school || fail=1
     golden school-flat --flat || fail=1
+    golden school-hdr --hdr || fail=1
 fi
 
 # The card, if this machine has one. Not part of the default run and not in CI: it needs an
@@ -131,7 +140,10 @@ fi
 # growing under it, the card's buffers being rebuilt around that - at five tilts per camera.
 if [ "$mode" = gpu ]; then
     echo "== gpu =="
-    run maps/school.json --gpu-verify "$VIEWS" --size "$SIZE" || fail=1
+    # --window at the render size so that DynamicResolution's ladder lands on sizes worth
+    # checking rather than on eight steps between 960 and 1920: the rungs are then 160 to 320
+    # columns, three of them odd, and the whole sweep stays as quick as the rest of this script.
+    run maps/school.json --gpu-verify "$VIEWS" --size "$SIZE" --window "$SIZE" || fail=1
 fi
 
 exit $fail

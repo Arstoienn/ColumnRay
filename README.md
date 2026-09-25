@@ -91,7 +91,7 @@ the game with `maps/school.json`. Arguments are passed through to `game.Main`:
 | `--shear` | Use y-shearing for pitch instead of the perspective warp |
 | `--bench` | Time the renderer over a full turn, level and pitched all the way up |
 | `--shot out.png [x y heading pitch [column]]` | Render one frame headlessly |
-| `--shots views.txt` | Render several frames in one run, one `out.png x y feet heading` per line |
+| `--shots views.txt` | Render several frames in one run, one `out.png x y feet heading [pitch]` per line |
 | `--verify views.txt` | Render each view and print a digest of it instead of writing files; see Tests |
 
 `--shot` also writes `-plain.png` (no HUD), `-albedo.png` (unshaded surface colour),
@@ -104,7 +104,7 @@ JVM system properties can be set through `JAVA_OPTS`, for example
 |---|---|
 | `light.texel` | Lightmap texel size in metres |
 | `light.stats` | Print lightmap bake statistics |
-| `light.cache`, `light.cache.dir` | `false` bakes without the lightmap cache; the folder it is kept in (`.lightcache`) |
+| `light.cache`, `light.cache.dir`, `light.cache.max` | `false` bakes without the lightmap cache; the folder it is kept in (`.lightcache`); how many megabytes of bakes that folder may hold before the least recently used are dropped (2048, `0` for no limit) |
 | `bench.warmup`, `bench.frames` | Untimed and timed frames for `--bench` (400, 720) |
 | `minimap.debug` | Highlight standable ground the minimap flood did not reach |
 | `grade.sat`, `grade.lift` | Colour grading parameters |
@@ -223,6 +223,7 @@ how many rows it filled.
 | `src/engine/Geometry.java` | Ray intersection with segments, circles and polygons |
 | `src/engine/World.java` | Regions, shapes, JSON loading, acceleration grid |
 | `src/engine/Materials.java` | Procedural and image textures, filtering |
+| `src/engine/Srgb.java` | What an sRGB number is as light; read by the renderer and by the bake |
 | `src/engine/Lighting.java` | Lightmap bake |
 | `src/engine/LightCache.java` | Baked lightmaps on disk, keyed by the map, settings and bake code |
 | `src/engine/Occluder.java` | Line of sight and nearest-hit queries |

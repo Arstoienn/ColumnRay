@@ -16,8 +16,10 @@ __pycache__/
 # The Blender converter, kept beside the engine but not part of it.
 /tools/
 
-# Unit tests are compiled beside the engine, never into it.
-out-test/
-
-# A/B benchmarking keeps the other build beside this one.
-out-base/
+# Every other build put beside that one, under whatever name: out-test/ holds the unit tests,
+# which are compiled beside the engine and never into it; out-base/ holds the other half of an
+# A/B benchmark; out.tmp/ is what build.sh compiles into and leaves behind when javac fails.
+# These were listed one at a time until an out-hq/ from some experiment sat untracked for days,
+# one `git add -A` away from being in the history for good.
+out-*/
+out.tmp/

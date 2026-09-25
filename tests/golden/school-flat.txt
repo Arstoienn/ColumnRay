@@ -2,8 +2,8 @@
 view classroom 320x180 plain=44ec67307ba5aa45 albedo=46b20d4f57312e1c depth=876ff9ddd83a8173
 view corridor 320x180 plain=ad98f49442f430d2 albedo=20608f0974ae1b31 depth=441784dc59ee32ae
 view courtyard 320x180 plain=d52b132cfea26613 albedo=574a32a062a8dee2 depth=f857d1f178892eff
-view courtyard-up 320x180 plain=6744c7245b345507 albedo=db24fbaddf186673 depth=2f8ce9b35c9c3012
-view courtyard-down 320x180 plain=133ce6f8ba93d0d6 albedo=e3f26517d6e1762d depth=24d1e143e536bea9
-view pool 320x180 plain=5a5f2f0549f9f202 albedo=06428cb17fbae303 depth=8929cacbaec61e05
-view landing 320x180 plain=87d1a6b71a8a777c albedo=397494f1923ef5db depth=400c72466f089700
+view courtyard-up 320x180 plain=0f48d60787b6e9a1 albedo=7c47a81e9652f910 depth=8613262b2f6d6464
+view courtyard-down 320x180 plain=18430d61d2e6312c albedo=66cc5ffbd44123c4 depth=8a352fea6a19f7f5
+view pool 320x180 plain=bf928e2fb875f5a0 albedo=dfe877b123cefd10 depth=c06bc42cf5cf116a
+view landing 320x180 plain=f7dd61cb78baa81d albedo=8110d70354a810fe depth=9781d7d7289186c6
 lightmap - rays=0   # --flat
