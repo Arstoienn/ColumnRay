@@ -12,6 +12,11 @@ text, and the glyphs a machine happens to have are not the engine's output.
 
 `school.txt` is the baked bake; `school-flat.txt` is `--flat`, which skips the bake entirely, so a
 change to `Lighting` cannot hide behind a change to the renderer or the other way round.
+`school-hdr.txt` is `--hdr`, which is a third pipeline and not a setting on top of the first: the
+colour is read back into light before the light is applied, the bounce in the bake goes the same
+way, and the frame comes out through a filmic curve. Its lightmap digest differs from `school.txt`'s
+as well as its pixels, which is the point of holding it - without it the whole linear path could
+move and every file here would still be green.
 
 `haven-flat.txt` is the same for the `maps/haven` submodule, from `../views/haven.txt`: six of the
 ten frozen cameras the Blender comparison uses, plus two pitched. Run it with `./test.sh --haven`.
@@ -19,6 +24,14 @@ It is `--flat` because Haven's bake is a quarter of an hour, and it is a target 
 the map is a separate repository that need not be checked out. A change to the renderer should be
 checked against it as well as against school - 3.8 million surfaces exercise the grid, the group
 trees and the mip selection in ways a hand-built demo map cannot.
+
+Its first line names the `maps/haven` commit the digests were taken from, because a submodule can
+move under a golden file without a source file changing, and then a diff here means the map was
+re-exported rather than the engine drifted. That is not a hypothetical: the map's grade went from
+1.0 saturation and 0.08 lift to 0.8 and 0.0 when the lighting was rewritten as sRGB, every camera
+here moved with it, and the file sat stale for a week because nothing runs `--haven` unless
+somebody types it. Bless it in the commit that moves the submodule pointer, the same as for any
+other deliberate change.
 
 ## When these change
 
