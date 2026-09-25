@@ -12,6 +12,11 @@ text, and the glyphs a machine happens to have are not the engine's output.
 
 `school.txt` is the baked bake; `school-flat.txt` is `--flat`, which skips the bake entirely, so a
 change to `Lighting` cannot hide behind a change to the renderer or the other way round.
+`school-hdr.txt` is `--hdr`, which is a third pipeline and not a setting on top of the first: the
+colour is read back into light before the light is applied, the bounce in the bake goes the same
+way, and the frame comes out through a filmic curve. Its lightmap digest differs from `school.txt`'s
+as well as its pixels, which is the point of holding it - without it the whole linear path could
+move and every file here would still be green.
 
 `haven-flat.txt` is the same for the `maps/haven` submodule, from `../views/haven.txt`: six of the
 ten frozen cameras the Blender comparison uses, plus two pitched. Run it with `./test.sh --haven`.

@@ -122,6 +122,7 @@ MSG
     }
     golden school || fail=1
     golden school-flat --flat || fail=1
+    golden school-hdr --hdr || fail=1
 fi
 
 # The card, if this machine has one. Not part of the default run and not in CI: it needs an
