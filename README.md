@@ -223,6 +223,7 @@ how many rows it filled.
 | `src/engine/Geometry.java` | Ray intersection with segments, circles and polygons |
 | `src/engine/World.java` | Regions, shapes, JSON loading, acceleration grid |
 | `src/engine/Materials.java` | Procedural and image textures, filtering |
+| `src/engine/Srgb.java` | What an sRGB number is as light; read by the renderer and by the bake |
 | `src/engine/Lighting.java` | Lightmap bake |
 | `src/engine/LightCache.java` | Baked lightmaps on disk, keyed by the map, settings and bake code |
 | `src/engine/Occluder.java` | Line of sight and nearest-hit queries |
