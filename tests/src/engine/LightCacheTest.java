@@ -68,6 +68,54 @@ final class LightCacheTest {
             Files.deleteIfExists(a);
             Files.deleteIfExists(b);
         }
+
+        prune();
+    }
+
+    /**
+     * The folder is capped, and what goes is what has not been used, not what was baked longest
+     * ago. A bake is never replaced - a changed map or a changed class in BAKES is a different key
+     * and so a different file - so without this the folder is a ratchet, and a week on the bake
+     * leaves a week of Havens on the disk at 40 to 130 MB each.
+     */
+    private static void prune() throws IOException {
+        Path dir = Files.createTempDirectory("columnray-cache");
+        String was = System.getProperty("light.cache.max");
+        try {
+            // Four 1 MB bakes, used oldest to newest, and one temporary file that is not a bake.
+            Path[] bin = new Path[4];
+            for (int i = 0; i < bin.length; i++) {
+                bin[i] = dir.resolve("map-" + i + ".bin");
+                Files.write(bin[i], new byte[1 << 20]);
+                Files.setLastModifiedTime(bin[i], java.nio.file.attribute.FileTime.fromMillis(1_000_000L + i * 1000L));
+            }
+            Path tmp = Files.createTempFile(dir, "bake", ".tmp");
+            Files.write(tmp, new byte[1 << 20]);
+
+            System.setProperty("light.cache.max", "0");
+            LightCache.prune(dir, bin[3]);
+            Check.that(Files.exists(bin[0]), "a limit of 0 is no limit, and nothing is dropped");
+
+            // Room for two, keeping the one just written. The two least recently used go.
+            System.setProperty("light.cache.max", "2");
+            LightCache.prune(dir, bin[3]);
+            Check.that(!Files.exists(bin[0]), "the least recently used bake goes first");
+            Check.that(!Files.exists(bin[1]), "and then the next");
+            Check.that(Files.exists(bin[2]), "the recently used one stays");
+            Check.that(Files.exists(bin[3]), "and so does the bake this run just wrote");
+            Check.that(Files.exists(tmp), "a half-written temporary is sweep()'s to clear up, not this");
+
+            // A cap below one bake leaves the bake it was told to keep rather than deleting it.
+            System.setProperty("light.cache.max", "1");
+            LightCache.prune(dir, bin[3]);
+            Check.that(Files.exists(bin[3]), "the file being kept is never the one dropped to fit");
+        } finally {
+            if (was == null) System.clearProperty("light.cache.max"); else System.setProperty("light.cache.max", was);
+            try (Stream<Path> files = Files.list(dir)) {
+                for (Path f : files.toList()) Files.deleteIfExists(f);
+            }
+            Files.deleteIfExists(dir);
+        }
     }
 
     private static final String MAP = """

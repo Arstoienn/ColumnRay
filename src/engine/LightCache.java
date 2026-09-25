@@ -47,7 +47,8 @@ import java.util.zip.InflaterInputStream;
  * width and height, and the ray count so the log still says what the light cost. A file whose
  * layout does not line up with the world is not trusted: the bake runs as if there were none.
  *
- * -Dlight.cache=false turns it off; -Dlight.cache.dir picks the folder (default .lightcache).
+ * -Dlight.cache=false turns it off; -Dlight.cache.dir picks the folder (default .lightcache);
+ * -Dlight.cache.max is how many megabytes of finished bakes that folder may hold (default 2048).
  */
 final class LightCache {
     private static final int MAGIC = 0x52434c43;                 // "RCLC"
@@ -201,6 +202,7 @@ final class LightCache {
                 ByteBuffer.wrap(buf, 0, n).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(m.rgb);
             }
             rays[0] = r;
+            used(file);
             return true;
         } catch (IOException e) {
             return false;
@@ -218,6 +220,78 @@ final class LightCache {
             }
         } catch (IOException tidyingIsOptional) {
             // Nothing here is worth failing a bake over; the files are a few megabytes at worst.
+        }
+    }
+
+    /**
+     * Mark a bake as used, which is the last time it was read and not the last time it was made.
+     *
+     * The alternative is to evict on age, and age is the wrong measure: the map somebody runs
+     * every day is the one baked longest ago, so age throws away exactly the file that would have
+     * saved the most time. There is no access time to read on every filesystem this runs on, so
+     * the modification time is made to mean "used" by writing it on a hit. Nothing depends on it
+     * being right - a failed touch costs a file its place in the queue, not its contents.
+     */
+    private static void used(Path file) {
+        try {
+            Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+        } catch (IOException tidyingIsOptional) {
+            // A read-only cache directory is a fine thing to have; it just cannot be reordered.
+        }
+    }
+
+    /**
+     * Keep the folder under -Dlight.cache.max megabytes, oldest use first, never the file just
+     * written.
+     *
+     * A bake is only ever added, never replaced: a changed map, a changed texel size or a changed
+     * class in BAKES is a different key and therefore a different file, which is what makes the
+     * cache safe. It is also what makes it grow without limit - a week of work on Lighting leaves
+     * a week of Havens on the disk at 40 to 130 MB each, and nothing ever looked at them again.
+     * Only .bin files are counted and removed; sweep() owns the temporaries.
+     *
+     * 0 turns the limit off. A cap smaller than the bake just written leaves that one file and
+     * says so, rather than deleting what it was asked to keep.
+     */
+    static void prune(Path dir, Path keep) {
+        long max = Long.getLong("light.cache.max", 2048) * 1024 * 1024;
+        if (max <= 0) return;
+        try (Stream<Path> files = Files.list(dir)) {
+            List<Path> bins = new java.util.ArrayList<>();
+            long total = 0;
+            for (Path f : files.toList()) {
+                if (!f.getFileName().toString().endsWith(".bin")) continue;
+                bins.add(f);
+                total += Files.size(f);
+            }
+            if (total <= max) return;
+            bins.sort(java.util.Comparator.comparing(f -> {
+                try {
+                    return Files.getLastModifiedTime(f);
+                } catch (IOException e) {
+                    return java.nio.file.attribute.FileTime.fromMillis(0);   // unreadable goes first
+                }
+            }));
+            long freed = 0;
+            int gone = 0;
+            for (Path f : bins) {
+                if (total <= max) break;
+                if (Files.isSameFile(f, keep)) continue;
+                long n = Files.size(f);
+                if (!Files.deleteIfExists(f)) continue;
+                total -= n;
+                freed += n;
+                gone++;
+            }
+            if (gone > 0)
+                System.out.printf("light cache: dropped %d bake%s not used lately, %,d MB, to stay under %,d MB%n",
+                        gone, gone == 1 ? "" : "s", freed >> 20, max >> 20);
+            if (total > max)
+                System.out.printf("light cache: %,d MB is over the %,d MB limit and the rest is this map's own bake%n",
+                        total >> 20, max >> 20);
+        } catch (IOException tidyingIsOptional) {
+            // The bake is written and the light is right; a folder that could not be tidied is not
+            // worth a word about it on the way out.
         }
     }
 
@@ -255,6 +329,7 @@ final class LightCache {
                 deflater.end();
             }
             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            prune(dir, file);
         } catch (IOException e) {
             System.out.println("light cache: could not write " + file + " (" + e.getMessage() + ")");
             if (tmp != null) try { Files.deleteIfExists(tmp); } catch (IOException ignored) {}
