@@ -104,7 +104,7 @@ JVM system properties can be set through `JAVA_OPTS`, for example
 |---|---|
 | `light.texel` | Lightmap texel size in metres |
 | `light.stats` | Print lightmap bake statistics |
-| `light.cache`, `light.cache.dir` | `false` bakes without the lightmap cache; the folder it is kept in (`.lightcache`) |
+| `light.cache`, `light.cache.dir`, `light.cache.max` | `false` bakes without the lightmap cache; the folder it is kept in (`.lightcache`); how many megabytes of bakes that folder may hold before the least recently used are dropped (2048, `0` for no limit) |
 | `bench.warmup`, `bench.frames` | Untimed and timed frames for `--bench` (400, 720) |
 | `minimap.debug` | Highlight standable ground the minimap flood did not reach |
 | `grade.sat`, `grade.lift` | Colour grading parameters |
