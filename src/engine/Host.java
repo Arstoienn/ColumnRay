@@ -180,6 +180,11 @@ public final class Host {
         this.srcW = RW;
         this.srcH = RH;
         this.src = new int[RW * RH];                    // grows on demand, see preparePitch()
+        // Where --size sits on the ladder the frame-time controller moves along. Worked out here
+        // rather than when the window opens, because stepScale() is public and a headless caller
+        // may use it - and from a scaleIx left at 0 the first step goes to the bottom of the
+        // ladder whatever size the run actually asked for. --gpu-verify does exactly that.
+        this.scaleIx = DynamicResolution.nearest(o.w / (double) o.winW);
         renderer = new Renderer(world, RW, RH, src);
         rayView = new RayView(world, renderer);
         // The map may ask for a grade on the way out; -Dgrade.sat / -Dgrade.lift override it while
@@ -301,6 +306,12 @@ public final class Host {
         wantScale = Math.max(0, Math.min(DynamicResolution.LADDER.length - 1, scaleIx + delta));
     }
 
+    /** Where on the ladder the render size is now, and how many rungs there are: --gpu-verify
+     *  walks them so that every comparison it makes is also a resize. */
+    int scaleIndex() { return scaleIx; }
+
+    static int scaleRungs() { return DynamicResolution.LADDER.length; }
+
     /** Hand the render scale back to the frame-time controller, or take it away again. Does
      *  nothing when --fps 0 asked for a fixed size. */
     public void toggleAutoRes() {
@@ -355,7 +366,6 @@ public final class Host {
             canvas.requestFocus();
         });
 
-        scaleIx = DynamicResolution.nearest(W / (double) winW);
         autoRes = targetFps > 0;
         steer = new DynamicResolution(1000.0 / Math.max(1, targetFps), scaleIx);
         // Ctrl-C, or a shell closing, arrives here rather than stopping the JVM where it stands.
