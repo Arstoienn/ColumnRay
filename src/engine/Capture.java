@@ -295,9 +295,19 @@ public final class Capture {
         System.out.println("ok    the card's frame and the CPU's agree everywhere but the odd edge");
     }
 
-    /** Every view in a file, one per line: "out.png x y feet heading". Baking the lightmaps for
-     *  a map the size of Haven takes a minute and a half, and it is the same bake for every camera,
-     *  so a set of comparison shots belongs in one run rather than one run each. */
+    /**
+     * Every view in a file, one per line: "out.png x y feet heading [pitch]".
+     *
+     * Baking the lightmaps for a map the size of Haven takes a minute and a half, and it is the
+     * same bake for every camera, so a set of comparison shots belongs in one run rather than one
+     * run each.
+     *
+     * The pitch is optional and used to not exist: this forced 0 and {@code --shot} took a pitch
+     * but had no exact standing height, so the three README pictures that want both were rendered
+     * from a build patched by hand and unpatched afterwards, every time the lighting moved. That
+     * is three lines to avoid, {@code --verify} has taken a pitch all along, and a hand-patched
+     * build is not a thing to keep in a document.
+     */
     public void screenshots(Path list) throws Exception {
         for (String line : Files.readAllLines(list)) {
             String t = line.trim();
@@ -305,8 +315,9 @@ public final class Capture {
             String[] f = t.split("\\s+");
             if (f.length < 5) { System.err.println("skipping: " + t); continue; }
             exactFeet = Double.parseDouble(f[3]);
+            double pitch = f.length > 5 && !f[5].equals("-") ? Double.parseDouble(f[5]) : 0;
             screenshot(new File(f[0]), new double[]{Double.parseDouble(f[1]), Double.parseDouble(f[2]),
-                                                    Double.parseDouble(f[4]), 0});
+                                                    Double.parseDouble(f[4]), pitch});
         }
     }
 

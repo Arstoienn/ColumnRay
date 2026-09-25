@@ -91,7 +91,7 @@ the game with `maps/school.json`. Arguments are passed through to `game.Main`:
 | `--shear` | Use y-shearing for pitch instead of the perspective warp |
 | `--bench` | Time the renderer over a full turn, level and pitched all the way up |
 | `--shot out.png [x y heading pitch [column]]` | Render one frame headlessly |
-| `--shots views.txt` | Render several frames in one run, one `out.png x y feet heading` per line |
+| `--shots views.txt` | Render several frames in one run, one `out.png x y feet heading [pitch]` per line |
 | `--verify views.txt` | Render each view and print a digest of it instead of writing files; see Tests |
 
 `--shot` also writes `-plain.png` (no HUD), `-albedo.png` (unshaded surface colour),
