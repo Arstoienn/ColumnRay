@@ -25,6 +25,14 @@ the map is a separate repository that need not be checked out. A change to the r
 checked against it as well as against school - 3.8 million surfaces exercise the grid, the group
 trees and the mip selection in ways a hand-built demo map cannot.
 
+Its first line names the `maps/haven` commit the digests were taken from, because a submodule can
+move under a golden file without a source file changing, and then a diff here means the map was
+re-exported rather than the engine drifted. That is not a hypothetical: the map's grade went from
+1.0 saturation and 0.08 lift to 0.8 and 0.0 when the lighting was rewritten as sRGB, every camera
+here moved with it, and the file sat stale for a week because nothing runs `--haven` unless
+somebody types it. Bless it in the commit that moves the submodule pointer, the same as for any
+other deliberate change.
+
 ## When these change
 
 They are not supposed to. The rule this project runs on is that an optimisation is *proved* not to
