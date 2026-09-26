@@ -30,7 +30,7 @@ import java.awt.geom.Rectangle2D;
 public final class Hud {
     /** The frame's own state: what the HUD reports that is neither the map's nor the player's. */
     public record Status(double fps, int w, int h, int ss, int rays, boolean fisheye, String lighting,
-                         boolean shear, boolean autoRes) {}
+                         boolean shear, boolean autoRes, boolean mouseLook) {}
 
     private final World world;
     private final Host host;
@@ -57,13 +57,17 @@ public final class Hud {
                     player.x, player.y, player.feet,
                     Math.toDegrees(player.pitch), st.shear() ? "y-shearing (old)" : "true perspective"),
             // The controls go by where a key sits, so name each one the way this keyboard labels it.
-            key(Keys.W, Keys.A, Keys.S, Keys.D) + " move   drag mouse / arrows look   Space jump   "
-                    + key(Keys.C) + " crouch   Shift run   " + key(Keys.G) + " fly",
+            key(Keys.W, Keys.A, Keys.S, Keys.D) + " move   "
+                    + (st.mouseLook() ? "mouse looks (Tab frees the pointer)"
+                                      : Host.canMouseLook() ? "Tab mouse look, or drag / arrows"
+                                      : "drag mouse / arrows look")
+                    + "   Space jump   " + key(Keys.C) + " crouch   Shift run   " + key(Keys.G) + " fly",
             key(Keys.LEFT_BRACKET) + " " + key(Keys.RIGHT_BRACKET) + " FOV   " + key(Keys.COMMA) + " "
                     + key(Keys.PERIOD) + " rays   " + key(Keys.V) + (st.autoRes() ? " auto res on   " : " auto res off   ")
                     + key(Keys.F) + " fisheye   " + key(Keys.P) + " pitch   "
                     + key(Keys.L) + " lighting   " + key(Keys.H) + " HDR   " + key(Keys.R) + " ray view   " + key(Keys.M)
-                    + " minimap   Esc quit   hover to pick a column",
+                    + " minimap   Esc quit"
+                    + (st.mouseLook() ? "" : "   hover to pick a column"),
         };
         g.setFont(new Font(Font.DIALOG, Font.PLAIN, 13));
         for (int i = 0; i < lines.length; i++) {
