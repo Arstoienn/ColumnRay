@@ -20,6 +20,9 @@ public final class Options {
     /** --shot's optional "x y heading pitch [column]". */
     public double[] at;
     public boolean bench, shear, flat;
+    /** --play: the game with nothing on the screen but the game - no overlay, no minimap, no
+     *  toggles, no flying. See {@code game.Play}. */
+    public boolean play;
     /** --hdr: shade in light and tone map at the end, instead of multiplying sRGB numbers. */
     public boolean hdr;
     /**
@@ -72,6 +75,8 @@ public final class Options {
                 gpuAsked = true;
             } else if (args[i].equals("--cpu")) {                // and of --shade cpu
                 gpu = false;
+            } else if (args[i].equals("--play")) {
+                play = true;
             } else if (args[i].equals("--hdr")) {
                 hdr = true;
             } else if (args[i].equals("--unlit") || args[i].equals("--flat")) {
@@ -187,6 +192,7 @@ public final class Options {
         System.err.println("  --shade card|cpu   where the frame is shaded: the card by default and faster,");
         System.err.println("          the CPU by default for --verify, --shot and --shots, which write");
         System.err.println("          depth and albedo. --gpu and --cpu are the old spellings of the two");
+        System.err.println("  --play  no overlay, no minimap, no toggles, no flying: just the world");
         System.err.println("  --hdr   shade in light and roll the highlights off filmically (H toggles it)");
         System.err.println("  --unlit skip baking the lightmaps and use the old flat lighting");
         System.err.println("          (--flat was its old name, and the scripts still say it)");
