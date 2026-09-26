@@ -202,7 +202,7 @@ because it is about 290 MB:
 ```bash
 git clone --recursive https://github.com/Arstoienn/ColumnRay.git   # or, in an existing clone:
 git submodule update --init maps/haven
-JAVA_OPTS=-Xmx12g ./run.sh maps/haven/haven.json --feet 3
+JAVA_OPTS=-Xmx8g ./run.sh maps/haven/haven.json --feet 3
 ```
 
 **Mid Doors**

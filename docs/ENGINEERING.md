@@ -178,15 +178,37 @@ the window - past that, extra rays stop being new detail and become anti-aliasin
 ## Where the frame time actually goes
 
 **Every timing in this document was taken at a 67-degree field of view, which was the default until
-2026-09-26.** It is 90 now, and the difference is not uniform: a level frame is within a tenth of
-what it was (school, 1280x720, card: 3.30 ms against 3.56, measured back to back on a cool machine)
-and a frame tilted 45 degrees is nearly twice it (8.60 ms against 16.65, 116 fps against 60), because
-what a wider view adds is overscan for the pitch warp - 2,884 rays against 4,142 - and not anything
-level. The rest of the tables below have not been re-measured: this machine throttles under a
-sustained CPU benchmark hard enough to make the attempt useless (a 67-degree control taken after an
-hour of runs read 29.2 ms where the table here says 20.8, and one pair came out *faster* at 90 than
-at 67), so they want a cool, quiet machine and an afternoon. Ratios measured back to back in one
-sitting are what carries; the absolute numbers are a record of a particular day.
+2026-09-26.** It is 90 now, and the difference is not uniform. On school a level frame is within a
+tenth of what it was (1280x720, card: 3.30 ms against 3.56, and 3.42 when it was measured again a
+day later) and a frame tilted 45 degrees is nearly twice it (8.60 against 16.65 ms, 116 fps against
+60), because what a wider view adds is overscan for the pitch warp - 2,884 rays against 4,142 - and
+nothing at all level.
+
+**On Haven the same change is four times over**, and that is the number to know before widening
+anything again. Re-measured cold on 2026-09-27 - the shipped map, its bake, `--hdr`, the card,
+1920x1080, rested runs, medians of run medians:
+
+| | level | pitch 45 |
+|---|---|---|
+| 67 degrees | 37.1 ms (27 fps) | 59.6 ms (17 fps) |
+| 90 degrees | 46.4 ms (22 fps), runs 42.5-52.4 | 237 ms (4 fps), runs 197-333 |
+
+The 67-degree row reproduces the numbers taken on 2026-09-21 (36.9 and 57.0), which is what says the
+90-degree row is the renderer and not the afternoon. `WORK` says where it goes: tilted, 67 degrees
+walks 4,350 rays over 6.5 cells each testing 55.8 shapes, and 90 degrees walks 6,212 over 14.2
+testing 128.3 - 243,000 shape tests a frame against 797,000. School's frame is shading, which a
+wider view barely touches; Haven's is the ray half, and overscan lands squarely on it. These are
+costs at a fixed render size: with the frame-time controller on, a tilted view on Haven comes back
+as a coarser picture rather than as 4 fps.
+
+Two things that measuring this taught, both worth more than the numbers. **Give Haven `-Xmx8g`, not
+`-Xmx12g`**: its live heap after a collection is 5.3 GB, and 12 on a 16 GB machine lets the JVM sit
+at 6-10 GB resident while the rest of the system swaps - the first attempt at this table had 2 GB of
+swap in use, one frame of 55 seconds and a pair of runs that took 47 minutes. And **the CPU rows
+below have still not been re-measured**: a sustained CPU benchmark throttles this machine far enough
+that a 67-degree control taken after an hour of runs read 29.2 ms where the table says 20.8, and one
+pair came out *faster* at 90 than at 67. Ratios measured back to back in one sitting are what
+carries; the absolute numbers are a record of a particular day.
 
 `--bench` times the raycaster only. With both windows open the loop also has to blit the main view
 and redraw the ray view, and those dominate. Measured in the real windowed loop, 640x360, both
