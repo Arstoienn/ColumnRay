@@ -58,6 +58,11 @@ final class OptionsTest {
         Check.eq(o.startFeet, 3.6, 1e-12, "--feet");
         Check.that(o.flat && o.shear, "--flat and --shear");
         Check.eq(parse("--size", "1280X720").w, 1280, "--size takes a capital X too");
+        Check.that(Double.isNaN(parse("--size", "800x600").fov), "no --fov leaves the renderer's own");
+        Check.eq(parse("--fov", "90").fov, 90.0, 1e-12, "--fov");
+        Check.that(refuses("--fov"), "--fov with nothing after it");
+        Check.that(refuses("--fov", "wide"), "--fov with something that is not an angle");
+        Check.that(refuses("--fov", "170"), "and an angle the projection cannot use");
         Check.that(!parse("--size", "800x600").play, "an ordinary run is the sandbox");
         Check.that(parse("--play").play, "--play asks for the game with nothing on the screen");
         Check.that(!Options.headless(new String[] {"--play"}), "which is a window like any other");

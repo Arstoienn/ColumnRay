@@ -193,6 +193,10 @@ public final class Host {
         // ladder whatever size the run actually asked for. --gpu-verify does exactly that.
         this.scaleIx = DynamicResolution.nearest(o.w / (double) o.winW);
         renderer = new Renderer(world, RW, RH, src);
+        // Before anything else asks: the pitch limit and the overscan the warp needs are both
+        // worked out from the focal length, so a run at --fov 90 must not spend its first frame
+        // deciding how far it may tilt at 67.
+        if (!Double.isNaN(o.fov)) setFov(o.fov);
         rayView = new RayView(world, renderer);
         // The map may ask for a grade on the way out; -Dgrade.sat / -Dgrade.lift override it while
         // one is being found. See Renderer.grade.
