@@ -71,9 +71,16 @@ the game with `maps/school.json`. Arguments are passed through to `game.Main`:
 
 ```bash
 ./run.sh maps/school.json --size 1920x1080
+./run.sh --play                            # no overlay, no toggles: just the world
 ./run.sh --shot a.png 16 21.6 -100 5
 ./run.sh --bench
 ```
+
+`./run.sh` opens the sandbox: every switch the renderer has on a key, four lines of text saying
+what it is doing, a minimap, and a fly mode for looking at a map from outside it. `--play` is the
+same walking with none of that - no overlay, no minimap, no toggles, no flying, and the mouse
+looks about without a button held. It is what to open when the point is the world rather than the
+engine.
 
 ## Command-line options
 
@@ -85,6 +92,7 @@ the game with `maps/school.json`. Arguments are passed through to `game.Main`:
 | `--fps N` | Frame-time target for dynamic resolution; `0` disables it (default 60) |
 | `--ss N` | Supersampling factor, 1-8 (default 1) |
 | `--feet M` | Starting floor height in metres, e.g. to start on an upper storey |
+| `--play` | The game with nothing on the screen but the game: no overlay, no minimap, no toggles, no flying |
 | `--shade card\|cpu` | Where the frame is shaded. The card by default and three to four times faster; the CPU by default for `--verify`, `--shot` and `--shots`. `--gpu` and `--cpu` are the old spellings |
 | `--hdr` | Shade in light rather than in sRGB numbers, and roll the highlights off filmically |
 | `--unlit` | Skip the lightmap bake and use flat shading (`--flat` was its old name) |
@@ -136,25 +144,41 @@ different CPU - and why CI checks them on macOS only.
 
 ## Controls
 
+Both the sandbox and `--play`:
+
 | Input | Action |
 |---|---|
 | `W` `A` `S` `D` | Move |
-| Mouse drag, arrow keys | Look |
-| `Q` / `E` | Turn |
+| Mouse | Look. The pointer is held at the middle of the window and hidden, the way a first-person game has worked for thirty years; where it cannot be held (off macOS) drag with a button down instead |
+| Arrow keys, `Q` / `E` | Look, turn |
 | `Space` / `C` / `Shift` | Jump / crouch / run |
+| `Esc` | Quit |
+
+The sandbox only, because they are switches on the engine rather than on a person:
+
+| Input | Action |
+|---|---|
+| `Tab` | Hand the pointer back, so it can hover a column for the ray view |
 | `G` | Fly: gravity off, Space and crouch go up and down, nothing is solid |
 | `M` | Toggle minimap |
 | `R` | Toggle ray view |
 | `N` | Ray view: keep the player pointing up, or let the world stay put instead |
 | `L` | Toggle baked lighting |
+| `H` | Toggle shading in light and the filmic curve |
 | `F` | Toggle fisheye projection (for comparison) |
 | `P` | Toggle pitch model (for comparison) |
 | `[` / `]` | Field of view |
 | `,` / `.` | Render resolution (disables dynamic resolution) |
 | `V` | Toggle dynamic resolution |
-| `Esc` | Quit |
 
 Movement keys refer to physical key positions, so they stay in place on non-QWERTY layouts.
+
+The walk has a velocity in it rather than a speed: it accelerates to pace in about 70 ms and stops
+about as quickly, a jump keeps the momentum it left the ground with, and a jump asked for just
+after walking off an edge or just before landing is still a jump. The camera bobs a couple of
+centimetres with the stride and dips when a fall lands, which is how a first-person view reports
+speed at all. None of it moves the player differently from where the physics says they are, and
+none of it reaches a screenshot: `Player.cameraMotion` is the switch, and a placed camera is level.
 
 ## Maps
 
@@ -239,11 +263,14 @@ how many rows it filled.
 | `src/engine/Minimap.java` | Minimap |
 | `src/engine/RayView.java` | Top-down ray debug view |
 | `src/engine/Keys.java` | Physical key state |
+| `src/engine/Pointer.java` | Holding the mouse pointer still, so the mouse can look without a button held |
 | `src/engine/Hash.java` | Digests for the golden test |
 | `src/engine/Json.java` | JSON parser (supports `//` comments) |
 | `src/game/Main.java` | Where a run starts: command line, map, engine, then play or capture |
-| `src/game/Sandbox.java` | The game: bindings, toggles, the camera it hands the engine |
-| `src/game/Player.java` | Movement, gravity, crouch and jump |
+| `src/game/Walker.java` | The walking both games share: the body, the bindings, the camera |
+| `src/game/Sandbox.java` | The sandbox: bindings, toggles, the camera it hands the engine |
+| `src/game/Play.java` | `--play`: the same walking with nothing drawn over it |
+| `src/game/Player.java` | Movement, gravity, crouch, jump, and what the camera does about them |
 | `src/game/Hud.java` | Overlay text and minimap drawing |
 | `maps/school.json` | Demo map |
 | `maps/haven/` | Submodule: the Haven map, in [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven) |

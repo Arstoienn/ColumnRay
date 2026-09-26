@@ -1,6 +1,7 @@
 package game;
 
 import engine.Capture;
+import engine.Game;
 import engine.Host;
 import engine.Keys;
 import engine.Options;
@@ -35,7 +36,10 @@ public final class Main {
         if (o.gpu) o.gpu = Host.graphicsCard();
 
         Host host = new Host(World.load(Path.of(o.map)), o);
-        Sandbox game = new Sandbox(host, o.startFeet);
+        // Two games on one engine: the sandbox, which shows what the renderer is doing, and --play,
+        // which shows the world and nothing else. Both are a Game and neither is the engine's
+        // business, so this line is the only place that chooses.
+        Game game = o.play ? new Play(host, o.startFeet) : new Sandbox(host, o.startFeet);
         Capture capture = new Capture(host, game);
         if (o.bench) capture.bench();
         else if (o.verify != null) capture.verify(Path.of(o.verify));

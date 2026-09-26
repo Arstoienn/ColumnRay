@@ -46,10 +46,33 @@ default. Level, the same shot needs nothing.
 
 ## Controls
 
-`WASD` move, drag the mouse or the arrow keys to look, `Space` jump, `C` crouch, `Shift` run,
-`Q`/`E` turn. `R` ray view (closed at start), `M` minimap, `L` baked lighting on and off, `F` fisheye,
-`P` pitch model, `[` `]` field of view, `,` `.` render resolution by hand, `V` dynamic resolution on
-and off, `Esc` quit.
+`WASD` move, the mouse looks, `Space` jump, `C` crouch, `Shift` run, `Q`/`E` turn, `Esc` quit. In the
+sandbox as well: `Tab` hands the pointer back, `G` fly, `R` ray view (closed at start), `M` minimap,
+`L` baked lighting on and off, `H` shading in light, `F` fisheye, `P` pitch model, `[` `]` field of
+view, `,` `.` render resolution by hand, `V` dynamic resolution on and off. `--play` has none of that
+second list, and nothing drawn over the picture either; see "Two games on one engine" below.
+
+**The mouse looks without a button held.** A window is told where the pointer is and never how far
+the hand moved, so the second is had by arranging for the first to be the same every time: the
+pointer is hidden and put back to the middle of the window after every event it reports, and the
+next event's distance from the middle is the movement (`Host.looked`, `Pointer`). Two things make
+that work rather than drift - an event that lands exactly on the middle is the warp's own arrival
+coming back round and must count for nothing, and the warp has to go to the same integer middle the
+deltas are measured against, or every event reads as a flick of one pixel. `CGWarpMouseCursorPosition`
+moves the pointer and needs no permission; `java.awt.Robot` posts an event instead and would need
+Accessibility, which is why it is not used. Off macOS there is no warp, `Host.canMouseLook()` is
+false, and the mouse looks by dragging with a button down, as it always did.
+
+**The walk has a velocity in it.** Moving by `speed * dt` in whatever direction the keys point makes
+the top speed instant in both directions, and makes the air as steerable as the floor. `Player` now
+accelerates a velocity towards what the keys ask for: `GROUND_ACCEL` reaches walking pace in about
+70 ms, `STOP_ACCEL` loses it about as fast, `AIR_ACCEL` is a fifth of that so a jump keeps its
+momentum, and with nothing asked for in the air nothing happens at all. `COYOTE` and `JUMP_BUFFER`
+are the two allowances that make a jump asked for slightly too late or slightly too early still a
+jump; both are under a sixth of a second, which is under what a person can time. The camera bobs
+with the stride and dips on a landing, because in a first-person view speed is read off the picture
+and nothing else. Neither moves the body - both are an offset on `Player.eye()` - and both are zero
+the moment a camera is placed, so no screenshot, digest or golden frame can see them.
 
 **Those are places on the keyboard, not letters.** AWT will not say which key was pressed: on macOS
 it works out the key code for a letter key from the character that key produces under the current
@@ -853,6 +876,12 @@ Where the line falls, and why it falls there:
   positions rather than letters, and `Input` adds the two things every game wants and nobody wants
   to write twice: ignore the keyboard while another application is in front, and fire a tap once
   rather than on every frame the key is held.
+- **Two games on one engine, and the walking is neither's.** `Sandbox` is the instrument: every
+  switch the renderer has on a key, four lines of text over the picture, a minimap, and a fly mode
+  for looking at a map from outside it. `Play` (`--play`) is the same world with none of that -
+  no overlay, no toggles, no flying, the pointer held and hidden. What they share is a body and a
+  set of bindings, which is `Walker`, and what makes two of them possible at all is that neither is
+  the engine: the loop calls `update`, `view` and `overlay` and has no idea which of them it has.
 - **A headless capture asks the game to stand somewhere.** `--shot`, `--shots` and `--verify` read
   a views file whose `feet` column may say "stand on whatever ground is here", which needs a
   collision query and a body height - neither of which `Capture` has any business knowing. So it
@@ -887,11 +916,14 @@ they were before the split.
 | `src/engine/DynamicResolution.java` | the render scale, picked from measured frame time |
 | `src/engine/RayView.java` | the top-down ray view window |
 | `src/engine/Keys.java` | physical key state: the controls go by where a key sits, not by its letter |
+| `src/engine/Pointer.java` | holding the pointer still, which is how a mouse looks instead of pointing |
 | `src/engine/Hash.java` | digests of a frame and of a bake, for the golden test |
 | `src/engine/Json.java` | minimal JSON parser (`//` comments allowed) |
 | `src/game/Main.java` | where a run starts: the command line, the map, the engine, then play or capture |
-| `src/game/Sandbox.java` | the game: the bindings, the toggles, and the camera it hands the engine |
-| `src/game/Player.java` | movement, gravity, steps, crouch and jump |
+| `src/game/Walker.java` | the walking both games share: the body, the bindings, the view it hands over |
+| `src/game/Sandbox.java` | the sandbox: the bindings, the toggles, and the camera it hands the engine |
+| `src/game/Play.java` | `--play`: the same walking with nothing drawn over it |
+| `src/game/Player.java` | movement, gravity, steps, crouch, jump, and what the camera does about them |
 | `src/game/Hud.java` | the overlay text and the minimap, drawn over the frame |
 | `src/engine/Gl.java` | the OpenGL entry points, one line each |
 | `src/engine/GlPlatform.java` | which library holds them and how to get a context; the only per-OS part |

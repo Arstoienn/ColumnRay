@@ -58,6 +58,9 @@ final class OptionsTest {
         Check.eq(o.startFeet, 3.6, 1e-12, "--feet");
         Check.that(o.flat && o.shear, "--flat and --shear");
         Check.eq(parse("--size", "1280X720").w, 1280, "--size takes a capital X too");
+        Check.that(!parse("--size", "800x600").play, "an ordinary run is the sandbox");
+        Check.that(parse("--play").play, "--play asks for the game with nothing on the screen");
+        Check.that(!Options.headless(new String[] {"--play"}), "which is a window like any other");
 
         Options shot = parse("--shot", "a.png", "16", "21.6", "-100", "5");
         Check.eq(shot.shot, "a.png", "--shot's file");
