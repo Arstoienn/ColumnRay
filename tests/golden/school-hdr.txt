@@ -1,9 +1,9 @@
 # columnray verify 1
-view classroom 320x180 plain=2acac16dd05e6831 albedo=46b20d4f57312e1c depth=876ff9ddd83a8173
-view corridor 320x180 plain=4f2e9384ebc06fab albedo=20608f0974ae1b31 depth=441784dc59ee32ae
-view courtyard 320x180 plain=6cd180a423a7872b albedo=574a32a062a8dee2 depth=f857d1f178892eff
-view courtyard-up 320x180 plain=f795c60ecd74d6c6 albedo=c8d24bdc461773bd depth=8613262b2f6d6464
-view courtyard-down 320x180 plain=2cfb4f29fa0d3b7b albedo=66cc5ffbd44123c4 depth=8a352fea6a19f7f5
-view pool 320x180 plain=1d0e51ab2c09d614 albedo=dfe877b123cefd10 depth=c06bc42cf5cf116a
-view landing 320x180 plain=e5835f466eadf609 albedo=eb0789b55538fe75 depth=9781d7d7289186c6
+view classroom 320x180 plain=9c9d7a6ca68ae826 albedo=b2cc45c835a2435c depth=03fe70ad52e99c68
+view corridor 320x180 plain=4871cc66c1699b50 albedo=15f5e316f7bde572 depth=3ae3ae85b3788a35
+view courtyard 320x180 plain=a93be1458004de43 albedo=dc6cb4578afd29aa depth=6ecccec76b8ae161
+view courtyard-up 320x180 plain=a7a7018f56d0ff79 albedo=bd69440966bff1fc depth=436a2181989eb41e
+view courtyard-down 320x180 plain=4f1b5af723adf4cf albedo=ba2c2855e788182f depth=c993f707e770101d
+view pool 320x180 plain=0542ccccbc7d16b0 albedo=4c218ba11b748c21 depth=5e5ebd10f833cb27
+view landing 320x180 plain=58324a3d7c2b83fe albedo=1b64f949c0a5a483 depth=914f5855a9e250a8
 lightmap ea7ce81505d0f202 rays=19913014
