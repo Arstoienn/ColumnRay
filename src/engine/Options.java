@@ -38,6 +38,10 @@ public final class Options {
     public int winW = Host.DEFAULT_WINDOW_W, winH = Host.DEFAULT_WINDOW_H;
     public int targetFps = 60;
     public double startFeet = Double.NaN;
+    /** --fov: the field of view in degrees, or NaN for the renderer's own. It is the one camera
+     *  setting that belongs on the command line rather than to a game: a screenshot and the window
+     *  it was framed in have to agree about it, and only one of the two has a key to press. */
+    public double fov = Double.NaN;
 
     private Options() {}
 
@@ -124,6 +128,17 @@ public final class Options {
                     return false;
                 }
                 if (ss < 1 || ss > 8) { usage("--ss must be between 1 and 8"); return false; }
+            } else if (args[i].equals("--fov")) {
+                if (i + 1 >= args.length) { usage("--fov needs an angle in degrees, e.g. 90"); return false; }
+                try {
+                    fov = Double.parseDouble(args[++i].trim());
+                } catch (NumberFormatException e) {
+                    usage("--fov wants a number of degrees, e.g. 90, not " + args[i]);
+                    return false;
+                }
+                // The same range the game's own [ and ] keys keep to: under 30 the picture is a
+                // telescope, over 120 the projection stretches the edges past any use.
+                if (fov < 30 || fov > 120) { usage("--fov must be between 30 and 120 degrees"); return false; }
             } else if (args[i].equals("--feet")) {
                 if (i + 1 >= args.length) { usage("--feet needs a height in metres, e.g. 3.6"); return false; }
                 try {
@@ -187,6 +202,7 @@ public final class Options {
         System.err.println("  --size  render resolution, the ray count (default " + Host.DEFAULT_W + "x" + Host.DEFAULT_H + ")");
         System.err.println("  --window  window size; the render is scaled up to it (default " + Host.DEFAULT_WINDOW_W + "x" + Host.DEFAULT_WINDOW_H + ", fitted to the screen)");
         System.err.println("  --feet  starting floor height in metres, to begin on an upper storey (e.g. 3.6)");
+        System.err.println("  --fov   field of view in degrees, 30-120 (default " + Math.round(Renderer.DEFAULT_FOV) + ")");
         System.err.println("  --fps   frame-time target the render size is driven to; 0 keeps it fixed (default 60)");
         System.err.println("  --shear look up / down the old way (y-shearing) instead of true perspective");
         System.err.println("  --shade card|cpu   where the frame is shaded: the card by default and faster,");

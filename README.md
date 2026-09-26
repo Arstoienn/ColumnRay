@@ -92,6 +92,7 @@ engine.
 | `--fps N` | Frame-time target for dynamic resolution; `0` disables it (default 60) |
 | `--ss N` | Supersampling factor, 1-8 (default 1) |
 | `--feet M` | Starting floor height in metres, e.g. to start on an upper storey |
+| `--fov N` | Field of view in degrees, 30-120 (default 67). Applies to the window, `--shot`, `--shots` and `--bench` alike |
 | `--play` | The game with nothing on the screen but the game: no overlay, no minimap, no toggles, no flying |
 | `--shade card\|cpu` | Where the frame is shaded. The card by default and three to four times faster; the CPU by default for `--verify`, `--shot` and `--shots`. `--gpu` and `--cpu` are the old spellings |
 | `--hdr` | Shade in light rather than in sRGB numbers, and roll the highlights off filmically |
