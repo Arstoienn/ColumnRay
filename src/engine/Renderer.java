@@ -17,7 +17,19 @@ import java.util.stream.IntStream;
  * column that are still empty (the interval list), and the column stops once every row is filled.
  */
 final class Renderer {
-    static final double DEFAULT_FOV = Math.toDegrees(2 * Math.atan(0.66));   // PL = 0.66, about 67 degrees
+    /**
+     * 90 degrees across, which is a camera plane exactly one metre wide at one metre.
+     *
+     * It was 67 - a plane half-width of 0.66, which is what every raycasting tutorial uses because
+     * Wolfenstein did, on a 320x200 screen that was nearly square in pixels. On a 16:9 window 67
+     * degrees reads as a telescope: walking feels slow because the walls go by at the edges of a
+     * view that has no edges in it, and a doorway a step away fills the frame. 90 is what a
+     * first-person game has used since Quake, and what {@code --fov} moves away from rather than
+     * towards. It costs almost nothing level (3.3 ms against 3.6 on school at 720p, on the card)
+     * and nearly doubles a frame tilted all the way up, because what a wider view adds is overscan
+     * for the pitch warp to resample: see the table in docs/ENGINEERING.md.
+     */
+    static final double DEFAULT_FOV = 90;
     static final double NEAR = 1e-3;
     static final double MAX_DIST = 80;
     static final int MAX_STOREYS = 8;      // how many storeys can stack at one (x, y)
