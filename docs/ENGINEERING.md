@@ -177,6 +177,17 @@ the window - past that, extra rays stop being new detail and become anti-aliasin
 
 ## Where the frame time actually goes
 
+**Every timing in this document was taken at a 67-degree field of view, which was the default until
+2026-09-26.** It is 90 now, and the difference is not uniform: a level frame is within a tenth of
+what it was (school, 1280x720, card: 3.30 ms against 3.56, measured back to back on a cool machine)
+and a frame tilted 45 degrees is nearly twice it (8.60 ms against 16.65, 116 fps against 60), because
+what a wider view adds is overscan for the pitch warp - 2,884 rays against 4,142 - and not anything
+level. The rest of the tables below have not been re-measured: this machine throttles under a
+sustained CPU benchmark hard enough to make the attempt useless (a 67-degree control taken after an
+hour of runs read 29.2 ms where the table here says 20.8, and one pair came out *faster* at 90 than
+at 67), so they want a cool, quiet machine and an afternoon. Ratios measured back to back in one
+sitting are what carries; the absolute numbers are a record of a particular day.
+
 `--bench` times the raycaster only. With both windows open the loop also has to blit the main view
 and redraw the ray view, and those dominate. Measured in the real windowed loop, 640x360, both
 windows open:
@@ -518,13 +529,21 @@ may still narrow it with `"maxPitch"` when its author wants the view held down; 
 decision, and the loader clamps it at 60 degrees.
 
 Under both sits a hard ceiling that is about the machine and not about taste. The overscan grows
-as a tangent and runs away at 90 degrees less the vertical half-FOV - 69.6 degrees at the default
-field of view - so `Warp.fits` returns the furthest pitch whose upright image still fits a budget,
-and `Host` clamps to it every frame. The budget is **a multiple of a level frame (16), not a count
-of pixels**: the overscan a pitch needs is a fixed ratio of the frame at any render size, so a
-budget in pixels would let the camera tilt further on a small window than on a large one. As a
-multiple it stops at 55.1 degrees at 640x360, at 1280x720 and at 3840x2160 alike. It is worked out
-by asking `Warp.plan` itself rather than by a second copy of its formulas.
+as a tangent and runs away at 90 degrees less the vertical half-FOV - 60.6 degrees at the default
+90-degree field of view, and it was 69.6 when the default was 67 - so `Warp.fits` returns the
+furthest pitch whose upright image still fits a budget, and `Host` clamps to it every frame. The
+budget is **a multiple of a level frame (16), not a count of pixels**: the overscan a pitch needs is
+a fixed ratio of the frame at any render size, so a budget in pixels would let the camera tilt
+further on a small window than on a large one. As a multiple it stops at the same angle at 640x360,
+at 1280x720 and at 3840x2160 alike. It is worked out by asking `Warp.plan` itself rather than by a
+second copy of its formulas.
+
+**Widening the field of view eats into that ceiling, and 90 degrees leaves little of it.** The
+budget allows 48.5 degrees of pitch at 90 degrees across, where it allowed 55.1 at 67, and
+`MAX_PITCH` is 45: the margin between what the camera may do and what the machine will hold has
+gone from ten degrees to three and a half. What a tilt costs went up with it - at 720p, 45 degrees
+asks for a 4142x2111 buffer, 9.5 level frames, against 2902x1680 and 5.3 before. Raising either
+number now means measuring the other.
 
 ### What looking up costs, and one thing that did not help
 
@@ -942,7 +961,9 @@ they were before the split.
 
 ## How it works
 
-1. **Camera**: `r = dir + plane * camX`, `PL = 0.66`, `F = (W/2)/PL`. r is deliberately not
+1. **Camera**: `r = dir + plane * camX`, `PL = 1.0` at the default 90-degree field of view
+   (`PL = tan(FOV/2)`; it was 0.66, which is 67 degrees and what every raycasting tutorial uses),
+   `F = (W/2)/PL`. r is deliberately not
    normalised, so the intersection parameter t *is* the perpendicular distance and there is no
    fisheye. -> `Renderer.Column.render`
 2. **Projection**: `rowZ(z, t) = hz - (z - eye) * F / t`, with `hz = H/2 + pitch` (y-shearing).
