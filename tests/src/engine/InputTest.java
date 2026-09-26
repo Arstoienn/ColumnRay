@@ -24,9 +24,10 @@ final class InputTest {
         Check.that(!in.tapped(Keys.SPACE), "a key that is not held does not tap");
         Check.that(!in.tapped(Keys.SPACE), "and asking twice does not make one");
 
-        // The mouse accumulates on the event thread and is taken by the frame that reads it.
-        in.dragged(3, -4);
-        in.dragged(1, 2);
+        // The mouse accumulates on the event thread and is taken by the frame that reads it -
+        // whether it was dragged with a button held or reported by a pointer being held still.
+        in.looked(3, -4);
+        in.looked(1, 2);
         in.begin(true);
         Check.eq(in.mouseDX(), 4, 1e-12, "a frame gets everything the mouse did before it");
         Check.eq(in.mouseDY(), -2, 1e-12, "in both directions");

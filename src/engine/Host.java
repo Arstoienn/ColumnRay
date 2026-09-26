@@ -91,6 +91,13 @@ public final class Host {
     // Input (the mouse is written on the EDT and read by the main loop; the keys are read straight
     // from the machine by Keys, once a frame)
     private volatile int hoverColumn = -1, hoverRow = -1;        // which pixel of the main view the mouse is over
+    /** The canvas the picture goes to, for the one thing mouse look needs that the loop does not:
+     *  where the middle of the window is on the screen. Null until the window is up. */
+    private Canvas canvas;
+    /** Mouse look: the game asked for the pointer to be held at the middle of the window, so that
+     *  moving the mouse turns the view without a button held. What the game asked for, which is not
+     *  the same as what is happening - it only happens while a window of ours is in front. */
+    private volatile boolean mouseLook;
     int traceI = -1, traceJ = -1;                                // the output pixel whose ray the ray view traces
 
     private volatile boolean shear = false;                      // the old y-shearing pitch, for comparison
@@ -327,6 +334,53 @@ public final class Host {
     /** Whether that view turns with the player or keeps the map the same way up. */
     public void toggleRayFollow() { rayView.toggleFollow(); }
 
+    /** Can this machine hold the pointer still, so that the mouse can look without a button held?
+     *  See {@link Pointer}; off macOS it cannot, and a game should leave dragging in its hints. */
+    public static boolean canMouseLook() { return Pointer.available(); }
+
+    /** Is mouse look on? */
+    public boolean mouseLook() { return mouseLook; }
+
+    /**
+     * Turn mouse look on or off: hold the pointer at the middle of the window and hand the game
+     * how far it moved, instead of asking for a button to be held down.
+     *
+     * The pointer is hidden while it is on, and put back where the window's middle is after every
+     * event it reports; the hover column the ray view traces goes back to the middle of the picture,
+     * because there is no longer a pointer anywhere else to mean anything. May be asked for before
+     * the window exists - a game's constructor is the natural place - and takes effect when it opens.
+     */
+    public void setMouseLook(boolean on) {
+        mouseLook = on && Pointer.available();
+        hoverColumn = hoverRow = -1;
+        Canvas c = canvas;
+        if (c != null) SwingUtilities.invokeLater(() -> {
+            c.setCursor(mouseLook ? blankCursor() : java.awt.Cursor.getDefaultCursor());
+            if (mouseLook) recentre();
+        });
+    }
+
+    private static java.awt.Cursor blank;
+
+    /** A cursor with nothing in it: the pointer is still there, it just must not be seen. */
+    private static java.awt.Cursor blankCursor() {
+        if (blank == null) {
+            BufferedImage dot = new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
+            blank = Toolkit.getDefaultToolkit().createCustomCursor(dot, new java.awt.Point(0, 0), "blank");
+        }
+        return blank;
+    }
+
+    /** Put the pointer back at the middle of the canvas, which is where mouse look measures from. */
+    private void recentre() {
+        Canvas c = canvas;
+        if (c == null || !c.isShowing()) return;
+        java.awt.Point at = c.getLocationOnScreen();
+        // The middle to the pixel, and the same arithmetic the deltas are measured with: warping
+        // half a pixel off would make the event that comes back read as a flick of one, every time.
+        Pointer.moveTo(at.x + c.getWidth() / 2, at.y + c.getHeight() / 2);
+    }
+
     // ---- Main loop ----
 
     /** Open the window and run this game until something stops it. */
@@ -415,20 +469,65 @@ public final class Host {
     }
 
     private void installInput(Canvas canvas) {
+        this.canvas = canvas;
         canvas.addKeyListener(Keys.listener());
         MouseAdapter drag = new MouseAdapter() {
             int lx, ly;
-            @Override public void mousePressed(MouseEvent e) { lx = e.getX(); ly = e.getY(); canvas.requestFocus(); }
+            @Override public void mousePressed(MouseEvent e) {
+                lx = e.getX();
+                ly = e.getY();
+                canvas.requestFocus();
+                if (mouseLook) recentre();                       // a click is also how a game gets the pointer back
+            }
             @Override public void mouseDragged(MouseEvent e) {
-                input.dragged(e.getX() - lx, e.getY() - ly);
+                if (mouseLook) { looked(e); return; }
+                input.looked(e.getX() - lx, e.getY() - ly);
                 lx = e.getX();
                 ly = e.getY();
             }
-            @Override public void mouseMoved(MouseEvent e) { hoverColumn = columnAt(e.getX()); hoverRow = rowAt(e.getY()); }
-            @Override public void mouseExited(MouseEvent e) { hoverColumn = hoverRow = -1; }
+            @Override public void mouseMoved(MouseEvent e) {
+                if (mouseLook) { looked(e); return; }
+                hoverColumn = columnAt(e.getX());
+                hoverRow = rowAt(e.getY());
+            }
+            @Override public void mouseExited(MouseEvent e) { if (!mouseLook) hoverColumn = hoverRow = -1; }
         };
         canvas.addMouseListener(drag);
         canvas.addMouseMotionListener(drag);
+        // Let go of the pointer the moment another application wants it, and take it again when the
+        // game comes back: a window that is not in front holding the pointer at its own middle is
+        // a window nobody can get away from.
+        canvas.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override public void focusGained(java.awt.event.FocusEvent e) {
+                if (mouseLook) { canvas.setCursor(blankCursor()); recentre(); }
+            }
+            @Override public void focusLost(java.awt.event.FocusEvent e) {
+                canvas.setCursor(java.awt.Cursor.getDefaultCursor());
+            }
+        });
+        if (mouseLook) {
+            canvas.setCursor(blankCursor());
+            recentre();
+        }
+    }
+
+    /**
+     * One mouse event while the pointer is being held still: how far the hand moved is how far the
+     * event landed from the middle of the window, and then the pointer goes back to the middle.
+     *
+     * An event exactly at the middle is the warp's own arrival coming back round, and counts for
+     * nothing - without that the view would drift, since the pointer is put back on every event
+     * and each of those reports itself.
+     */
+    private void looked(MouseEvent e) {
+        // Not while another application is in front: a window that is not being used holding the
+        // pointer at its own middle is a window nobody can get the mouse away from. The keys are
+        // ignored under the same condition, in the loop.
+        if (!inFront()) return;
+        int dx = e.getX() - canvas.getWidth() / 2, dy = e.getY() - canvas.getHeight() / 2;
+        if (dx == 0 && dy == 0) return;
+        input.looked(dx, dy);
+        recentre();
     }
 
     /**
