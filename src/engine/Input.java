@@ -17,7 +17,7 @@ import java.util.Set;
 public final class Input {
     private final Set<Integer> heldLastFrame = new HashSet<>();  // so a tap fires once, not every frame
     private boolean listening;
-    private double pendingDX, pendingDY;   // written on the event thread as the mouse is dragged
+    private double pendingDX, pendingDY;   // written on the event thread as the mouse moves
     private double dx, dy;                 // this frame's share of it
 
     Input() { }
@@ -31,8 +31,14 @@ public final class Input {
         pendingDX = pendingDY = 0;
     }
 
-    /** The mouse was dragged this far, in window pixels. Called on the event thread. */
-    synchronized void dragged(double ddx, double ddy) {
+    /**
+     * The mouse asked to look this far, in window pixels. Called on the event thread.
+     *
+     * Where it came from is the window's business and not a game's: a drag with a button held, or a
+     * pointer held at the middle of the window and put back after every event it reports (see
+     * {@code Host.setMouseLook}). Both arrive here as how far the hand moved.
+     */
+    synchronized void looked(double ddx, double ddy) {
         pendingDX += ddx;
         pendingDY += ddy;
     }
@@ -56,7 +62,7 @@ public final class Input {
         return heldLastFrame.add(key);                            // false: still held from last frame
     }
 
-    /** How far the mouse was dragged this frame, in window pixels. */
+    /** How far the mouse asked to look this frame, in window pixels. */
     public synchronized double mouseDX() { return dx; }
 
     public synchronized double mouseDY() { return dy; }
