@@ -482,7 +482,12 @@ public final class Host {
         // are in it. Take the engine's back at the top of the frame rather than after each window:
         // the card is asked for more than just the shading pass (the span textures are built as
         // the buffers are sized), so there is no one later place that catches all of it.
-        Gl.reclaim();
+        //
+        // Only when there is a card. Naming Gl at all loads it, and its static initialiser asks
+        // GlPlatform for a context - which on a machine with no backend, Linux today, throws the
+        // sentence it was written to throw. An unguarded call here took every CPU frame on Linux
+        // down with it, which is what CI is for.
+        if (useGpu) Gl.reclaim();
         applyWantedScale();
         double limit = pitchLimit();
         game.pitchLimit(limit);
@@ -499,7 +504,12 @@ public final class Host {
         // are in it. Take the engine's back at the top of the frame rather than after each window:
         // the card is asked for more than just the shading pass (the span textures are built as
         // the buffers are sized), so there is no one later place that catches all of it.
-        Gl.reclaim();
+        //
+        // Only when there is a card. Naming Gl at all loads it, and its static initialiser asks
+        // GlPlatform for a context - which on a machine with no backend, Linux today, throws the
+        // sentence it was written to throw. An unguarded call here took every CPU frame on Linux
+        // down with it, which is what CI is for.
+        if (useGpu) Gl.reclaim();
         applyWantedScale();
         render(v, pitchLimit());
     }
