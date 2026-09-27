@@ -91,6 +91,8 @@ final class SurfaceGlfw implements Surface, Keys.Source {
     private BufferedImage image;
     private int[] pixels;
     private int program, vao, texture, overlayTex;
+    /** The band of rows the overlay painted into last frame: all that has to be cleared again. */
+    private int bandY0 = Integer.MAX_VALUE, bandY1 = -1;
     private IntBuffer pictureBuf, overlayBuf;
     private double lastX, lastY;
     private boolean haveLast;
@@ -200,15 +202,35 @@ final class SurfaceGlfw implements Surface, Keys.Source {
             pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
             if (overlayBuf != null) MemoryUtil.memFree(overlayBuf);
             overlayBuf = MemoryUtil.memAllocInt(w * h);
+            bandY0 = Integer.MAX_VALUE;
+            bandY1 = -1;
         }
         if (pictureBuf == null || pictureBuf.capacity() < pw * ph) {
             if (pictureBuf != null) MemoryUtil.memFree(pictureBuf);
             pictureBuf = MemoryUtil.memAllocInt(pw * ph);
         }
-        java.util.Arrays.fill(pixels, 0);
+        // Clear only the rows the overlay wrote last time; everything outside that band is
+        // already transparent and has been since the image was made.
+        if (bandY1 >= bandY0)
+            java.util.Arrays.fill(pixels, bandY0 * w, Math.min(pixels.length, (bandY1 + 1) * w), 0);
         Graphics2D g = image.createGraphics();
         overlay.paint(g);
         g.dispose();
+        // Which rows it actually touched. A HUD is a strip at the top and a minimap in a corner,
+        // so this is usually a third of the drawable and sometimes - in --play, which draws
+        // nothing over the picture - none of it.
+        int y0 = Integer.MAX_VALUE, y1 = -1;
+        for (int y = 0; y < h; y++) {
+            int row = y * w, end = row + w;
+            for (int i = row; i < end; i++)
+                if (pixels[i] != 0) {
+                    if (y < y0) y0 = y;
+                    y1 = y;
+                    break;
+                }
+        }
+        bandY0 = y0;
+        bandY1 = y1;
 
         glfwMakeContextCurrent(window);
         glViewport(0, 0, fbW, fbH);              // the one place that counts in real pixels
@@ -230,16 +252,23 @@ final class SurfaceGlfw implements Surface, Keys.Source {
         rect(ox, h - oy - dh, dw, dh, w, h);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-        // The overlay over all of it, showing the picture through wherever it is transparent.
-        glBindTexture(GL_TEXTURE_2D, overlayTex);
-        overlayBuf.clear();
-        overlayBuf.put(pixels, 0, w * h).flip();
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, overlayBuf);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        rect(0, 0, w, h, w, h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glDisable(GL_BLEND);
+        // The overlay over the top, showing the picture through wherever it is transparent - but
+        // only the band of rows it painted, declared as a texture of its own size. Uploading the
+        // whole drawable cost four megabytes a frame for a HUD that occupies a fifth of it.
+        // The texture is re-declared rather than sub-imaged deliberately: a partial update of a
+        // larger texture measured dearer here, twice (see docs).
+        if (y1 >= y0) {
+            int rows = y1 - y0 + 1;
+            glBindTexture(GL_TEXTURE_2D, overlayTex);
+            overlayBuf.clear();
+            overlayBuf.put(pixels, y0 * w, rows * w).flip();
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, rows, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, overlayBuf);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            rect(0, h - y0 - rows, w, rows, w, h);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDisable(GL_BLEND);
+        }
 
         glfwSwapBuffers(window);
     }
