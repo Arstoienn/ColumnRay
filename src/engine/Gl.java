@@ -125,6 +125,17 @@ final class Gl {
         PLATFORM.makeCurrent();
     }
 
+    /**
+     * Take the thread back after something else made its own context current.
+     *
+     * A GLFW window shows a frame by drawing into its own context, and whichever was current last
+     * is the one the next GL call lands in - so the engine says out loud when it wants its own
+     * back. Does nothing before the engine has a context to want.
+     */
+    static void reclaim() {
+        if (current) PLATFORM.makeCurrent();
+    }
+
     static int texture() { return name(GEN_TEXTURES); }
 
     static int framebuffer() { return name(GEN_FB); }

@@ -39,22 +39,41 @@ final class GlCgl implements GlPlatform {
     private static final MethodHandle CREATE_CTX = fn("CGLCreateContext", FunctionDescriptor.of(I32, PTR, PTR, PTR));
     private static final MethodHandle SET_CTX = fn("CGLSetCurrentContext", FunctionDescriptor.of(I32, PTR));
 
+    /** The context once it exists. Kept so that makeCurrent() can hand the thread back to it:
+     *  a second CGLCreateContext would leave the first one's textures unreachable, which is what
+     *  the old one-shot version quietly did if it was ever called twice. GlWgl already worked
+     *  this way. */
+    private MemorySegment ctx;
+
     private GlCgl() {}
 
     @Override public SymbolLookup library() { return LIB; }
 
     @Override public String name() { return "CGL"; }
 
-    /** A 4.1 core context, or a 3.2 one if the machine will not give 4.1. */
+    /**
+     * A 4.1 core context, or a 3.2 one if the machine will not give 4.1.
+     *
+     * Called again, this takes the same context back rather than making another - which is what a
+     * window that has a context of its own needs, since showing a frame makes that one current and
+     * the engine's textures live in this one.
+     */
     @Override public void makeCurrent() {
+        if (ctx != null) {
+            if ((int) call(SET_CTX, ctx) != 0) throw new IllegalStateException("CGLSetCurrentContext failed");
+            return;
+        }
         try (Arena arena = Arena.ofConfined()) {
             for (int profile : new int[] {PROFILE_4_1_CORE, PROFILE_3_2_CORE}) {
                 MemorySegment attrs = arena.allocateFrom(I32, PFA_PROFILE, profile, PFA_ACCELERATED, 0);
-                MemorySegment pf = arena.allocate(PTR), n = arena.allocate(I32), ctx = arena.allocate(PTR);
+                MemorySegment pf = arena.allocate(PTR), n = arena.allocate(I32), out = arena.allocate(PTR);
                 if ((int) call(CHOOSE_PF, attrs, pf, n) != 0 || pf.get(PTR, 0).equals(MemorySegment.NULL)) continue;
                 // The context outlives this arena: CGL owns it, the arena only held the out-parameter.
-                if ((int) call(CREATE_CTX, pf.get(PTR, 0), MemorySegment.NULL, ctx) != 0) continue;
-                if ((int) call(SET_CTX, ctx.get(PTR, 0)) == 0) return;
+                if ((int) call(CREATE_CTX, pf.get(PTR, 0), MemorySegment.NULL, out) != 0) continue;
+                if ((int) call(SET_CTX, out.get(PTR, 0)) == 0) {
+                    this.ctx = out.get(PTR, 0);
+                    return;
+                }
             }
         }
         throw new IllegalStateException("no offscreen OpenGL context");
