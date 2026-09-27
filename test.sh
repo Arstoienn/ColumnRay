@@ -45,8 +45,12 @@ HAVEN=maps/haven/haven.json
 HAVEN_VIEWS=tests/views/haven.txt
 
 ./build.sh
+# LWJGL is on the classpath for the same reason build.sh puts it there - SurfaceGlfw is part of the
+# engine now. Nothing a test runs opens a window, so none of it is loaded, but a classpath that is
+# right only because a class happens not to be reached is a trap waiting for the next test.
+JARS=$(ls lib/*.jar | tr '\n' "$CP")
 
-run() { java --enable-native-access=ALL-UNNAMED ${JAVA_OPTS:-} -cp out game.Main "$@"; }
+run() { java --enable-native-access=ALL-UNNAMED ${JAVA_OPTS:-} -cp "out${CP}${JARS}" game.Main "$@"; }
 frames() { run maps/school.json --verify "$VIEWS" --size "$SIZE" "$@" | grep -E '^(#|view |lightmap )'; }
 havenFrames() { JAVA_OPTS="-Xmx12g ${JAVA_OPTS:-}" run "$HAVEN" --verify "$HAVEN_VIEWS" --size "$SIZE" --flat "$@" \
     | grep -E '^(#|view |lightmap )'; }
@@ -56,8 +60,8 @@ fail=0
 if [ "$mode" = all ] || [ "$mode" = unit ]; then
     echo "== unit =="
     mkdir -p out-test
-    javac -d out-test -cp out $(find tests/src -name '*.java')
-    java -cp "out${CP}out-test" engine.Tests || fail=1
+    javac -d out-test -cp "out${CP}${JARS}" $(find tests/src -name '*.java')
+    java -cp "out${CP}out-test${CP}${JARS}" engine.Tests || fail=1
 fi
 
 if [ "$mode" = all ] || [ "$mode" = determinism ]; then

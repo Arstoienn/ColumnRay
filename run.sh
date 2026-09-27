@@ -6,7 +6,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ./build.sh                     # compiles only when a source changed
-CP="out:$(ls lib/*.jar | tr '\n' ':')"
+# Java's classpath separator is a colon everywhere but Windows, where this runs under Git Bash and
+# so has a Unix shell in front of a Windows JVM. test.sh says the same thing at more length.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) SEP=';' ;;
+    *) SEP=':' ;;
+esac
+CP="out${SEP}$(ls lib/*.jar | tr '\n' "$SEP")"
 # JAVA_OPTS reaches the JVM, which is where the bake is tuned from:
 #   JAVA_OPTS=-Dlight.texel=1.2 ./run.sh maps/school.json            coarser texels, a faster bake
 # --enable-native-access: Keys reads the physical key state from macOS through the FFM API.
