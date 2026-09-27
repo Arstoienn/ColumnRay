@@ -39,14 +39,12 @@ import javax.swing.SwingUtilities;
 final class SurfaceAwt implements Surface {
     private JFrame frame;
     private Canvas canvas;
-    private RayView rayView;
     private Events to;
     private volatile boolean mouseLook;
     private static Cursor blank;
 
     @Override
-    public void open(String title, int winW, int winH, RayView rayView, Events to) {
-        this.rayView = rayView;
+    public void open(String title, int winW, int winH, Events to) {
         this.to = to;
         Canvas c = new Canvas();
         c.enableInputMethods(false);                             // an IME (Bopomofo, Pinyin) must not eat the keys
@@ -55,9 +53,8 @@ final class SurfaceAwt implements Surface {
             SwingUtilities.invokeAndWait(() -> {
                 // The window is the output: --window, fitted onto the screen, whatever is being
                 // rendered. present() scales the picture up into it, so a bigger window costs no
-                // rays. The ray view opens beside it, hidden until the game asks for it.
+                // rays.
                 Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
-                int rayW = (int) Math.min(640, screen.width * 0.36);
                 double fit = Math.min(1, Math.min((screen.width - 16) / (double) winW,
                         (screen.height - 48) / (double) winH));
                 JFrame f = new JFrame(title);
@@ -74,7 +71,6 @@ final class SurfaceAwt implements Surface {
                 f.setVisible(true);
                 c.createBufferStrategy(2);
                 installInput(c);
-                rayView.open(f, rayW);
                 f.toFront();
                 // toFront() only orders our windows; on macOS it does not make us the active app,
                 // so a game started from a shell that is not in front (an IDE, a script) opens
@@ -133,12 +129,66 @@ final class SurfaceAwt implements Surface {
     public void close() {
         try {
             SwingUtilities.invokeAndWait(() -> {
-                rayView.close();
                 for (Window w : Window.getWindows()) w.dispose();
             });
         } catch (Exception alreadyGone) {
             // Shutting down. A window that will not dispose cannot stop the process from ending.
         }
+    }
+
+    /**
+     * The second window, as it always was: a frame to the right of the main one, at the same
+     * height, closed until something asks for it and hiding rather than disposing when shut.
+     */
+    @Override
+    public Panel panel(String title, int width) {
+        JFrame owner = frame;
+        JFrame f = new JFrame(title);
+        Canvas c = new Canvas();
+        int h = owner.getHeight() - owner.getInsets().top - owner.getInsets().bottom;
+        c.setPreferredSize(new Dimension(width, h));
+        c.setIgnoreRepaint(true);
+        f.add(c);
+        f.pack();
+        f.setLocation(owner.getX() + owner.getWidth() + 6, owner.getY());
+        f.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
+        // pack() has made the canvas displayable, which is all the buffer strategy needs.
+        c.createBufferStrategy(2);
+        c.addMouseListener(new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent e) { c.requestFocus(); }
+        });
+        c.addKeyListener(Keys.listener());                       // only where the key state cannot be read
+        return new Panel() {
+            @Override public int width() { return c.getWidth(); }
+
+            @Override public int height() { return c.getHeight(); }
+
+            @Override public boolean visible() { return f.isVisible(); }
+
+            @Override public void show(boolean on) { SwingUtilities.invokeLater(() -> f.setVisible(on)); }
+
+            @Override public void onWheel(java.util.function.DoubleConsumer wheel) {
+                c.addMouseWheelListener(e -> wheel.accept(e.getPreciseWheelRotation()));
+            }
+
+            @Override public void present(Painter p) {
+                try {
+                    BufferStrategy bs = c.getBufferStrategy();
+                    do {
+                        do {
+                            Graphics2D g = (Graphics2D) bs.getDrawGraphics();
+                            p.paint(g);
+                            g.dispose();
+                        } while (bs.contentsRestored());
+                        bs.show();
+                    } while (bs.contentsLost());
+                } catch (IllegalStateException beingShownOrHidden) {
+                    // the window is between states; skip this frame
+                }
+            }
+
+            @Override public void close() { f.dispose(); }
+        };
     }
 
     private void installInput(Canvas c) {

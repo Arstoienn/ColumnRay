@@ -106,7 +106,7 @@ final class SurfaceGlfw implements Surface, Keys.Source {
             """;
 
     @Override
-    public void open(String title, int wantW, int wantH, RayView rayView, Events to) {
+    public void open(String title, int wantW, int wantH, Events to) {
         this.to = to;
         GLFWErrorCallback.createPrint(System.err).set();
         if (!glfwInit()) throw new IllegalStateException("GLFW would not start");
@@ -210,6 +210,112 @@ final class SurfaceGlfw implements Surface, Keys.Source {
     @Override
     public boolean active() {
         return glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE;
+    }
+
+    /**
+     * A second GLFW window, sharing this one's objects.
+     *
+     * Sharing means its textures and programs are the same objects, but a vertex array is not
+     * shareable in GL 3.3, so it makes one of its own. Its context is current only while it is
+     * painting; {@code shadeOnGpu} takes the engine's back before anything is shaded, which is
+     * why no window here has to put anything back.
+     */
+    @Override
+    public Panel panel(String title, int width) {
+        int[] ww = new int[1], wh = new int[1];
+        glfwGetWindowSize(window, ww, wh);
+        int[] wx = new int[1], wy = new int[1];
+        glfwGetWindowPos(window, wx, wy);
+
+        glfwDefaultWindowHints();
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);                // a debugging window: shut until asked for
+        long win = glfwCreateWindow(width, wh[0], title, MemoryUtil.NULL, window);
+        if (win == MemoryUtil.NULL) throw new IllegalStateException("GLFW would not open the ray view");
+        glfwSetWindowPos(win, wx[0] + ww[0] + 6, wy[0]);
+        glfwSetWindowCloseCallback(win, w -> {
+            glfwSetWindowShouldClose(w, false);                  // hide rather than close, as the AWT one did
+            glfwHideWindow(w);
+        });
+
+        glfwMakeContextCurrent(win);
+        GL.createCapabilities();
+        int prog = link(), array = glGenVertexArrays(), tex = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glUseProgram(prog);
+        glUniform1i(glGetUniformLocation(prog, "frame"), 0);
+
+        return new Panel() {
+            private BufferedImage img;
+            private int[] px;
+            private IntBuffer buf;
+            private boolean shown;
+
+            @Override public int width() {
+                int[] w = new int[1], h = new int[1];
+                glfwGetFramebufferSize(win, w, h);
+                return Math.max(1, w[0]);
+            }
+
+            @Override public int height() {
+                int[] w = new int[1], h = new int[1];
+                glfwGetFramebufferSize(win, w, h);
+                return Math.max(1, h[0]);
+            }
+
+            @Override public boolean visible() { return shown && glfwGetWindowAttrib(win, GLFW_VISIBLE) == GLFW_TRUE; }
+
+            @Override public void show(boolean on) {
+                shown = on;
+                if (on) glfwShowWindow(win); else glfwHideWindow(win);
+            }
+
+            @Override public void onWheel(java.util.function.DoubleConsumer wheel) {
+                // GLFW counts up away from the hand and AWT counts down, so the sign is flipped
+                // here and the ray view's own arithmetic is left alone.
+                glfwSetScrollCallback(win, (w, dx, dy) -> wheel.accept(-dy));
+            }
+
+            @Override public void present(Painter p) {
+                int w = width(), h = height();
+                if (img == null || img.getWidth() != w || img.getHeight() != h) {
+                    img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+                    px = ((DataBufferInt) img.getRaster().getDataBuffer()).getData();
+                    if (buf != null) MemoryUtil.memFree(buf);
+                    buf = MemoryUtil.memAllocInt(w * h);
+                }
+                Graphics2D g = img.createGraphics();
+                p.paint(g);
+                g.dispose();
+                glfwMakeContextCurrent(win);
+                buf.clear();
+                buf.put(px, 0, w * h).flip();
+                glViewport(0, 0, w, h);
+                glUseProgram(prog);
+                glBindVertexArray(array);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, tex);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, buf);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glfwSwapBuffers(win);
+            }
+
+            @Override public void close() {
+                if (buf != null) {
+                    MemoryUtil.memFree(buf);
+                    buf = null;
+                }
+                Callbacks.glfwFreeCallbacks(win);
+                glfwDestroyWindow(win);
+            }
+        };
     }
 
     @Override

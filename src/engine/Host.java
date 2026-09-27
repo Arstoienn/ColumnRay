@@ -370,7 +370,8 @@ public final class Host {
     public void run(Game g) throws Exception {
         this.game = g;
         surface = glfw ? new SurfaceGlfw() : new SurfaceAwt();
-        surface.open("ColumnRay - " + world.name, winW, winH, rayView, events);
+        surface.open("ColumnRay - " + world.name, winW, winH, events);
+        rayView.open(surface, Math.min(640, Math.max(240, surface.width() / 3)));
         if (mouseLook) surface.mouseLook(true);
 
         autoRes = targetFps > 0;
@@ -476,6 +477,12 @@ public final class Host {
 
     /** One frame of the running game: tell it how far it may tilt, then draw where it says. */
     void frame() {
+        // A window with a context of its own - GLFW's, and its ray-view panel has a second - made
+        // its own current to show the last frame, and none of the card's textures or framebuffers
+        // are in it. Take the engine's back at the top of the frame rather than after each window:
+        // the card is asked for more than just the shading pass (the span textures are built as
+        // the buffers are sized), so there is no one later place that catches all of it.
+        Gl.reclaim();
         applyWantedScale();
         double limit = pitchLimit();
         game.pitchLimit(limit);
@@ -487,6 +494,12 @@ public final class Host {
 
     /** Render one view, whoever it belongs to: a headless capture's, or a game's. */
     public void frame(View v) {
+        // A window with a context of its own - GLFW's, and its ray-view panel has a second - made
+        // its own current to show the last frame, and none of the card's textures or framebuffers
+        // are in it. Take the engine's back at the top of the frame rather than after each window:
+        // the card is asked for more than just the shading pass (the span textures are built as
+        // the buffers are sized), so there is no one later place that catches all of it.
+        Gl.reclaim();
         applyWantedScale();
         render(v, pitchLimit());
     }
@@ -706,11 +719,6 @@ public final class Host {
         viewW = dw;
         viewH = dh;
         surface.present(g -> drawFrame(g, viewX, viewY, dw, dh, rayView.visible()));
-        // A window with a context of its own made it current to show that frame, and the card's
-        // framebuffers and textures are not in it. Ask for the engine's context back before the
-        // next frame shades anything. Does nothing on the CPU path, or under AWT, which has no
-        // context at all.
-        if (useGpu) Gl.reclaim();
     }
 
     /** The finished picture, scaled into place, and whatever the game draws over it. */
