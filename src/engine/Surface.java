@@ -78,8 +78,18 @@ interface Surface extends AutoCloseable {
     /** The drawable's height in pixels. */
     int height();
 
-    /** Paint one frame and show it. */
-    void present(Painter p);
+    /**
+     * Show one frame: the picture, and then whatever the game draws over it.
+     *
+     * The two are handed over separately because they cost very differently. The picture is
+     * {@code pw} by {@code ph} pixels of packed ARGB that want to appear in the rectangle
+     * {@code ox, oy, dw, dh} - and on a surface with a graphics card under it, scaling it is free
+     * there and dear anywhere else. Rasterising it into the drawable instead cost 9.77 ms a frame
+     * against AWT's 1.21 when this was one painter, on a Retina drawable four times the size of
+     * the picture. The overlay is small, changes every frame, and is a {@link Painter} because
+     * {@code Game.overlay} is a Graphics2D and a screenshot draws the same thing with no window.
+     */
+    void present(int[] picture, int pw, int ph, int ox, int oy, int dw, int dh, Painter overlay);
 
     /**
      * Let the window system do its work, once a frame.

@@ -718,13 +718,25 @@ public final class Host {
         viewY = (ch - dh) / 2;
         viewW = dw;
         viewH = dh;
-        surface.present(g -> drawFrame(g, viewX, viewY, dw, dh, rayView.visible()));
+        surface.present(out, W, H, viewX, viewY, dw, dh,
+                g -> drawOverlay(g, viewX, viewY, dw, dh, rayView.visible()));
     }
 
-    /** The finished picture, scaled into place, and whatever the game draws over it. */
+    /**
+     * The finished picture, scaled into place, and whatever the game draws over it.
+     *
+     * Still one call for a screenshot, which composes a PNG and has no card to scale anything on.
+     * A window does the two halves separately - see Surface.present - because the picture is the
+     * expensive half to rasterise and the cheap half to hand to a card.
+     */
     void drawFrame(Graphics2D g, int ox, int oy, int dw, int dh, boolean markColumn) {
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
         g.drawImage(image, ox, oy, dw, dh, null);
+        drawOverlay(g, ox, oy, dw, dh, markColumn);
+    }
+
+    /** Everything drawn over the picture: the traced column, and whatever the game adds. */
+    void drawOverlay(Graphics2D g, int ox, int oy, int dw, int dh, boolean markColumn) {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
         int col = renderer.traceColumn;

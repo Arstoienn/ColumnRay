@@ -18,7 +18,11 @@ import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.awt.image.BufferStrategy;
+import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferInt;
+import java.awt.image.DirectColorModel;
+import java.awt.image.Raster;
 import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
 
@@ -90,21 +94,43 @@ final class SurfaceAwt implements Surface {
 
     @Override public int height() { return canvas.getHeight(); }
 
+    /**
+     * The picture goes through Java2D here, which is where it was always fastest: a BufferStrategy
+     * blit is accelerated, and on a Retina screen Java2D rasterises at the backing store while the
+     * coordinates stay in points. The image is wrapped around the engine's own array rather than
+     * copied - it is the same pixels, and the engine does not touch them again until the next frame.
+     */
     @Override
-    public void present(Painter p) {
+    public void present(int[] picture, int pw, int ph, int ox, int oy, int dw, int dh, Painter overlay) {
+        if (shown == null || shown.getWidth() != pw || shown.getHeight() != ph || shownPixels != picture) {
+            DataBufferInt buffer = new DataBufferInt(picture, picture.length);
+            shown = new BufferedImage(COLOURS,
+                    Raster.createWritableRaster(COLOURS.createCompatibleSampleModel(pw, ph), buffer, null),
+                    false, null);
+            shownPixels = picture;
+        }
         BufferStrategy bs = canvas.getBufferStrategy();
         do {
             do {
                 Graphics2D g = (Graphics2D) bs.getDrawGraphics();
                 g.setColor(Color.BLACK);
                 g.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
-                p.paint(g);
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                        RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+                g.drawImage(shown, ox, oy, dw, dh, null);
+                overlay.paint(g);
                 g.dispose();
             } while (bs.contentsRestored());
             bs.show();
         } while (bs.contentsLost());
         Toolkit.getDefaultToolkit().sync();
     }
+
+    /** TYPE_INT_RGB's colour model, for wrapping the engine's array without copying it. */
+    private static final DirectColorModel COLOURS =
+            new DirectColorModel(24, 0x00FF0000, 0x0000FF00, 0x000000FF);
+    private BufferedImage shown;
+    private int[] shownPixels;
 
     /** AWT pumps its own events on a thread of its own; there is nothing to do here. */
     @Override public void pump() {}
