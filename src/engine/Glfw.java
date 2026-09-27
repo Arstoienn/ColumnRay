@@ -77,7 +77,12 @@ final class Glfw {
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         root = glfwCreateWindow(1, 1, "ColumnRay", MemoryUtil.NULL, MemoryUtil.NULL);
         if (root == MemoryUtil.NULL)
-            throw new IllegalStateException("no OpenGL context: GLFW opened no window for one");
+            // GLFW says GLFW_API_UNAVAILABLE for this, which means the machine has an OpenGL of
+            // some sort and not one that does 3.3 core: Microsoft's software renderer, a virtual
+            // machine, a CI runner. Say what to do about it rather than what failed.
+            throw new IllegalStateException("no OpenGL 3.3 here: this machine offers no core "
+                    + "profile, which is a software renderer or a driver without one. Install the "
+                    + "graphics driver's OpenGL, or drop --gpu");
         return root;
     }
 
