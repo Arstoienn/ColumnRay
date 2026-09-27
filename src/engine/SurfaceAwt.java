@@ -18,7 +18,11 @@ import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.awt.image.BufferStrategy;
+import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferInt;
+import java.awt.image.DirectColorModel;
+import java.awt.image.Raster;
 import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
 
@@ -39,14 +43,12 @@ import javax.swing.SwingUtilities;
 final class SurfaceAwt implements Surface {
     private JFrame frame;
     private Canvas canvas;
-    private RayView rayView;
     private Events to;
     private volatile boolean mouseLook;
     private static Cursor blank;
 
     @Override
-    public void open(String title, int winW, int winH, RayView rayView, Events to) {
-        this.rayView = rayView;
+    public void open(String title, int winW, int winH, Events to) {
         this.to = to;
         Canvas c = new Canvas();
         c.enableInputMethods(false);                             // an IME (Bopomofo, Pinyin) must not eat the keys
@@ -55,9 +57,8 @@ final class SurfaceAwt implements Surface {
             SwingUtilities.invokeAndWait(() -> {
                 // The window is the output: --window, fitted onto the screen, whatever is being
                 // rendered. present() scales the picture up into it, so a bigger window costs no
-                // rays. The ray view opens beside it, hidden until the game asks for it.
+                // rays.
                 Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
-                int rayW = (int) Math.min(640, screen.width * 0.36);
                 double fit = Math.min(1, Math.min((screen.width - 16) / (double) winW,
                         (screen.height - 48) / (double) winH));
                 JFrame f = new JFrame(title);
@@ -74,7 +75,6 @@ final class SurfaceAwt implements Surface {
                 f.setVisible(true);
                 c.createBufferStrategy(2);
                 installInput(c);
-                rayView.open(f, rayW);
                 f.toFront();
                 // toFront() only orders our windows; on macOS it does not make us the active app,
                 // so a game started from a shell that is not in front (an IDE, a script) opens
@@ -94,21 +94,43 @@ final class SurfaceAwt implements Surface {
 
     @Override public int height() { return canvas.getHeight(); }
 
+    /**
+     * The picture goes through Java2D here, which is where it was always fastest: a BufferStrategy
+     * blit is accelerated, and on a Retina screen Java2D rasterises at the backing store while the
+     * coordinates stay in points. The image is wrapped around the engine's own array rather than
+     * copied - it is the same pixels, and the engine does not touch them again until the next frame.
+     */
     @Override
-    public void present(Painter p) {
+    public void present(int[] picture, int pw, int ph, int ox, int oy, int dw, int dh, Painter overlay) {
+        if (shown == null || shown.getWidth() != pw || shown.getHeight() != ph || shownPixels != picture) {
+            DataBufferInt buffer = new DataBufferInt(picture, picture.length);
+            shown = new BufferedImage(COLOURS,
+                    Raster.createWritableRaster(COLOURS.createCompatibleSampleModel(pw, ph), buffer, null),
+                    false, null);
+            shownPixels = picture;
+        }
         BufferStrategy bs = canvas.getBufferStrategy();
         do {
             do {
                 Graphics2D g = (Graphics2D) bs.getDrawGraphics();
                 g.setColor(Color.BLACK);
                 g.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
-                p.paint(g);
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                        RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+                g.drawImage(shown, ox, oy, dw, dh, null);
+                overlay.paint(g);
                 g.dispose();
             } while (bs.contentsRestored());
             bs.show();
         } while (bs.contentsLost());
         Toolkit.getDefaultToolkit().sync();
     }
+
+    /** TYPE_INT_RGB's colour model, for wrapping the engine's array without copying it. */
+    private static final DirectColorModel COLOURS =
+            new DirectColorModel(24, 0x00FF0000, 0x0000FF00, 0x000000FF);
+    private BufferedImage shown;
+    private int[] shownPixels;
 
     /** AWT pumps its own events on a thread of its own; there is nothing to do here. */
     @Override public void pump() {}
@@ -133,12 +155,66 @@ final class SurfaceAwt implements Surface {
     public void close() {
         try {
             SwingUtilities.invokeAndWait(() -> {
-                rayView.close();
                 for (Window w : Window.getWindows()) w.dispose();
             });
         } catch (Exception alreadyGone) {
             // Shutting down. A window that will not dispose cannot stop the process from ending.
         }
+    }
+
+    /**
+     * The second window, as it always was: a frame to the right of the main one, at the same
+     * height, closed until something asks for it and hiding rather than disposing when shut.
+     */
+    @Override
+    public Panel panel(String title, int width) {
+        JFrame owner = frame;
+        JFrame f = new JFrame(title);
+        Canvas c = new Canvas();
+        int h = owner.getHeight() - owner.getInsets().top - owner.getInsets().bottom;
+        c.setPreferredSize(new Dimension(width, h));
+        c.setIgnoreRepaint(true);
+        f.add(c);
+        f.pack();
+        f.setLocation(owner.getX() + owner.getWidth() + 6, owner.getY());
+        f.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
+        // pack() has made the canvas displayable, which is all the buffer strategy needs.
+        c.createBufferStrategy(2);
+        c.addMouseListener(new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent e) { c.requestFocus(); }
+        });
+        c.addKeyListener(Keys.listener());                       // only where the key state cannot be read
+        return new Panel() {
+            @Override public int width() { return c.getWidth(); }
+
+            @Override public int height() { return c.getHeight(); }
+
+            @Override public boolean visible() { return f.isVisible(); }
+
+            @Override public void show(boolean on) { SwingUtilities.invokeLater(() -> f.setVisible(on)); }
+
+            @Override public void onWheel(java.util.function.DoubleConsumer wheel) {
+                c.addMouseWheelListener(e -> wheel.accept(e.getPreciseWheelRotation()));
+            }
+
+            @Override public void present(Painter p) {
+                try {
+                    BufferStrategy bs = c.getBufferStrategy();
+                    do {
+                        do {
+                            Graphics2D g = (Graphics2D) bs.getDrawGraphics();
+                            p.paint(g);
+                            g.dispose();
+                        } while (bs.contentsRestored());
+                        bs.show();
+                    } while (bs.contentsLost());
+                } catch (IllegalStateException beingShownOrHidden) {
+                    // the window is between states; skip this frame
+                }
+            }
+
+            @Override public void close() { f.dispose(); }
+        };
     }
 
     private void installInput(Canvas c) {

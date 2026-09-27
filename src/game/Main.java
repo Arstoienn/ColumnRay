@@ -26,7 +26,9 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         // Before AWT starts, and only when a window is going to open - see Keys. A headless run
         // has no HUD to name, and on a machine with no window service to ask, the question hangs.
-        if (!Options.headless(args)) Keys.readLabels();
+        // --glfw skips it: that window names the key caps itself once it is up, so the Text
+        // Services call - and the process transformation it needs first - never happens.
+        if (!Options.headless(args) && !Options.glfw(args)) Keys.readLabels();
         Options o = Options.parse(args);
         if (o == null) return;
         if (Options.headless(args)) System.setProperty("java.awt.headless", "true");

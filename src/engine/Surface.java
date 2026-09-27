@@ -40,12 +40,37 @@ interface Surface extends AutoCloseable {
     }
 
     /**
+     * A second window beside the main one, which is what the ray view is.
+     *
+     * It is a debugging window, shut until somebody asks for it - redrawing it every frame costs
+     * about five milliseconds - so it opens hidden and {@link #show} is how it arrives. Like the
+     * main drawable it is painted through a {@link Painter}: {@code RayView.draw} was already
+     * toolkit-free, and this is the only part of that class that was not.
+     */
+    interface Panel {
+        int width();
+
+        int height();
+
+        void present(Painter p);
+
+        boolean visible();
+
+        void show(boolean on);
+
+        /** The wheel turned this far, positive away from the hand. The ray view zooms with it. */
+        void onWheel(java.util.function.DoubleConsumer to);
+
+        void close();
+    }
+
+    /**
      * Put a window on the screen and start reporting to {@code to}.
      *
      * {@code winW} by {@code winH} is what the command line asked for, not a promise: a surface
      * fits that onto the screen it actually has, and {@link #width()} is the answer.
      */
-    void open(String title, int winW, int winH, RayView rayView, Events to);
+    void open(String title, int winW, int winH, Events to);
 
     /** The drawable's width in pixels, which is the coordinate space {@link Events#hover} reports in. */
     int width();
@@ -53,8 +78,18 @@ interface Surface extends AutoCloseable {
     /** The drawable's height in pixels. */
     int height();
 
-    /** Paint one frame and show it. */
-    void present(Painter p);
+    /**
+     * Show one frame: the picture, and then whatever the game draws over it.
+     *
+     * The two are handed over separately because they cost very differently. The picture is
+     * {@code pw} by {@code ph} pixels of packed ARGB that want to appear in the rectangle
+     * {@code ox, oy, dw, dh} - and on a surface with a graphics card under it, scaling it is free
+     * there and dear anywhere else. Rasterising it into the drawable instead cost 9.77 ms a frame
+     * against AWT's 1.21 when this was one painter, on a Retina drawable four times the size of
+     * the picture. The overlay is small, changes every frame, and is a {@link Painter} because
+     * {@code Game.overlay} is a Graphics2D and a screenshot draws the same thing with no window.
+     */
+    void present(int[] picture, int pw, int ph, int ox, int oy, int dw, int dh, Painter overlay);
 
     /**
      * Let the window system do its work, once a frame.
@@ -77,6 +112,12 @@ interface Surface extends AutoCloseable {
 
     /** Hold the pointer and report movement as {@link Events#looked}, or give it back. */
     void mouseLook(boolean on);
+
+    /**
+     * Open a second window beside the main one, hidden, {@code width} wide and as tall as the
+     * main window is.
+     */
+    Panel panel(String title, int width);
 
     @Override
     void close();

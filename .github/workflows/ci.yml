@@ -1,8 +1,10 @@
 name: CI
 
-# The engine has no dependencies, so there is nothing to resolve and nothing to cache: a job is a
-# JDK, a checkout and ./test.sh. maps/haven is a submodule and is deliberately not checked out -
-# its bake is a quarter of an hour, and maps/school.json exercises every subsystem in seconds.
+# A job is a JDK, a checkout and ./test.sh. The engine has one dependency, LWJGL, which build.sh
+# fetches through lib/fetch.sh against checksums tracked in that script - so there is nothing to
+# resolve and nothing worth caching, and a jar that does not hash as the script says it should is
+# deleted rather than used. maps/haven is a submodule and is deliberately not checked out - its
+# bake is a quarter of an hour, and maps/school.json exercises every subsystem in seconds.
 on:
   push:
     branches: [main]
@@ -35,12 +37,11 @@ jobs:
       - run: ./test.sh --unit
       - run: ./test.sh --determinism
 
-  # Windows, where the engine has no OpenGL backend at all: GlPlatform finds one only on macOS,
-  # and --gpu says so in a sentence rather than failing. So what this job is for is the other
-  # half of that promise - that the CPU engine, which is the whole engine, still compiles and
-  # still passes its units on a platform the card's half was never written for. The golden
-  # frames are not checked here (they are tied to a CPU, see below) and neither is determinism,
-  # which the Linux and macOS jobs already cover.
+  # Windows: GlWgl is the backend here and this is the only machine that ever runs it, so the job
+  # is what says that half of GlPlatform still works - and, since 2026-09-27, that lib/fetch.sh
+  # picks the right natives and the scripts get the classpath separator right on a Unix shell in
+  # front of a Windows JVM. The golden frames are not checked here (they are tied to a CPU, see
+  # below) and neither is determinism, which the Linux and macOS jobs already cover.
   windows:
     runs-on: windows-latest
     defaults:
