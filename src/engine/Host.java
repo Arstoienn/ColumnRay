@@ -83,6 +83,8 @@ public final class Host {
     /** The window the picture goes to and the controls come from. Null until it is up, and null
      *  for good in a headless capture, which renders frames without ever opening one. */
     private Surface surface;
+    /** --glfw: which of the two windows to open. See Surface. */
+    private final boolean glfw;
     /** Mouse look: the game asked for the pointer to be held at the middle of the window, so that
      *  moving the mouse turns the view without a button held. What the game asked for, which is not
      *  the same as what is happening - it only happens while a window of ours is in front. */
@@ -170,6 +172,7 @@ public final class Host {
         this.winW = o.winW;
         this.winH = o.winH;
         this.targetFps = o.targetFps;
+        this.glfw = o.glfw;
         this.image = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
         this.out = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
         this.hi = o.ss == 1 ? out : new int[RW * RH];   // SS = 1: the pitch warp writes straight into the window image
@@ -366,7 +369,7 @@ public final class Host {
     /** Open the window and run this game until something stops it. */
     public void run(Game g) throws Exception {
         this.game = g;
-        surface = new SurfaceAwt();
+        surface = glfw ? new SurfaceGlfw() : new SurfaceAwt();
         surface.open("ColumnRay - " + world.name, winW, winH, rayView, events);
         if (mouseLook) surface.mouseLook(true);
 
@@ -703,6 +706,11 @@ public final class Host {
         viewW = dw;
         viewH = dh;
         surface.present(g -> drawFrame(g, viewX, viewY, dw, dh, rayView.visible()));
+        // A window with a context of its own made it current to show that frame, and the card's
+        // framebuffers and textures are not in it. Ask for the engine's context back before the
+        // next frame shades anything. Does nothing on the CPU path, or under AWT, which has no
+        // context at all.
+        if (useGpu) Gl.reclaim();
     }
 
     /** The finished picture, scaled into place, and whatever the game draws over it. */

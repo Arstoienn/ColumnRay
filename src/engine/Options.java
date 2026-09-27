@@ -26,6 +26,15 @@ public final class Options {
     /** --hdr: shade in light and tone map at the end, instead of multiplying sRGB numbers. */
     public boolean hdr;
     /**
+     * --glfw: put the picture in a GLFW window instead of the AWT one.
+     *
+     * Not the default yet: it does not open the ray view, and off macOS it has no key state to
+     * read, because {@code Keys} still falls back to AWT events there. Both are being moved. It
+     * needs the JVM started with -XstartOnFirstThread, which is why {@code run.sh} looks for this
+     * flag itself rather than leaving it to this class.
+     */
+    public boolean glfw;
+    /**
      * Shade the frame on the graphics card. On by default since the card was finished: it draws
      * the same picture three to four times faster, and the CPU path stays as the thing that says
      * what the picture should have been. --cpu asks for that path instead.
@@ -83,6 +92,8 @@ public final class Options {
                 play = true;
             } else if (args[i].equals("--hdr")) {
                 hdr = true;
+            } else if (args[i].equals("--glfw")) {
+                glfw = true;
             } else if (args[i].equals("--unlit") || args[i].equals("--flat")) {
                 // --flat was the old name, and it reads like a camera that does not tilt rather
                 // than a world with no lightmaps in it. Kept, because the scripts say it.

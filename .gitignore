@@ -23,3 +23,8 @@ __pycache__/
 # one `git add -A` away from being in the history for good.
 out-*/
 out.tmp/
+
+# LWJGL, fetched by lib/fetch.sh against the checksums tracked in it. Four megabytes of binary a
+# platform that Maven Central already hosts; what belongs in the history is the version and the
+# hash, which are in the script.
+/lib/*.jar
