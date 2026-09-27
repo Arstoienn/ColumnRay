@@ -54,6 +54,18 @@ public final class Options {
 
     private Options() {}
 
+    /**
+     * Does this command line want the GLFW window?
+     *
+     * Asked before {@link #parse} for the same reason {@link #headless} is: what happens before
+     * the window opens depends on it, and here that is whether to ask Text Services for the key
+     * caps at all. GLFW names them itself, later and without the call that once registered this
+     * process as a background-only app.
+     */
+    public static boolean glfw(String[] args) {
+        return Arrays.stream(args).anyMatch(a -> a.equals("--glfw"));
+    }
+
     /** Does this command line open a window? A headless run must not ask about the keyboard. */
     public static boolean headless(String[] args) {
         return Arrays.stream(args).anyMatch(a ->

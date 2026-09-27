@@ -123,8 +123,34 @@ public final class Keys {
 
     private Keys() { }
 
+    /**
+     * A window that can answer about key positions itself.
+     *
+     * Everything above this line is macOS working out what the machine is doing behind AWT's back,
+     * because AWT names a letter key by what the layout prints on it and carries no position at
+     * all. A window toolkit that does carry positions can simply be asked, and GLFW is one: its
+     * key tokens are positions, {@code glfwGetKeyScancode(GLFW_KEY_W)} is 13 - which is what
+     * {@link #W} has always been - and all thirty-three of the positions below agree with it.
+     *
+     * Installed by the window while it is open, so this class never learns which toolkit it is.
+     * It is also what makes the keyboard work off macOS, where {@link #physical()} is false and
+     * the AWT fallback reads the board as plain US QWERTY.
+     */
+    public interface Source {
+        /** Is the key in this position held down right now? */
+        boolean down(int position);
+
+        /** What this keyboard prints on that position, or null if the window cannot say. */
+        String label(int position);
+    }
+
+    private static volatile Source source;
+
+    /** Let a window answer the keyboard for as long as it is open; null gives it back. */
+    public static void source(Source s) { source = s; }
+
     /** Are we reading key positions from the machine, rather than guessing from AWT key codes? */
-    public static boolean physical() { return KEY_STATE != null; }
+    public static boolean physical() { return source != null || KEY_STATE != null; }
 
     /**
      * Set once a key event arrives while the machine says no key at all is held. macOS answers the
@@ -141,6 +167,8 @@ public final class Keys {
 
     /** Is the key in this position held down right now? */
     public static boolean down(int key) {
+        Source s = source;
+        if (s != null) return s.down(key);
         if (KEY_STATE == null || nativeDead) return held.contains(key);
         return nativeDown(key);
     }
@@ -227,8 +255,19 @@ public final class Keys {
         }
     }
 
-    /** How this keyboard labels the key in this position, e.g. "R" for {@link #S} on Colemak. */
+    /**
+     * How this keyboard labels the key in this position, e.g. "R" for {@link #S} on Colemak.
+     *
+     * A window that can answer is asked first, and answers live rather than from what was read
+     * before the windows went up - which is the whole of why readLabels() had to be called so
+     * early, and why it had to make the process an ordinary app before asking.
+     */
     public static String label(int key) {
+        Source s = source;
+        if (s != null) {
+            String named = s.label(key);
+            if (named != null) return named;
+        }
         String read = labels.get(key);
         return read != null ? read : KeyEvent.getKeyText(VK.getOrDefault(key, KeyEvent.VK_UNDEFINED));
     }

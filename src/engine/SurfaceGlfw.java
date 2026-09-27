@@ -38,7 +38,39 @@ import org.lwjgl.system.MemoryUtil;
  * happy). And it takes the GL context whenever it shows a frame, so the engine asks for its own
  * back through {@link Gl#reclaim()}; when the card's work moves onto this context, that goes away.
  */
-final class SurfaceGlfw implements Surface {
+final class SurfaceGlfw implements Surface, Keys.Source {
+
+    /**
+     * Every key position the game uses, as {@link Keys} numbers it, paired with GLFW's token for
+     * the same place on the board.
+     *
+     * Both columns are positions and neither is a letter, which is the only reason this table can
+     * be written down at all: GLFW's tokens are named for what a US board prints but defined by
+     * where the key sits, and {@link Keys}' numbers are macOS virtual key codes, which are the
+     * same thing said differently. {@code check()} proves it rather than trusting it.
+     */
+    private static final int[][] POSITIONS = {
+            {Keys.A, GLFW_KEY_A}, {Keys.S, GLFW_KEY_S}, {Keys.D, GLFW_KEY_D}, {Keys.F, GLFW_KEY_F},
+            {Keys.H, GLFW_KEY_H}, {Keys.G, GLFW_KEY_G}, {Keys.C, GLFW_KEY_C}, {Keys.V, GLFW_KEY_V},
+            {Keys.Q, GLFW_KEY_Q}, {Keys.W, GLFW_KEY_W}, {Keys.E, GLFW_KEY_E}, {Keys.R, GLFW_KEY_R},
+            {Keys.EQUALS, GLFW_KEY_EQUAL}, {Keys.MINUS, GLFW_KEY_MINUS},
+            {Keys.RIGHT_BRACKET, GLFW_KEY_RIGHT_BRACKET}, {Keys.LEFT_BRACKET, GLFW_KEY_LEFT_BRACKET},
+            {Keys.P, GLFW_KEY_P}, {Keys.L, GLFW_KEY_L}, {Keys.COMMA, GLFW_KEY_COMMA},
+            {Keys.N, GLFW_KEY_N}, {Keys.M, GLFW_KEY_M}, {Keys.PERIOD, GLFW_KEY_PERIOD},
+            {Keys.SPACE, GLFW_KEY_SPACE}, {Keys.TAB, GLFW_KEY_TAB}, {Keys.ESCAPE, GLFW_KEY_ESCAPE},
+            {Keys.SHIFT, GLFW_KEY_LEFT_SHIFT}, {Keys.CONTROL, GLFW_KEY_LEFT_CONTROL},
+            {Keys.RIGHT_SHIFT, GLFW_KEY_RIGHT_SHIFT}, {Keys.RIGHT_CONTROL, GLFW_KEY_RIGHT_CONTROL},
+            {Keys.LEFT, GLFW_KEY_LEFT}, {Keys.RIGHT, GLFW_KEY_RIGHT},
+            {Keys.DOWN, GLFW_KEY_DOWN}, {Keys.UP, GLFW_KEY_UP},
+    };
+
+    /** Keys' position -> GLFW's token, filled from POSITIONS; -1 for a position nobody binds. */
+    private static final int[] TOKEN = new int[128];
+    static {
+        java.util.Arrays.fill(TOKEN, -1);
+        for (int[] pair : POSITIONS) if (pair[0] >= 0 && pair[0] < TOKEN.length) TOKEN[pair[0]] = pair[1];
+    }
+
     private long window;
     private Events to;
     private volatile boolean mouseLook;
@@ -127,6 +159,8 @@ final class SurfaceGlfw implements Surface {
         });
 
         buildGl();
+        check();
+        Keys.source(this);
         glfwShowWindow(window);
         glfwFocusWindow(window);
         // The engine's own context was made before this window existed - Main asks for the card
@@ -188,6 +222,7 @@ final class SurfaceGlfw implements Surface {
     @Override
     public void close() {
         if (window == MemoryUtil.NULL) return;
+        Keys.source(null);
         if (upload != null) {
             MemoryUtil.memFree(upload);
             upload = null;
@@ -198,6 +233,43 @@ final class SurfaceGlfw implements Surface {
         glfwTerminate();
         GLFWErrorCallback cb = glfwSetErrorCallback(null);
         if (cb != null) cb.free();
+    }
+
+    @Override
+    public boolean down(int position) {
+        int token = position >= 0 && position < TOKEN.length ? TOKEN[position] : -1;
+        return token >= 0 && glfwGetKey(window, token) == GLFW_PRESS;
+    }
+
+    @Override
+    public String label(int position) {
+        int token = position >= 0 && position < TOKEN.length ? TOKEN[position] : -1;
+        if (token < 0) return null;
+        String name = glfwGetKeyName(token, 0);
+        // Null for every key that prints nothing - Space, Shift, the arrows - and those are where
+        // they are on every layout, so Keys' own names for them are right.
+        return name == null || name.isEmpty() ? null : name.toUpperCase();
+    }
+
+    /**
+     * Say so if GLFW and {@link Keys} disagree about where a key is.
+     *
+     * On macOS a GLFW token's scancode is the macOS virtual key code, which is exactly the number
+     * Keys files the position under, so the whole table can be checked against the machine rather
+     * than against a comment. Elsewhere the scancodes are a different numbering and there is
+     * nothing to compare, so this asks nothing. A mismatch would move somebody's WASD one key over
+     * and is worth a line on stderr rather than a puzzle.
+     */
+    private static void check() {
+        if (!System.getProperty("os.name", "").startsWith("Mac")) return;
+        StringBuilder wrong = new StringBuilder();
+        for (int[] pair : POSITIONS) {
+            int scancode = glfwGetKeyScancode(pair[1]);
+            if (scancode != pair[0]) wrong.append(' ').append(pair[0]).append("!=").append(scancode);
+        }
+        if (wrong.length() > 0)
+            System.err.println("keys: GLFW and Keys disagree about" + wrong
+                    + " - the bindings will be in the wrong places");
     }
 
     /**
