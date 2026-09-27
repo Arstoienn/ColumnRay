@@ -37,11 +37,11 @@ jobs:
       - run: ./test.sh --unit
       - run: ./test.sh --determinism
 
-  # Windows: GlWgl is the backend here and this is the only machine that ever runs it, so the job
-  # is what says that half of GlPlatform still works - and, since 2026-09-27, that lib/fetch.sh
-  # picks the right natives and the scripts get the classpath separator right on a Unix shell in
-  # front of a Windows JVM. The golden frames are not checked here (they are tied to a CPU, see
-  # below) and neither is determinism, which the Linux and macOS jobs already cover.
+  # Windows: the job says that lib/fetch.sh picks the right natives, that the scripts get the
+  # classpath separator right on a Unix shell in front of a Windows JVM, and - since GLFW replaced
+  # the per-platform backends - that a context can be had here at all. The golden frames are not
+  # checked here (they are tied to a CPU, see below) and neither is determinism, which the Linux
+  # and macOS jobs already cover.
   windows:
     runs-on: windows-latest
     defaults:

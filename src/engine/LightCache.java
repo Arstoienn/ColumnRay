@@ -72,10 +72,10 @@ final class LightCache {
     private static final Set<String> BAKES_NOT = Set.of(
             "Host", "Game", "View", "Input", "Body", "Options", "Renderer", "Warp", "Capture",
             "Minimap", "RayView", "DynamicResolution", "Keys", "Pointer", "LightCache", "Hash",
-            "Surface", "SurfaceAwt", "SurfaceGlfw",
+            "Surface", "SurfaceGlfw",
             "Gl", "GlMaterials", "GpuSpike", "GpuMatCheck", "GpuCheck", "GpuSpans", "GpuWalls",
             "GpuLights", "GpuTextures", "GpuMaterials", "GpuTable", "GpuMasks",
-            "GlPlatform", "GlCgl", "GlWgl");
+            "Glfw", "GpuNote");
 
     private LightCache() {}
 

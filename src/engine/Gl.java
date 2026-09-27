@@ -1,5 +1,6 @@
 package engine;
 
+import static org.lwjgl.glfw.GLFW.glfwMakeContextCurrent;
 import static org.lwjgl.opengl.GL33C.*;
 
 import java.lang.foreign.MemorySegment;
@@ -18,11 +19,12 @@ import org.lwjgl.opengl.GL;
  * pixel arguments are still {@link MemorySegment}, because the callers allocate their buffers with
  * an {@code Arena} and LWJGL takes a raw address for exactly this.
  *
- * {@link #context} still makes a context with no window behind it, through {@link GlPlatform}.
- * Rendering goes into a framebuffer and comes back through {@link #readPixels}, so the window is
- * still whatever window the engine already has. {@code GpuSpike} measured that trade: at 1080p the
- * read costs 1.8 ms against a CPU frame of 23.7, so it is worth paying until it is not - and what
- * stops it being paid is a single context, which is the next step and not this one.
+ * {@link #context} makes a context with no window behind it, which is now a hidden GLFW window -
+ * see {@link Glfw}. Rendering goes into a framebuffer and comes back through {@link #readPixels}.
+ * {@code GpuSpike} measured that trade: at 1080p the read costs 1.8 ms against a CPU frame of 23.7,
+ * so it is worth paying until it is not. What would stop it being paid is the pitch warp moving
+ * onto the card as well, because that is what the frame comes back to the CPU for; every window is
+ * already made sharing this context, so the texture would be there waiting for it.
  */
 final class Gl {
     static final int TEXTURE_2D = 0x0DE1, FLOAT = 0x1406, RGBA = 0x1908, UNSIGNED_BYTE = 0x1401,
@@ -38,8 +40,6 @@ final class Gl {
             RGB8 = 0x8051, UNPACK_ALIGNMENT = 0x0CF5, MAX_TEXTURE_SIZE = 0x0D33, RGB16F = 0x881B,
             HALF_FLOAT = 0x140B;
 
-    private static final GlPlatform PLATFORM = GlPlatform.get();
-
     private Gl() {}
 
     private static boolean current;
@@ -53,9 +53,9 @@ final class Gl {
      */
     static void context() {
         if (current) return;
-        current = true;
-        PLATFORM.makeCurrent();
+        glfwMakeContextCurrent(Glfw.root());
         GL.createCapabilities();
+        current = true;                                          // only once the context is real
     }
 
     /**
@@ -67,7 +67,7 @@ final class Gl {
      * thread's and were set when the context was made, so only the context itself comes back.
      */
     static void reclaim() {
-        if (current) PLATFORM.makeCurrent();
+        if (current) glfwMakeContextCurrent(Glfw.root());
     }
 
     static int texture() { return glGenTextures(); }

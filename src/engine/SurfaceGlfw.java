@@ -8,7 +8,6 @@ import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.nio.IntBuffer;
 import org.lwjgl.glfw.Callbacks;
-import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryUtil;
 
@@ -118,8 +117,7 @@ final class SurfaceGlfw implements Surface, Keys.Source {
     @Override
     public void open(String title, int wantW, int wantH, Events to) {
         this.to = to;
-        GLFWErrorCallback.createPrint(System.err).set();
-        if (!glfwInit()) throw new IllegalStateException("GLFW would not start");
+        Glfw.start();
 
         // 3.3 core is the real requirement - GpuWalls' shaders say #version 330 - and macOS gives
         // 4.1 for asking. Forward-compatible, because macOS will not give a core profile otherwise.
@@ -136,11 +134,11 @@ final class SurfaceGlfw implements Surface, Keys.Source {
         double fit = Math.min(1, Math.min((mw[0] - 16) / (double) wantW, (mh[0] - 48) / (double) wantH));
         int w = Math.max(160, (int) (wantW * fit)), h = Math.max(90, (int) (wantH * fit));
 
-        window = glfwCreateWindow(w, h, title, MemoryUtil.NULL, MemoryUtil.NULL);
-        if (window == MemoryUtil.NULL) {
-            glfwTerminate();
-            throw new IllegalStateException("GLFW would not open a window");
-        }
+        // Sharing the engine's context: a texture the renderer writes is a texture this window
+        // can read. Nothing uses that yet - the frame still comes back through the CPU for the
+        // pitch warp - but it is what makes removing that round trip possible at all.
+        window = glfwCreateWindow(w, h, title, MemoryUtil.NULL, Glfw.share());
+        if (window == MemoryUtil.NULL) throw new IllegalStateException("GLFW would not open a window");
         glfwSetWindowPos(window, mx[0] + 8, my[0] + 8);
         glfwMakeContextCurrent(window);
         GL.createCapabilities();
@@ -418,9 +416,7 @@ final class SurfaceGlfw implements Surface, Keys.Source {
         Callbacks.glfwFreeCallbacks(window);
         glfwDestroyWindow(window);
         window = MemoryUtil.NULL;
-        glfwTerminate();
-        GLFWErrorCallback cb = glfwSetErrorCallback(null);
-        if (cb != null) cb.free();
+        Glfw.terminate();
     }
 
     @Override
