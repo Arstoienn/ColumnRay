@@ -7,9 +7,16 @@
 # so a run that starts during a build never sees half of one.
 set -euo pipefail
 cd "$(dirname "$0")"
-if [ ! -f out/.built ] || [ -n "$(find src -name '*.java' -newer out/.built -print -quit)" ]; then
+# The one dependency: LWJGL, the window and the GL entry points. Fetched rather than committed;
+# see lib/fetch.sh, which checks the hash of every jar it writes.
+./lib/fetch.sh
+CP=$(ls lib/*.jar | tr '\n' ':')
+# The parentheses matter: without them -newer binds only to the *.jar branch, every .java file
+# matches the first one, and -print never runs - so the test comes out empty and nothing is ever
+# rebuilt. That shipped for about ten minutes and cost a confusing stack trace.
+if [ ! -f out/.built ] || [ -n "$(find src lib \( -name '*.java' -o -name '*.jar' \) -newer out/.built -print -quit)" ]; then
     rm -rf out.tmp
-    javac -d out.tmp $(find src -name '*.java')
+    javac -cp "$CP" -d out.tmp $(find src -name '*.java')
     touch out.tmp/.built
     rm -rf out
     mv out.tmp out

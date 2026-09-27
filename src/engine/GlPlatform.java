@@ -25,7 +25,13 @@ interface GlPlatform {
     /** The library holding the GL entry points. */
     SymbolLookup library();
 
-    /** Make a context with no drawable current on this thread, or throw saying why not. */
+    /**
+     * Make a context with no drawable current on this thread, or throw saying why not.
+     *
+     * Called again it must take the same context back, not make a second one: a window with a
+     * context of its own makes that one current every time it shows a frame, and the engine's
+     * framebuffers and textures live in this one.
+     */
     void makeCurrent();
 
     /** What to call this in a message. */
