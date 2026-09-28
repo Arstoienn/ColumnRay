@@ -60,7 +60,8 @@ public final class Occluder {
                 }
                 for (int m = gp.start[k]; m < gp.end[k]; m++) {
                     Shape s = w.shapes[gp.members[m]];
-                    if (z > s.bottomAt(x, y) && z < s.topAt(x, y) && contains(s, x, y)) return false;
+                    if (paint(s)) continue;
+                    if (z > s.bottomAt(x, y) && z < s.topAt(x, y) && contains(s, x, y) && !clearAt(s, x, y)) return false;
                 }
             }
         }
@@ -186,12 +187,14 @@ public final class Occluder {
 
     /** Does the segment pass through the shape: cross its footprint at a height inside [z0, h]? */
     private static boolean blocks(Shape s, double ax, double ay, double az, double dx, double dy, double dz) {
+        if (paint(s)) return false;
         double s1, s2;
         switch (s.kind) {
             case SEG -> {
                 SegHit h = Geometry.raySeg(ax, ay, dx, dy, s.ax, s.ay, s.bx, s.by);
                 if (h == null || h.t() < 0 || h.t() > 1) return false;
                 if (hole(s, h.u(), az + dz * h.t())) return false;
+                if (s.amap != null && clearSide(s, h.u(), az + dz * h.t())) return false;
                 s1 = s2 = h.t();
             }
             case CIRCLE -> {
@@ -209,8 +212,20 @@ public final class Occluder {
         }
         if (s2 < s1) return false;
         double za = az + dz * s1, zb = az + dz * s2;
-        if (s.hx == 0 && s.hy == 0 && s.zx == 0 && s.zy == 0)
-            return Math.max(za, zb) > s.z0 + 1e-6 && Math.min(za, zb) < s.h - 1e-6;
+        if (s.hx == 0 && s.hy == 0 && s.zx == 0 && s.zy == 0) {
+            if (!(Math.max(za, zb) > s.z0 + 1e-6 && Math.min(za, zb) < s.h - 1e-6)) return false;
+            if (s.amap == null || s.kind == Kind.SEG) return true;
+            // Where the segment is inside the slab: its middle, which for a decal a few millimetres
+            // thick is to all purposes the one point it crosses.
+            double e1 = s1, e2 = s2;
+            if (Math.abs(zb - za) > 1e-12) {
+                double ta = s1 + (s.z0 - za) / (zb - za) * (s2 - s1), tb = s1 + (s.h - za) / (zb - za) * (s2 - s1);
+                e1 = Math.max(s1, Math.min(ta, tb));
+                e2 = Math.min(s2, Math.max(ta, tb));
+            }
+            double tm = (e1 + e2) / 2;
+            return !clearAt(s, ax + dx * tm, ay + dy * tm);
+        }
         // Tilted: the segment, the top and the bottom are all straight lines over [s1, s2], so it
         // is inside the slab somewhere exactly when "above the bottom" and "below the top" overlap.
         double b0 = s.bottomAt(ax, ay), bs = s.bottomSlope(dx, dy);
@@ -227,7 +242,50 @@ public final class Occluder {
                 hi = Math.min(hi, -c0 / c1);
             }
         }
-        return s1 == s2 ? lo <= hi : lo < hi;
+        boolean in = s1 == s2 ? lo <= hi : lo < hi;
+        if (!in || s.amap == null || s.kind == Kind.SEG) return in;
+        double tm = (lo + hi) / 2;
+        return !clearAt(s, ax + dx * tm, ay + dy * tm);
+    }
+
+    /**
+     * A cut-out that is paint: a decal a few centimetres thick at most, lying close to level - the
+     * paving, cracks and rubble a converted map lays over its ground. The bake does not see it at
+     * all, neither as a shadow nor as something a sample point can be inside.
+     *
+     * Honouring its alpha is not enough; that was measured, and on Haven's paving it changed not one
+     * of the speckles. The ground under a decal is only ever seen through the decal's clear parts,
+     * and there it is lit exactly as the decal is - but a lightmap texel is half a metre across, it
+     * takes its samples three centimetres above the ground, and a decal lying two to five
+     * centimetres up is right on top of them, opaque over most of the texel. So the texel learned
+     * the light *under the paving*, dark, and the renderer showed that through the paving's gaps: a
+     * speckling of dots a third darker than the ground around them, strung along the seams between
+     * its triangles, 125 of them on one camera's foreground. Treated as paint, one was left.
+     * Paint casts no shadow worth having; anything else cut out - netting, a card of leaves, a
+     * fence - still stops light where it is opaque, see {@link #clearAt}.
+     */
+    static boolean paint(Shape s) {
+        return s.amap != null && s.kind == Kind.POLY && s.h - s.z0 <= 0.05
+                && Math.abs(s.hx) <= 0.6 && Math.abs(s.hy) <= 0.6;
+    }
+
+    /**
+     * Is a cut-out clear at (x, y) of its plan - does its alpha image let light through there?
+     *
+     * The renderer has always drawn a cut-out as what it is: an image with holes in it, blended over
+     * whatever is behind, hiding nothing where it is clear. The bake did not know that. It saw
+     * {@code amap} nowhere, so every cut-out was a solid slab to it: a card of leaves cast a
+     * rectangle of shadow, netting a solid one. Asking the same alpha the renderer asks makes the
+     * two agree about what is there. (For the decals lying on the ground this is not enough, and
+     * they are not asked: see {@link #paint}.)
+     */
+    private static boolean clearAt(Shape s, double x, double y) {
+        return s.amap != null && Materials.mappedAt0(s.amap, s.uv, x, y, 0) < 0.5;
+    }
+
+    /** The same for a cut-out wall - netting, a card of leaves - at (distance along it, height). */
+    private static boolean clearSide(Shape s, double u, double z) {
+        return Materials.mappedAt0(s.amap, s.uv, u * s.len, z, 0) < 0.5;
     }
 
     /**
@@ -398,6 +456,7 @@ public final class Occluder {
      *  the shape occupies, otherwise through the top or the bottom if it crosses that plane inside
      *  the footprint. A segment that starts inside the footprint can only enter through a plane. */
     private static void shapeHit(Shape s, double ax, double ay, double az, double dx, double dy, double dz, Hit out) {
+        if (paint(s)) return;
         double t1, t2;
         int face = 0;
         boolean inside;
@@ -407,6 +466,7 @@ public final class Occluder {
                 SegHit h = Geometry.raySeg(ax, ay, dx, dy, s.ax, s.ay, s.bx, s.by);
                 if (h == null || h.t() < 0 || h.t() > 1) return;
                 if (hole(s, h.u(), az + dz * h.t())) return;
+                if (s.amap != null && clearSide(s, h.u(), az + dz * h.t())) return;
                 t1 = t2 = h.t();
                 inside = false;
                 face = dx * -h.ey() + dy * h.ex() < 0 ? 0 : 1;             // face 0's normal is (-ey, ex)
@@ -435,6 +495,9 @@ public final class Occluder {
         double h0 = s.topAt(ax, ay), hs = s.topSlope(dx, dy);
         double zb = b0 + bs * t1;
         if (!inside && za > zb + 1e-6 && za < h0 + hs * t1 - 1e-6) {
+            // Into a cut-out through its edge where it is clear: through it. A cut-out is a decal
+            // or a card, millimetres thick, so there is no inside worth the ray finding.
+            if (s.kind != Kind.SEG && clearAt(s, ax + dx * t1, ay + dy * t1)) return;
             keep(out, t1, Hit.SIDE, s.id, face);
             return;
         }
@@ -443,7 +506,8 @@ public final class Occluder {
         double rate = dz - (below ? bs : hs);
         if (rate == 0) return;
         double tp = ((below ? b0 : h0) - az) / rate;
-        if (tp >= t1 && tp <= t2) keep(out, tp, below ? Hit.BOTTOM : Hit.TOP, s.id, 0);
+        if (tp >= t1 && tp <= t2 && !clearAt(s, ax + dx * tp, ay + dy * tp))
+            keep(out, tp, below ? Hit.BOTTOM : Hit.TOP, s.id, 0);
     }
 
     /** Is the height range z1..z2 inside one open span of the stack: a storey's [floor, ceil), or
