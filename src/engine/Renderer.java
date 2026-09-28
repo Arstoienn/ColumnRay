@@ -40,8 +40,13 @@ final class Renderer {
 
     private static final double TIE = 1e-6;   // when a wall sits exactly on a region boundary, draw the wall first
 
-    /** -Ddebug.who: the albedo buffer carries which surface painted a pixel, not its colour. */
-    static final boolean WHO = Boolean.getBoolean("debug.who");
+    /** -Ddebug.who: the albedo buffer carries which surface painted a pixel, not its colour.
+     *  -Ddebug.who=map carries which lightmap lit it instead, which is a different question: a
+     *  plane's Surf names the shape whose image wins there, and a hundred of those can share one
+     *  map - so "the same surface" and "the same light" are not the same answer. */
+    static final boolean WHO = System.getProperty("debug.who") != null
+            && !"false".equals(System.getProperty("debug.who"));
+    static final boolean WHO_MAP = "map".equals(System.getProperty("debug.who"));
 
     static final class Camera {
         double x, y;          // position
@@ -1662,6 +1667,10 @@ final class Renderer {
          * and to name the shape either way. A debugging aid, not part of any picture.
          */
         private int who() {
+            if (WHO_MAP) {
+                Lighting.LightMap m = shKind == 1 ? shLm : shSurf == null ? null : shSurf.lm;
+                return ((shKind & 3) << 21) | (m == null ? 0x1FFFFF : System.identityHashCode(m) & 0x1FFFFF);
+            }
             Shape s = shKind == 1 ? shShape : shSurf == null ? null : shSurf.owner;
             return ((shKind & 3) << 21) | (s == null ? 0x1FFFFF : s.id & 0x1FFFFF);
         }

@@ -137,7 +137,31 @@ final class Lighting {
     /** One surface's bake: the light that arrives straight from a source, and the light that
      *  arrives off other surfaces. They are kept apart so a bounce pass can be redone from the
      *  previous pass's totals without the direct half being counted again. */
-    private record Job(LightMap map, Place place, boolean[] ok, float[] direct, float[] bounced) {}
+    private record Job(LightMap map, Place place, boolean[] ok, float[] direct, float[] bounced, Own own) {}
+
+    /**
+     * The extent of the surface a map belongs to, for a map whose plane is not level.
+     *
+     * A map's grid is snapped to the world lattice and is at least 2x2, because bilinear needs four
+     * corners, so it reaches past the surface it is for - by up to a texel in each direction. On a
+     * level plane that costs nothing: the plane is the same height out there as it is here, and
+     * sharing the lattice is what lets two neighbouring maps agree at their seam. On a sloped one it
+     * is ruinous. A triangulation leaves slivers a centimetre wide whose plane, written as
+     * z = h + hx*(x - midX) + hy*(y - midY), has an hy of 33 or 57 - the slope of something a
+     * centimetre across that rises a few millimetres. Extrapolate that half a metre to the nearest
+     * lattice line and the sample point is twelve metres underground at one corner and sixteen
+     * metres in the air at the other: one reads ambient, 0.46, the other full sun, 2.76, and the
+     * bilinear between them paints the slab. Haven's paving is thousands of these, side by side,
+     * which is why ground in one sunlit plane came out as a patchwork of flat rectangles.
+     *
+     * So a sloped map samples inside the surface it is for: a point outside the box is pulled to its
+     * edge. Level maps keep the lattice and are not touched - clamping those was tried and made the
+     * picture measurably worse, because there the extrapolation was right and the phase was real.
+     */
+    private record Own(double u0, double v0, double u1, double v1) {
+        double u(double u) { return Math.max(u0, Math.min(u1, u)); }
+        double v(double v) { return Math.max(v0, Math.min(v1, v)); }
+    }
 
     private record Light(double x, double y, double z, float r, float g, float b, double range) {}
 
@@ -296,7 +320,8 @@ final class Lighting {
         side = new LightMap[ns][];
         List<Job> jobs = new ArrayList<>();
         List<Flat> flats = new ArrayList<>();                    // collected rather than allocated,
-        List<Wall> walls = new ArrayList<>();                    // so that a plane can share one map
+        List<Tilted> tilts = new ArrayList<>();                  // so that a plane can share one map
+        List<Wall> walls = new ArrayList<>();
 
         double roof = Double.NEGATIVE_INFINITY;                  // the top of the building
         for (Region r : w.regions) {
@@ -342,7 +367,7 @@ final class Lighting {
                                 double a = u / rad - Math.PI;         // the renderer's u = (atan2 + pi) * r
                                 set(p, cx + rad * Math.cos(a), cy + rad * Math.sin(a), v);
                                 set(n, Math.cos(a), Math.sin(a), 0);
-                            }, s.color, s.mat)};
+                            }, s.color, s.mat, null)};
                 }
                 case POLY -> {
                     LightMap[] faces = new LightMap[s.xs.length];
@@ -356,29 +381,34 @@ final class Lighting {
                 }
             }
             if (s.kind != Kind.SEG) {
-                // A sloped top or bottom is its own plane and keeps its own map; only the truly
-                // horizontal ones can share a lattice with their neighbours.
+                // A sloped top or bottom is a plane like any other, and goes into the merge as a
+                // Tilted: a converted map's triangles are hardly ever exactly level, so handing
+                // those straight to a map of their own left nine tenths of Haven out of it.
                 double[] pxs = s.kind == Kind.POLY ? s.xs : null, pys = s.kind == Kind.POLY ? s.ys : null;
                 double ccx = s.kind == Kind.CIRCLE ? s.cx : 0, ccy = s.kind == Kind.CIRCLE ? s.cy : 0,
                         crad = s.kind == Kind.CIRCLE ? s.r : 0;
+                double midX = (s.minX + s.maxX) / 2, midY = (s.minY + s.maxY) / 2;
                 if (s.hx == 0 && s.hy == 0)
                     flats.add(new Flat(s.h, 1, s.topMat, s.color, s.minX, s.minY, s.maxX, s.maxY,
                             pxs, pys, ccx, ccy, crad, m -> top[s.id] = m));
                 else
-                    top[s.id] = add(jobs, new LightMap(snap(s.minX, texel), snap(s.minY, texel), s.maxX, s.maxY, texel),
-                            topFace(s), s.color, s.topMat);
+                    tilts.add(new Tilted(s.hx, s.hy, Tilted.at0(s.h, s.hx, s.hy, midX, midY), 1,
+                            s.topMat, s.color, s.minX, s.minY, s.maxX, s.maxY,
+                            pxs, pys, ccx, ccy, crad, m -> top[s.id] = m));
                 if (s.zLow > 0.01) {
                     if (s.zx == 0 && s.zy == 0)
                         flats.add(new Flat(s.z0, -1, s.mat, s.color, s.minX, s.minY, s.maxX, s.maxY,
                                 pxs, pys, ccx, ccy, crad, m -> bottom[s.id] = m));
                     else
-                        bottom[s.id] = add(jobs, new LightMap(snap(s.minX, texel), snap(s.minY, texel),
-                                s.maxX, s.maxY, texel), bottomFace(s), s.color, s.mat);
+                        tilts.add(new Tilted(s.zx, s.zy, Tilted.at0(s.z0, s.zx, s.zy, midX, midY), -1,
+                                s.mat, s.color, s.minX, s.minY, s.maxX, s.maxY,
+                                pxs, pys, ccx, ccy, crad, m -> bottom[s.id] = m));
                 }
             }
         }
 
         List<Piece> pieces = new ArrayList<>(flats);
+        pieces.addAll(tilts);
         pieces.addAll(walls);
         merge(jobs, pieces, texel);
 
@@ -536,8 +566,9 @@ final class Lighting {
         LightMap m = job.map;
         double[] p = new double[3], n = new double[3];
         float[] c = new float[3];
+        Own own = job.own;
         for (int i = 0; i < m.w; i++) {
-            job.place.at(m.u(i), m.v(j), p, n);
+            job.place.at(on(own, true, m.u(i)), on(own, false, m.v(j)), p, n);
             double x = p[0] + n[0] * LIFT, y = p[1] + n[1] * LIFT, z = p[2] + n[2] * LIFT;
             if (!oc.open(x, y, z)) continue;                 // inside a wall or a slab: filled in by dilate()
             int k = j * m.w + i;
@@ -547,8 +578,8 @@ final class Lighting {
             for (int t = 0; t < shadow; t++) {
                 double sx = x, sy = y, sz = z;
                 if (t > 0) {                                 // spot 0 is the texel's own centre
-                    job.place.at(m.u(i) + (rnd(k, t, 1) - 0.5) * m.step,
-                            m.v(j) + (rnd(k, t, 2) - 0.5) * m.step, p, n);
+                    job.place.at(on(own, true, m.u(i) + (rnd(k, t, 1) - 0.5) * m.step),
+                            on(own, false, m.v(j) + (rnd(k, t, 2) - 0.5) * m.step), p, n);
                     sx = p[0] + n[0] * LIFT;
                     sy = p[1] + n[1] * LIFT;
                     sz = p[2] + n[2] * LIFT;
@@ -564,6 +595,12 @@ final class Lighting {
             job.direct[k * 3 + 1] = g / taken;
             job.direct[k * 3 + 2] = b / taken;
         }
+    }
+
+    /** Where to sample for the texel at u (or v): its own place, pulled back onto the surface when
+     *  the map's plane is sloped and the texel sits off the end of it. */
+    private static double on(Own own, boolean u, double at) {
+        return own == null ? at : u ? own.u(at) : own.v(at);
     }
 
     /** A repeatable number in [0, 1) for sample t of texel k: the bake must not change run to run. */
@@ -587,10 +624,11 @@ final class Lighting {
             if (!job.ok[k]) continue;
             // Fired from a different spot in each texel, as well as in different directions, so
             // that what is left of the noise has no grid in it for the eye to lock on to.
-            job.place.at(m.u(i) + (rnd(k, 0, 3) - 0.5) * m.step, m.v(j) + (rnd(k, 0, 4) - 0.5) * m.step, p, n);
+            job.place.at(on(job.own, true, m.u(i) + (rnd(k, 0, 3) - 0.5) * m.step),
+                    on(job.own, false, m.v(j) + (rnd(k, 0, 4) - 0.5) * m.step), p, n);
             double x = p[0] + n[0] * LIFT, y = p[1] + n[1] * LIFT, z = p[2] + n[2] * LIFT;
             if (!oc.open(x, y, z)) {                         // that spot is inside something
-                job.place.at(m.u(i), m.v(j), p, n);
+                job.place.at(on(job.own, true, m.u(i)), on(job.own, false, m.v(j)), p, n);
                 x = p[0] + n[0] * LIFT;
                 y = p[1] + n[1] * LIFT;
                 z = p[2] + n[2] * LIFT;
@@ -819,28 +857,6 @@ final class Lighting {
         };
     }
 
-    /** A shape's top when it is tilted: the texel sits on the plane, and faces along its normal.
-     *  Lit as though it were flat, a roof gets the sky as if it pointed straight up and the sun as
-     *  if it never turned away from it - the one thing a sloped roof is supposed to show. */
-    private static Place topFace(Shape s) {
-        if (s.hx == 0 && s.hy == 0) return flat(s.h, 1);
-        double len = Math.sqrt(s.hx * s.hx + s.hy * s.hy + 1);
-        return (u, v, p, n) -> {
-            set(p, u, v, s.topAt(u, v));
-            set(n, -s.hx / len, -s.hy / len, 1 / len);
-        };
-    }
-
-    /** The underside, the same way: on the bottom plane, facing down and away from it. */
-    private static Place bottomFace(Shape s) {
-        if (s.zx == 0 && s.zy == 0) return flat(s.z0, -1);
-        double len = Math.sqrt(s.zx * s.zx + s.zy * s.zy + 1);
-        return (u, v, p, n) -> {
-            set(p, u, v, s.bottomAt(u, v));
-            set(n, s.zx / len, s.zy / len, -1 / len);
-        };
-    }
-
     /** A vertical face along polygon edge e: u runs from vertex e to e + 1, v is the height.
      *  The normal points out of the polygon for shapes and into it for regions. */
     private record Face(double ax, double ay, double ex, double ey, double len, double nx, double ny) implements Place {
@@ -882,7 +898,10 @@ final class Lighting {
      * against, where the surface's own u = 0 sits, and somewhere to hand the finished map back.
      */
     private interface Piece {
-        String plane();                     // surfaces that answer the same string share a map
+        String plane();                     // surfaces that answer the same string may share a map
+        double zAt(double u, double v);     // the plane's own coordinate at a point: the second half
+                                            // of the key, compared with a tolerance rather than
+                                            // matched, because it comes off a converter's floats
         double u0();
         double v0();
         double u1();
@@ -908,7 +927,12 @@ final class Lighting {
                         double[] xs, double[] ys, double cx, double cy, double rad,
                         java.util.function.Consumer<LightMap> slot) implements Piece {
 
-        public String plane() { return dir + "/" + mat + "/" + Math.round(z * 1000); }
+        // Neither the height nor the slope is in the key: two planes are compared where they meet,
+        // with a tolerance, rather than matched as strings. Rounding a height into the key puts
+        // 1.9995 and 2.0005 on two planes that no eye and no light can tell apart, and rounding a
+        // slope is worse - a converted plaza's triangles all differ in the fourth decimal.
+        public String plane() { return dir + "/" + mat; }
+        public double zAt(double u, double v) { return z; }
         public double u0() { return minX; }
         public double v0() { return minY; }
         public double u1() { return maxX; }
@@ -918,6 +942,68 @@ final class Lighting {
         public int mat() { return mat; }
         public Place place(double from, double len) { return flat(z, dir); }
         public void take(LightMap m) { slot.accept(m); }
+
+        public LightMap alone(double step) {
+            return new LightMap(snap(minX, step), snap(minY, step), maxX, maxY, step);
+        }
+
+        public boolean has(double x, double y) {
+            if (x < minX || x > maxX || y < minY || y > maxY) return false;
+            if (xs != null) return Geometry.pointInPoly(x, y, xs, ys);
+            if (rad > 0) return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= rad * rad;
+            return true;
+        }
+    }
+
+    /**
+     * A sloped surface: a roof, an eave, rocky ground, and - in a converted map - very nearly
+     * everything, because a mesh's triangles almost never come out exactly level.
+     *
+     * Its plane is z = hx*x + hy*y + c, so two pieces are in one plane when their slopes agree and
+     * their c does. Like {@link Flat} it is parameterised by the world's (x, y), which is what lets
+     * the two share one lattice and what makes a merged map's texel centres land where a flat one's
+     * would; the cost is that a texel covers step/cos(tilt) of the real surface, which for the
+     * slivers a triangulation leaves behind is a map nobody reads twice anyway.
+     *
+     * Before this, a sloped top was handed straight to a map of its own: 581,790 of Haven's 653,020
+     * polygons, so nine tenths of the map's surfaces never reached the merge at all. Each then got
+     * the smallest map there is - 2x2, because bilinear needs four corners - whose texel centres are
+     * snapped to the world lattice and therefore sit off the piece entirely, and each answered with
+     * the light somewhere that is not itself. Two paving slabs side by side in the same sunlight
+     * reported 0.68 and 2.76, and the ground read as a patchwork of flat rectangles.
+     */
+    private record Tilted(double hx, double hy, double c, int dir, int mat, int color,
+                          double minX, double minY, double maxX, double maxY,
+                          double[] xs, double[] ys, double cx, double cy, double rad,
+                          java.util.function.Consumer<LightMap> slot) implements Piece {
+
+        /** The plane's height at the world origin, which is where two of them are compared. */
+        static double at0(double h, double hx, double hy, double midX, double midY) {
+            return h - hx * midX - hy * midY;
+        }
+
+        public String plane() { return dir + "/" + mat; }
+
+        public double zAt(double u, double v) { return hx * u + hy * v + c; }
+        public double u0() { return minX; }
+        public double v0() { return minY; }
+        public double u1() { return maxX; }
+        public double v1() { return maxY; }
+        public double origin() { return 0; }
+        public int color() { return color; }
+        public int mat() { return mat; }
+        public void take(LightMap m) { slot.accept(m); }
+
+        /** The texel sits on the plane and faces along its normal. Lit as though it were flat, a
+         *  roof would get the sky as if it pointed straight up and the sun as if it never turned
+         *  away from it - the one thing a sloped roof is supposed to show. */
+        public Place place(double from, double len) {
+            double n = Math.sqrt(hx * hx + hy * hy + 1);
+            return (u, v, p, q) -> {
+                set(p, u, v, hx * u + hy * v + c);
+                set(q, -dir * hx / n, -dir * hy / n, dir / n);
+            };
+        }
 
         public LightMap alone(double step) {
             return new LightMap(snap(minX, step), snap(minY, step), maxX, maxY, step);
@@ -951,6 +1037,9 @@ final class Lighting {
                     + "/" + Math.round(face.nx() * 1e6) + "/" + Math.round(face.ny() * 1e6) + "/" + mat;
         }
 
+        // A wall's plane() already carries its line and its facing, to a tenth of a millimetre, so
+        // there is nothing left to compare with a tolerance.
+        public double zAt(double u, double v) { return 0; }
         public double u0() { return t(); }
         public double v0() { return z0; }
         public double u1() { return t() + len; }
@@ -987,13 +1076,97 @@ final class Lighting {
     private void merge(List<Job> jobs, List<Piece> pieces, double texel) {
         Map<String, List<Piece>> planes = new java.util.LinkedHashMap<>();
         for (Piece p : pieces) planes.computeIfAbsent(p.plane(), k -> new ArrayList<>()).add(p);
+        // Every run of every plane, laid out in the order its first piece was registered. The key
+        // used to carry the height as well, so a group came out where its first member did; keeping
+        // that means a map with nothing near-coplanar on it lays out exactly as it did before, and
+        // the golden lightmap digest can say so instead of moving for nothing.
+        Map<Piece, Integer> when = new java.util.IdentityHashMap<>();
+        for (Piece p : pieces) when.put(p, when.size());
+        List<List<Piece>> out = new ArrayList<>();
         for (List<Piece> plane : planes.values())
-            for (List<Piece> run : runs(plane, texel)) share(jobs, run, texel);
+            for (List<Piece> run : runs(plane, texel)) out.addAll(levels(run));
+        out.sort(java.util.Comparator.comparingInt(run -> when.get(run.get(0))));
+        for (List<Piece> run : out) share(jobs, run, texel);
+        stats(out, texel);
     }
 
-    /** The pieces of one plane, split into runs whose boxes touch. Comparing every pair would be
-     *  quadratic and a converted plane has hundreds of thousands of pieces on it, so each box is
-     *  hashed into a coarse grid and compared only against what shares a cell with it. */
+    /** -Dmerge.stats: where the pieces went, by kind. With =only it stops before the bake, so the
+     *  answer takes a minute rather than a quarter of an hour. */
+    private void stats(List<List<Piece>> runs, double texel) {
+        String how = System.getProperty("merge.stats");
+        if (how == null) return;
+        for (String kind : new String[]{"horizontal", "sloped", "upright"}) {
+            long pieces = 0, n = 0, alone = 0, aloneTexels = 0, texels = 0;
+            for (List<Piece> run : runs) {
+                Piece f = run.get(0);
+                String k = f instanceof Flat ? "horizontal" : f instanceof Tilted ? "sloped" : "upright";
+                if (!k.equals(kind)) continue;
+                n++;
+                pieces += run.size();
+                for (Piece p : run) texels += (long) p.texels(texel);
+                if (run.size() == 1) { alone++; aloneTexels += (long) f.texels(texel); }
+            }
+            System.out.printf("merge %-10s %,10d pieces -> %,8d runs, %,8d alone (%.1f%%), %,12d texels in those of %,d%n",
+                    kind, pieces, n, alone, 100.0 * alone / Math.max(1, n), aloneTexels, texels);
+        }
+        if (how.contains("only")) System.exit(0);
+    }
+
+    /**
+     * How far apart two surfaces may be along their normal and still be one plane to the bake.
+     *
+     * A centimetre, which is a fiftieth of a texel: nothing about the light a surface receives
+     * changes over it. Loosening it is not free, and this is not "as loose as you dare". Counting
+     * the texels in maps that end up with one piece on them, over Haven's horizontal pieces:
+     * 3,976 at 1 cm, 3,297 at 2, 30,875 at 5, 134,880 at 10 - it gets worse past 2 cm, because
+     * {@link #runs} starts chaining pieces that {@link #levels} then has to take apart again, and
+     * what it cannot take apart in its few passes it hands back one map each. And 2 cm, which
+     * counts best, *looks* worse: baked and rendered, the shadow across Haven's plaza came back as
+     * hard triangular bands, and the speckling over clean ground went from 125 dark pixels to 326.
+     * The count is not the picture. Change this only with a bake and a look.
+     */
+    private static final double SAME_PLANE = Double.parseDouble(System.getProperty("light.plane", "0.01"));
+
+    /**
+     * One run, split so that every piece in a group is within {@link #SAME_PLANE} of that group's
+     * own plane, measured at the piece's own middle.
+     *
+     * {@link #runs} only ever compares neighbours, so a run is a chain of pieces that each agree
+     * with the next. A surface that curves gently - rocky ground, a dished courtyard - can therefore
+     * chain a long way while its two ends are metres apart, and a map gets exactly one plane. This
+     * takes the first piece's plane, keeps everything that agrees with it, and starts again on what
+     * is left. A handful of passes covers anything flat enough to be worth merging; past that the
+     * leftovers are handed back one map each, which is what they used to get anyway.
+     */
+    private static List<List<Piece>> levels(List<Piece> run) {
+        if (run.size() == 1) return List.of(run);
+        List<List<Piece>> out = new ArrayList<>();
+        List<Piece> todo = run;
+        for (int pass = 0; pass < 8 && !todo.isEmpty(); pass++) {
+            Piece rep = todo.get(0);
+            List<Piece> keep = new ArrayList<>(), rest = new ArrayList<>();
+            for (Piece p : todo)
+                (p == rep || agree(rep, p) ? keep : rest).add(p);
+            out.add(keep);
+            todo = rest;
+        }
+        for (Piece p : todo) out.add(List.of(p));
+        return out.size() == 1 ? List.of(run) : out;
+    }
+
+    /**
+     * The pieces of one plane key, split into runs: boxes that touch, whose planes agree where they
+     * touch. Comparing every pair would be quadratic and a converted plane has hundreds of thousands
+     * of pieces on it, so each box is hashed into a coarse grid and compared only against what
+     * shares a cell with it.
+     *
+     * The grid has a third dimension, and what it holds is the plane's own height *at that cell*,
+     * not at the world origin. Measuring at the origin was the first attempt and it fails on exactly
+     * the surfaces this is for: a sliver a centimetre wide is written with a slope of 33, so its
+     * plane at the origin is hundreds of metres from where the sliver actually is, and two slivers
+     * lying side by side in the same plaza get origin heights that have nothing to do with each
+     * other. At the cell they share, two coplanar pieces agree by definition.
+     */
     private static List<List<Piece>> runs(List<Piece> plane, double texel) {
         int n = plane.size();
         int[] up = new int[n];
@@ -1002,9 +1175,13 @@ final class Lighting {
         Map<Long, List<Integer>> grid = new java.util.HashMap<>();
         for (int i = 0; i < n; i++) {
             Piece a = plane.get(i);
+            int at = i;
             for (long cu = (long) Math.floor((a.u0() - texel) / cell); cu <= (long) Math.floor((a.u1() + texel) / cell); cu++)
-                for (long cv = (long) Math.floor((a.v0() - texel) / cell); cv <= (long) Math.floor((a.v1() + texel) / cell); cv++)
-                    grid.computeIfAbsent(cu * 1_000_003L + cv, k -> new ArrayList<>()).add(i);
+                for (long cv = (long) Math.floor((a.v0() - texel) / cell); cv <= (long) Math.floor((a.v1() + texel) / cell); cv++) {
+                    long cz = (long) Math.floor(a.zAt((cu + 0.5) * cell, (cv + 0.5) * cell) / SAME_PLANE);
+                    for (long k = cz; k <= cz + 1; k++)      // two buckets, so near neighbours meet in one
+                        grid.computeIfAbsent((cu * 1_000_003L + cv) * 1_000_003L + k, q -> new ArrayList<>()).add(at);
+                }
         }
         for (List<Integer> cellOf : grid.values())
             for (int x = 0; x < cellOf.size(); x++)
@@ -1015,11 +1192,24 @@ final class Lighting {
                     Piece a = plane.get(i), b = plane.get(j);
                     if (a.u1() + texel < b.u0() || b.u1() + texel < a.u0()
                             || a.v1() + texel < b.v0() || b.v1() + texel < a.v0()) continue;
+                    if (!agree(a, b)) continue;
                     up[ra] = rb;
                 }
         Map<Integer, List<Piece>> out = new java.util.LinkedHashMap<>();
         for (int i = 0; i < n; i++) out.computeIfAbsent(find(up, i), k -> new ArrayList<>()).add(plane.get(i));
         return new ArrayList<>(out.values());
+    }
+
+    /** Whether two pieces are the same plane to the bake: their planes are within
+     *  {@link #SAME_PLANE} of each other over both of them. Both planes are linear in (u, v), so
+     *  testing the two centres bounds the difference everywhere between them. */
+    private static boolean agree(Piece a, Piece b) {
+        return apart(a, b, (a.u0() + a.u1()) / 2, (a.v0() + a.v1()) / 2) <= SAME_PLANE
+            && apart(a, b, (b.u0() + b.u1()) / 2, (b.v0() + b.v1()) / 2) <= SAME_PLANE;
+    }
+
+    private static double apart(Piece a, Piece b, double u, double v) {
+        return Math.abs(a.zAt(u, v) - b.zAt(u, v));
     }
 
     private static int find(int[] up, int i) {
@@ -1045,6 +1235,7 @@ final class Lighting {
             apart += p.texels(texel);
             colors.putIfAbsent(p.color(), colors.size());
         }
+        double u0b = u0, v0b = v0;           // the pieces' own box, before the grid is snapped out to the lattice
         u0 = snap(u0, texel);
         v0 = snap(v0, texel);
         double together = Math.max(2, Math.ceil((u1 - u0) / texel) + 1)
@@ -1052,7 +1243,8 @@ final class Lighting {
         if (run.size() == 1 || colors.size() > 256 || together > 4 * apart) {
             for (Piece p : run)
                 p.take(add(jobs, p.alone(texel), p.place(p.origin(), p.u1() - p.origin()),
-                        p.color(), p.mat()));
+                        p.color(), p.mat(),
+                        p instanceof Tilted ? new Own(p.u0(), p.v0(), p.u1(), p.v1()) : null));
             return;
         }
         Piece first = run.get(0);
@@ -1078,7 +1270,8 @@ final class Lighting {
                     if (p.has(m.u(i), m.v(j))) m.own[j * m.w + i] = c;
         }
         jobs.add(new Job(m, first.place(u0, u1 - u0), new boolean[m.w * m.h],
-                new float[m.w * m.h * 3], new float[m.w * m.h * 3]));
+                new float[m.w * m.h * 3], new float[m.w * m.h * 3],
+                first instanceof Tilted ? new Own(u0b, v0b, u1, v1) : null));
         for (Piece p : run) {
             if (p.origin() == 0) { p.take(m); continue; }
             LightMap v = m.view(u0 - p.origin());
@@ -1087,11 +1280,12 @@ final class Lighting {
         }
     }
 
-    private LightMap add(List<Job> jobs, LightMap m, Place place, int color, int mat) {
+    private LightMap add(List<Job> jobs, LightMap m, Place place, int color, int mat, Own own) {
         float[] a = rgb(color, reflect);
         System.arraycopy(a, 0, m.albedo, 0, 3);
         m.mat = mat;
-        jobs.add(new Job(m, place, new boolean[m.w * m.h], new float[m.w * m.h * 3], new float[m.w * m.h * 3]));
+        jobs.add(new Job(m, place, new boolean[m.w * m.h], new float[m.w * m.h * 3],
+                new float[m.w * m.h * 3], own));
         return m;
     }
 
