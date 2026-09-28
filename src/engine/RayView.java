@@ -7,28 +7,20 @@ import engine.World.Grid;
 import engine.World.Region;
 import engine.World.Shape;
 import java.awt.BasicStroke;
-import java.awt.Canvas;
 import java.awt.Color;
-import java.awt.Dimension;
-import java.awt.EventQueue;
 import java.awt.Font;
 import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
-import java.awt.Window;
-import java.awt.event.MouseAdapter;
-import java.awt.event.MouseEvent;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Line2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
-import java.awt.image.BufferStrategy;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
-import javax.swing.JFrame;
 
 /** Second window: a top-down view of where every column's ray goes and where it stops. */
 final class RayView {
@@ -65,8 +57,8 @@ final class RayView {
      *  antialiased shape operations per frame - by far the most expensive thing this window did. */
     private BufferedImage staticMap;
     private double mapX0, mapY0, mapPpm;
-    private JFrame frame;
-    private Canvas canvas;
+    /** The second window, or null until the game has one to give. See Surface.Panel. */
+    private Surface.Panel panel;
     private volatile double zoom = 30;               // pixels per metre
     private volatile boolean followTurn = true;      // keep the player pointing up, so left/right match the main view
 
@@ -150,62 +142,41 @@ final class RayView {
         d.dispose();
     }
 
-    /** Call on the EDT: opens to the right of the main window, at the same height. */
-    void open(Window owner, int width) {
-        frame = new JFrame("Ray view");
-        canvas = new Canvas();
-        int h = owner.getHeight() - owner.getInsets().top - owner.getInsets().bottom;
-        canvas.setPreferredSize(new Dimension(width, h));
-        canvas.setIgnoreRepaint(true);
-        frame.add(canvas);
-        frame.pack();
-        frame.setLocation(owner.getX() + owner.getWidth() + 6, owner.getY());
-        frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
-        // Closed until R asks for it: it is a debugging window, and redrawing it every frame cost
-        // about 5 ms. pack() has made the canvas displayable, which is all the buffer strategy needs.
-        canvas.createBufferStrategy(2);
-        canvas.addMouseWheelListener(e ->
-                zoom = Math.max(4, Math.min(240, zoom * Math.pow(1.15, -e.getPreciseWheelRotation()))));
-        canvas.addMouseListener(new MouseAdapter() {
-            @Override public void mousePressed(MouseEvent e) { canvas.requestFocus(); }
-        });
-        canvas.addKeyListener(Keys.listener());                  // only used where the key state cannot be read
+    /**
+     * Ask the window for a second one, beside it and as tall.
+     *
+     * Closed until R asks for it: it is a debugging window, and redrawing it every frame cost
+     * about 5 ms.
+     */
+    void open(Surface surface, int width) {
+        panel = surface.panel("Ray view", width);
+        panel.onWheel(turned -> zoom = Math.max(4, Math.min(240, zoom * Math.pow(1.15, -turned))));
     }
 
-    /** Call on the EDT: let go of the window. The engine is stopping. */
+    /** Let go of the window. The engine is stopping. */
     void close() {
-        JFrame f = frame;
-        frame = null;
-        if (f != null) f.dispose();
+        Surface.Panel p = panel;
+        panel = null;
+        if (p != null) p.close();
     }
 
     boolean visible() {
-        JFrame f = frame;
-        return f != null && f.isVisible();
+        Surface.Panel p = panel;
+        return p != null && p.visible();
     }
 
     /** N: keep the player pointing up, or let the world stay put and the player turn instead. */
     void toggleFollow() { followTurn = !followTurn; }
 
     void toggle() {
-        if (frame != null) EventQueue.invokeLater(() -> frame.setVisible(!frame.isVisible()));
+        Surface.Panel p = panel;
+        if (p != null) p.show(!p.visible());
     }
 
     void present(View v) {
-        if (!visible()) return;
-        try {
-            BufferStrategy bs = canvas.getBufferStrategy();
-            do {
-                do {
-                    Graphics2D g = (Graphics2D) bs.getDrawGraphics();
-                    draw(g, canvas.getWidth(), canvas.getHeight(), v);
-                    g.dispose();
-                } while (bs.contentsRestored());
-                bs.show();
-            } while (bs.contentsLost());
-        } catch (IllegalStateException e) {
-            // the window is being hidden or re-shown; just skip this frame
-        }
+        Surface.Panel p = panel;
+        if (p == null || !p.visible()) return;
+        p.present(g -> draw(g, p.width(), p.height(), v));
     }
 
     void draw(Graphics2D g, int w, int h, View v) {

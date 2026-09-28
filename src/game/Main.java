@@ -3,7 +3,6 @@ package game;
 import engine.Capture;
 import engine.Game;
 import engine.Host;
-import engine.Keys;
 import engine.Options;
 import engine.World;
 import java.io.File;
@@ -24,9 +23,6 @@ public final class Main {
     private Main() { }
 
     public static void main(String[] args) throws Exception {
-        // Before AWT starts, and only when a window is going to open - see Keys. A headless run
-        // has no HUD to name, and on a machine with no window service to ask, the question hangs.
-        if (!Options.headless(args)) Keys.readLabels();
         Options o = Options.parse(args);
         if (o == null) return;
         if (Options.headless(args)) System.setProperty("java.awt.headless", "true");

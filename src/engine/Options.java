@@ -83,6 +83,9 @@ public final class Options {
                 play = true;
             } else if (args[i].equals("--hdr")) {
                 hdr = true;
+            } else if (args[i].equals("--glfw")) {
+                // The only window there is, since the GL backends were replaced. Accepted and
+                // ignored so that a script or a note from before that still runs.
             } else if (args[i].equals("--unlit") || args[i].equals("--flat")) {
                 // --flat was the old name, and it reads like a camera that does not tilt rather
                 // than a world with no lightmaps in it. Kept, because the scripts say it.
