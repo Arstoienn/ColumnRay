@@ -137,7 +137,33 @@ final class Lighting {
     /** One surface's bake: the light that arrives straight from a source, and the light that
      *  arrives off other surfaces. They are kept apart so a bounce pass can be redone from the
      *  previous pass's totals without the direct half being counted again. */
-    private record Job(LightMap map, Place place, boolean[] ok, float[] direct, float[] bounced, Own own) {}
+    private record Job(LightMap map, Place place, boolean[] ok, float[] direct, float[] bounced, Own own,
+                       boolean world) {}
+
+    /**
+     * Which random numbers a texel draws: for ground, where it is in the world; for a wall, where
+     * it is in its own map.
+     *
+     * A texel takes its shadow samples at spots spread over it, picks spots on the sun's disc, and
+     * turns its hemisphere of bounce rays, all from a seed; the seed used to be the texel's index in
+     * its own map. Two maps of ground share one world lattice, so two surfaces lying on top of each
+     * other - Haven lays one paving decal over another a tenth of a millimetre apart - have texels
+     * at exactly the same places, and still drew different spots there. Where a sun shadow's edge
+     * crosses such a texel, eight samples each can land two in the shade for one map and six for
+     * the other: 1.48 and 2.86 at the same point, and wherever the depth test picked the other decal
+     * for a pixel, a hard-edged patch of the other answer. Seeded by position, two maps at the same
+     * place ask the same questions and get the same answer. A wall's lattice starts at its own end
+     * and matches nothing else's, so it keeps the index it had.
+     */
+    private static int seed(Job job, int i, int j) {
+        LightMap m = job.map;
+        if (!job.world) return j * m.w + i;
+        long x = Math.round(m.u(i) / m.step), y = Math.round(m.v(j) / m.step);
+        long h = x * 0x9E3779B97F4A7C15L ^ y * 0xC2B2AE3D27D4EB4FL;
+        h ^= h >>> 29;
+        h *= 0xBF58476D1CE4E5B9L;
+        return (int) (h ^ (h >>> 32));
+    }
 
     /**
      * The extent of the surface a map belongs to, for a map whose plane is not level.
@@ -383,7 +409,7 @@ final class Lighting {
                                 double a = u / rad - Math.PI;         // the renderer's u = (atan2 + pi) * r
                                 set(p, cx + rad * Math.cos(a), cy + rad * Math.sin(a), v);
                                 set(n, Math.cos(a), Math.sin(a), 0);
-                            }, s.color, s.mat, null)};
+                            }, s.color, s.mat, null, false)};
                 }
                 case POLY -> {
                     LightMap[] faces = new LightMap[s.xs.length];
@@ -587,21 +613,21 @@ final class Lighting {
             job.place.at(on(own, true, m.u(i)), on(own, false, m.v(j)), p, n);
             double x = p[0] + n[0] * LIFT, y = p[1] + n[1] * LIFT, z = p[2] + n[2] * LIFT;
             if (!oc.open(x, y, z)) continue;                 // inside a wall or a slab: filled in by dilate()
-            int k = j * m.w + i;
+            int k = j * m.w + i, sd = seed(job, i, j);
             job.ok[k] = true;
             float r = 0, g = 0, b = 0;
             int taken = 0;
             for (int t = 0; t < shadow; t++) {
                 double sx = x, sy = y, sz = z;
                 if (t > 0) {                                 // spot 0 is the texel's own centre
-                    job.place.at(on(own, true, m.u(i) + (rnd(k, t, 1) - 0.5) * m.step),
-                            on(own, false, m.v(j) + (rnd(k, t, 2) - 0.5) * m.step), p, n);
+                    job.place.at(on(own, true, m.u(i) + (rnd(sd, t, 1) - 0.5) * m.step),
+                            on(own, false, m.v(j) + (rnd(sd, t, 2) - 0.5) * m.step), p, n);
                     sx = p[0] + n[0] * LIFT;
                     sy = p[1] + n[1] * LIFT;
                     sz = p[2] + n[2] * LIFT;
                     if (!oc.open(sx, sy, sz)) continue;      // that spot is inside something: skip it
                 }
-                direct(oc, sx, sy, sz, n, k * 31 + t, c);
+                direct(oc, sx, sy, sz, n, sd * 31 + t, c);
                 r += c[0];
                 g += c[1];
                 b += c[2];
@@ -640,8 +666,9 @@ final class Lighting {
             if (!job.ok[k]) continue;
             // Fired from a different spot in each texel, as well as in different directions, so
             // that what is left of the noise has no grid in it for the eye to lock on to.
-            job.place.at(on(job.own, true, m.u(i) + (rnd(k, 0, 3) - 0.5) * m.step),
-                    on(job.own, false, m.v(j) + (rnd(k, 0, 4) - 0.5) * m.step), p, n);
+            int sd = seed(job, i, j);
+            job.place.at(on(job.own, true, m.u(i) + (rnd(sd, 0, 3) - 0.5) * m.step),
+                    on(job.own, false, m.v(j) + (rnd(sd, 0, 4) - 0.5) * m.step), p, n);
             double x = p[0] + n[0] * LIFT, y = p[1] + n[1] * LIFT, z = p[2] + n[2] * LIFT;
             if (!oc.open(x, y, z)) {                         // that spot is inside something
                 job.place.at(on(job.own, true, m.u(i)), on(job.own, false, m.v(j)), p, n);
@@ -649,7 +676,7 @@ final class Lighting {
                 y = p[1] + n[1] * LIFT;
                 z = p[2] + n[2] * LIFT;
             }
-            gather(oc, h, x, y, z, n, turn(i, j), c);
+            gather(oc, h, x, y, z, n, job.world ? turn(sd, 0) : turn(i, j), c);
             job.bounced[k * 3] = c[0];
             job.bounced[k * 3 + 1] = c[1];
             job.bounced[k * 3 + 2] = c[2];
@@ -1259,7 +1286,7 @@ final class Lighting {
             for (Piece p : run)
                 p.take(add(jobs, p.alone(texel), p.place(p.origin(), p.u1() - p.origin()),
                         p.color(), p.mat(),
-                        p instanceof Tilted ? new Own(p.u0(), p.v0(), p.u1(), p.v1()) : null));
+                        p instanceof Tilted ? new Own(p.u0(), p.v0(), p.u1(), p.v1()) : null, ground(p)));
             return;
         }
         Piece first = run.get(0);
@@ -1285,7 +1312,7 @@ final class Lighting {
                     if (p.has(m.u(i), m.v(j))) m.own[j * m.w + i] = c;
         }
         jobs.add(new Job(m, ground(first) ? onItsOwn(run, m, u0, v0, texel) : first.place(u0, u1 - u0),
-                new boolean[m.w * m.h], new float[m.w * m.h * 3], new float[m.w * m.h * 3], null));
+                new boolean[m.w * m.h], new float[m.w * m.h * 3], new float[m.w * m.h * 3], null, ground(first)));
         for (Piece p : run) {
             if (p.origin() == 0) { p.take(m); continue; }
             LightMap v = m.view(u0 - p.origin());
@@ -1422,12 +1449,12 @@ final class Lighting {
         }
     }
 
-    private LightMap add(List<Job> jobs, LightMap m, Place place, int color, int mat, Own own) {
+    private LightMap add(List<Job> jobs, LightMap m, Place place, int color, int mat, Own own, boolean world) {
         float[] a = rgb(color, reflect);
         System.arraycopy(a, 0, m.albedo, 0, 3);
         m.mat = mat;
         jobs.add(new Job(m, place, new boolean[m.w * m.h], new float[m.w * m.h * 3],
-                new float[m.w * m.h * 3], own));
+                new float[m.w * m.h * 3], own, world));
         return m;
     }
 
