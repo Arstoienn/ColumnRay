@@ -47,6 +47,10 @@ final class Renderer {
     static final boolean WHO = System.getProperty("debug.who") != null
             && !"false".equals(System.getProperty("debug.who"));
     static final boolean WHO_MAP = "map".equals(System.getProperty("debug.who"));
+    /** -Ddebug.who=xy: where on the map a plane's pixel is, to a tenth of a metre - x in the high
+     *  twelve bits, y in the low twelve, 0xFFFFFF where it is not a plane - so that a patch seen
+     *  in a picture can be looked up by coordinate rather than worked back through the camera. */
+    static final boolean WHO_XY = "xy".equals(System.getProperty("debug.who"));
 
     static final class Camera {
         double x, y;          // position
@@ -504,6 +508,7 @@ final class Renderer {
         private int shKind;                     // 1 a side, 2 a plane
         private Shape shShape;                  // the side's shape, or null for a region's wall
         private Lighting.LightMap shLm;
+        private double shWx = Double.NaN, shWy = Double.NaN;   // -Ddebug.who=xy: the last plane point
         private int shMat, shRgb;
         private double shU, shT, shSq, shK;     // along it, how far, how square-on, the light on it
         private Surf shSurf;                    // the plane, and where it is:
@@ -1667,6 +1672,10 @@ final class Renderer {
          * and to name the shape either way. A debugging aid, not part of any picture.
          */
         private int who() {
+            if (WHO_XY) {
+                if (shKind == 1 || !(shWx >= 0 && shWx < 409.6 && shWy >= 0 && shWy < 409.6)) return 0xFFFFFF;
+                return ((int) (shWx * 10) << 12) | (int) (shWy * 10);
+            }
             if (WHO_MAP) {
                 Lighting.LightMap m = shKind == 1 ? shLm : shSurf == null ? null : shSurf.lm;
                 return ((shKind & 3) << 21) | (m == null ? 0x1FFFFF : System.identityHashCode(m) & 0x1FFFFF);
@@ -1712,6 +1721,7 @@ final class Renderer {
                 return shadeS(p.rgb, flatTex(p.mat, t, y), p.k0, fog(t), null);
             }
             double wx = px + rx * t, wy = py + ry * t, f = fog(t);
+            if (WHO_XY) { shWx = wx; shWy = wy; }
             if (Materials.emissive(p.mat, wx, wy)) return shade(EMISSIVE, f);   // a light panel is its own light
             p.lm.sample(wx, wy, L);
             if (mapped) {
