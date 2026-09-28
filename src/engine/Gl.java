@@ -1,32 +1,30 @@
 package engine;
 
-import java.lang.foreign.AddressLayout;
-import java.lang.foreign.Arena;
-import java.lang.foreign.FunctionDescriptor;
-import java.lang.foreign.Linker;
+import static org.lwjgl.glfw.GLFW.glfwMakeContextCurrent;
+import static org.lwjgl.opengl.GL33C.*;
+
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.SymbolLookup;
-import java.lang.foreign.ValueLayout;
-import java.lang.invoke.MethodHandle;
+import org.lwjgl.opengl.GL;
 
 /**
  * The engine's only door to the graphics card.
  *
- * It links against the platform's OpenGL library through the FFM API, the same way {@link Keys}
- * reaches the keyboard: a C ABI needs no more than a symbol lookup, where Metal would put an
- * objc_msgSend under every call. Which library that is, and how to get a context out of it, is
- * the one part that differs between operating systems, and it lives in {@link GlPlatform}; every
- * entry point below is the same C function wherever it is found.
+ * Every call below is one OpenGL entry point, reached through LWJGL. It used to reach them through
+ * the FFM API instead - a symbol lookup and a {@code MethodHandle} per function, about two hundred
+ * lines of signatures - which worked and was a reasonable thing to write when the engine had no
+ * dependencies. It is not worth maintaining beside a binding that is already here for the window.
  *
- * {@link #context} makes a context with no window behind it. Rendering goes into a framebuffer
- * and comes back through {@link #readPixels}, so the window stays the Swing window the engine
- * already has and nothing here needs a CALayer. {@code GpuSpike} measured that trade: at 1080p
- * the read costs 1.8 ms against a CPU frame of 23.7, so it is worth paying until it is not.
+ * What is deliberately unchanged is this file's own shape: the same forty-odd methods with the same
+ * names and arguments, so the hundred and eighty-five places that draw with them did not move. The
+ * pixel arguments are still {@link MemorySegment}, because the callers allocate their buffers with
+ * an {@code Arena} and LWJGL takes a raw address for exactly this.
  *
- * Every call goes through {@code invokeWithArguments}, which boxes and adapts where
- * {@code invokeExact} would not. It costs about a microsecond a call against frames measured in
- * milliseconds, and it keeps this file a list of GL entry points rather than a list of
- * hand-written signatures.
+ * {@link #context} makes a context with no window behind it, which is now a hidden GLFW window -
+ * see {@link Glfw}. Rendering goes into a framebuffer and comes back through {@link #readPixels}.
+ * {@code GpuSpike} measured that trade: at 1080p the read costs 1.8 ms against a CPU frame of 23.7,
+ * so it is worth paying until it is not. What would stop it being paid is the pitch warp moving
+ * onto the card as well, because that is what the frame comes back to the CPU for; every window is
+ * already made sharing this context, so the texture would be there waiting for it.
  */
 final class Gl {
     static final int TEXTURE_2D = 0x0DE1, FLOAT = 0x1406, RGBA = 0x1908, UNSIGNED_BYTE = 0x1401,
@@ -42,87 +40,22 @@ final class Gl {
             RGB8 = 0x8051, UNPACK_ALIGNMENT = 0x0CF5, MAX_TEXTURE_SIZE = 0x0D33, RGB16F = 0x881B,
             HALF_FLOAT = 0x140B;
 
-    private static final ValueLayout.OfInt I32 = ValueLayout.JAVA_INT;
-    private static final AddressLayout PTR = ValueLayout.ADDRESS;
-
-    private static final GlPlatform PLATFORM = GlPlatform.get();
-    private static final SymbolLookup LIB = PLATFORM.library();
-    private static final Linker LINKER = Linker.nativeLinker();
-
-    private static MethodHandle fn(String name, FunctionDescriptor sig) {
-        return LINKER.downcallHandle(LIB.find(name).orElseThrow(
-                () -> new IllegalStateException(PLATFORM.name() + "'s OpenGL has no " + name)), sig);
-    }
-
-    private static Object call(MethodHandle h, Object... args) {
-        try {
-            return h.invokeWithArguments(args);
-        } catch (Throwable t) {
-            if (t instanceof VirtualMachineError e) throw e;
-            throw new IllegalStateException("native call failed", t);
-        }
-    }
-
-
-    private static final MethodHandle GEN_TEXTURES = fn("glGenTextures", FunctionDescriptor.ofVoid(I32, PTR));
-    private static final MethodHandle BIND_TEXTURE = fn("glBindTexture", FunctionDescriptor.ofVoid(I32, I32));
-    private static final MethodHandle TEX_IMAGE = fn("glTexImage2D",
-            FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, I32, I32, PTR));
-    private static final MethodHandle TEX_SUB_IMAGE = fn("glTexSubImage2D",
-            FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, I32, I32, PTR));
-    private static final MethodHandle TEX_PARAM = fn("glTexParameteri", FunctionDescriptor.ofVoid(I32, I32, I32));
-    private static final MethodHandle GEN_MIPMAP = fn("glGenerateMipmap", FunctionDescriptor.ofVoid(I32));
-    private static final MethodHandle ACTIVE_TEXTURE = fn("glActiveTexture", FunctionDescriptor.ofVoid(I32));
-    private static final MethodHandle GEN_FB = fn("glGenFramebuffers", FunctionDescriptor.ofVoid(I32, PTR));
-    private static final MethodHandle BIND_FB = fn("glBindFramebuffer", FunctionDescriptor.ofVoid(I32, I32));
-    private static final MethodHandle FB_TEXTURE = fn("glFramebufferTexture2D",
-            FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32));
-    private static final MethodHandle FB_STATUS = fn("glCheckFramebufferStatus", FunctionDescriptor.of(I32, I32));
-    private static final MethodHandle GEN_VAO = fn("glGenVertexArrays", FunctionDescriptor.ofVoid(I32, PTR));
-    private static final MethodHandle BIND_VAO = fn("glBindVertexArray", FunctionDescriptor.ofVoid(I32));
-    private static final MethodHandle CREATE_SHADER = fn("glCreateShader", FunctionDescriptor.of(I32, I32));
-    private static final MethodHandle SHADER_SOURCE = fn("glShaderSource", FunctionDescriptor.ofVoid(I32, I32, PTR, PTR));
-    private static final MethodHandle COMPILE_SHADER = fn("glCompileShader", FunctionDescriptor.ofVoid(I32));
-    private static final MethodHandle GET_SHADER = fn("glGetShaderiv", FunctionDescriptor.ofVoid(I32, I32, PTR));
-    private static final MethodHandle SHADER_LOG = fn("glGetShaderInfoLog", FunctionDescriptor.ofVoid(I32, I32, PTR, PTR));
-    private static final MethodHandle CREATE_PROGRAM = fn("glCreateProgram", FunctionDescriptor.of(I32));
-    private static final MethodHandle ATTACH = fn("glAttachShader", FunctionDescriptor.ofVoid(I32, I32));
-    private static final MethodHandle LINK = fn("glLinkProgram", FunctionDescriptor.ofVoid(I32));
-    private static final MethodHandle GET_PROGRAM = fn("glGetProgramiv", FunctionDescriptor.ofVoid(I32, I32, PTR));
-    private static final MethodHandle PROGRAM_LOG = fn("glGetProgramInfoLog", FunctionDescriptor.ofVoid(I32, I32, PTR, PTR));
-    private static final MethodHandle USE_PROGRAM = fn("glUseProgram", FunctionDescriptor.ofVoid(I32));
-    private static final MethodHandle UNIFORM_LOC = fn("glGetUniformLocation", FunctionDescriptor.of(I32, I32, PTR));
-    private static final MethodHandle UNIFORM_1I = fn("glUniform1i", FunctionDescriptor.ofVoid(I32, I32));
-    private static final MethodHandle UNIFORM_1F = fn("glUniform1f", FunctionDescriptor.ofVoid(I32, ValueLayout.JAVA_FLOAT));
-    private static final MethodHandle VIEWPORT = fn("glViewport", FunctionDescriptor.ofVoid(I32, I32, I32, I32));
-    private static final MethodHandle CLEAR = fn("glClear", FunctionDescriptor.ofVoid(I32));
-    private static final MethodHandle DRAW_ARRAYS = fn("glDrawArrays", FunctionDescriptor.ofVoid(I32, I32, I32));
-    private static final MethodHandle FINISH = fn("glFinish", FunctionDescriptor.ofVoid());
-    private static final MethodHandle READ_PIXELS = fn("glReadPixels",
-            FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, PTR));
-    private static final MethodHandle GET_STRING = fn("glGetString", FunctionDescriptor.of(PTR, I32));
-    private static final MethodHandle GET_ERROR = fn("glGetError", FunctionDescriptor.of(I32));
-    private static final MethodHandle GET_INTEGER = fn("glGetIntegerv", FunctionDescriptor.ofVoid(I32, PTR));
-    private static final MethodHandle TEX_IMAGE_3D = fn("glTexImage3D",
-            FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, I32, I32, I32, PTR));
-    private static final MethodHandle TEX_SUB_IMAGE_3D = fn("glTexSubImage3D",
-            FunctionDescriptor.ofVoid(I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, PTR));
-    private static final MethodHandle PIXEL_STORE = fn("glPixelStorei", FunctionDescriptor.ofVoid(I32, I32));
-    private static final MethodHandle DELETE_TEXTURES = fn("glDeleteTextures", FunctionDescriptor.ofVoid(I32, PTR));
-    private static final MethodHandle DELETE_FB = fn("glDeleteFramebuffers", FunctionDescriptor.ofVoid(I32, PTR));
-    private static final MethodHandle DELETE_VAO = fn("glDeleteVertexArrays", FunctionDescriptor.ofVoid(I32, PTR));
-    private static final MethodHandle DELETE_PROGRAM = fn("glDeleteProgram", FunctionDescriptor.ofVoid(I32));
-
     private Gl() {}
 
     private static boolean current;
 
-    /** A context with no window behind it, made the way this platform makes one.
-     *  Idempotent: a second context would leave the first one's textures unreachable. */
+    /**
+     * A context with no window behind it, made the way this platform makes one.
+     *
+     * Idempotent: a second context would leave the first one's textures unreachable.
+     * {@code GL.createCapabilities} is what binds LWJGL's entry points to the context that is
+     * current on this thread, so it has to follow the context and not precede it.
+     */
     static void context() {
         if (current) return;
-        current = true;
-        PLATFORM.makeCurrent();
+        glfwMakeContextCurrent(Glfw.root());
+        GL.createCapabilities();
+        current = true;                                          // only once the context is real
     }
 
     /**
@@ -130,39 +63,32 @@ final class Gl {
      *
      * A GLFW window shows a frame by drawing into its own context, and whichever was current last
      * is the one the next GL call lands in - so the engine says out loud when it wants its own
-     * back. Does nothing before the engine has a context to want.
+     * back. Does nothing before the engine has a context to want. The capabilities are this
+     * thread's and were set when the context was made, so only the context itself comes back.
      */
     static void reclaim() {
-        if (current) PLATFORM.makeCurrent();
+        if (current) glfwMakeContextCurrent(Glfw.root());
     }
 
-    static int texture() { return name(GEN_TEXTURES); }
+    static int texture() { return glGenTextures(); }
 
-    static int framebuffer() { return name(GEN_FB); }
+    static int framebuffer() { return glGenFramebuffers(); }
 
-    static int vertexArray() { return name(GEN_VAO); }
+    static int vertexArray() { return glGenVertexArrays(); }
 
-    private static int name(MethodHandle gen) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment n = arena.allocate(I32);
-            call(gen, 1, n);
-            return n.get(I32, 0);
-        }
-    }
+    static void activeTexture(int unit) { glActiveTexture(TEXTURE0 + unit); }
 
-    static void activeTexture(int unit) { call(ACTIVE_TEXTURE, TEXTURE0 + unit); }
-
-    static void bindTexture(int name) { call(BIND_TEXTURE, TEXTURE_2D, name); }
+    static void bindTexture(int name) { glBindTexture(TEXTURE_2D, name); }
 
     static void texImage(int internalFormat, int w, int h, int format, int type, MemorySegment pixels) {
-        call(TEX_IMAGE, TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, pixels);
+        nglTexImage2D(TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, pixels.address());
     }
 
     static void texSubImage(int w, int h, int format, int type, MemorySegment pixels) {
-        call(TEX_SUB_IMAGE, TEXTURE_2D, 0, 0, 0, w, h, format, type, pixels);
+        nglTexSubImage2D(TEXTURE_2D, 0, 0, 0, w, h, format, type, pixels.address());
     }
 
-    static void texParam(int what, int how) { call(TEX_PARAM, TEXTURE_2D, what, how); }
+    static void texParam(int what, int how) { glTexParameteri(TEXTURE_2D, what, how); }
 
     /** Nearest in both directions and no wrapping: a data texture, not a picture. */
     static void texUnfiltered() {
@@ -172,138 +98,104 @@ final class Gl {
         texParam(TEXTURE_WRAP_T, CLAMP_TO_EDGE);
     }
 
-    static void generateMipmap() { call(GEN_MIPMAP, TEXTURE_2D); }
+    static void generateMipmap() { glGenerateMipmap(TEXTURE_2D); }
 
-    static void bindArray(int name) { call(BIND_TEXTURE, TEXTURE_2D_ARRAY, name); }
+    static void bindArray(int name) { glBindTexture(TEXTURE_2D_ARRAY, name); }
 
     /** Make room for every mip level of an array texture. glTexStorage3D would say this in one
      *  call, but it is GL 4.2 and macOS stops at 4.1. */
     static void arrayLevels(int levels, int w, int h, int layers, int internal, int type) {
-        call(PIXEL_STORE, UNPACK_ALIGNMENT, 1);                 // three of whatever a texel is
+        glPixelStorei(UNPACK_ALIGNMENT, 1);                      // three of whatever a texel is
         for (int i = 0; i < levels; i++)
-            call(TEX_IMAGE_3D, TEXTURE_2D_ARRAY, i, internal, Math.max(1, w >> i), Math.max(1, h >> i),
-                    layers, 0, RGB, type, MemorySegment.NULL);
+            nglTexImage3D(TEXTURE_2D_ARRAY, i, internal, Math.max(1, w >> i), Math.max(1, h >> i),
+                    layers, 0, RGB, type, 0L);
     }
 
     static void arrayLevel(int level, int layer, int w, int h, MemorySegment pixels, int type) {
-        call(TEX_SUB_IMAGE_3D, TEXTURE_2D_ARRAY, level, 0, 0, layer, w, h, 1, RGB, type, pixels);
+        nglTexSubImage3D(TEXTURE_2D_ARRAY, level, 0, 0, layer, w, h, 1, RGB, type, pixels.address());
     }
 
     /** Trilinear and wrapping: the same filter Materials.Level does by hand. */
     static void arrayFiltering(int levels) {
-        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_MIN_FILTER, LINEAR_MIPMAP_LINEAR);
-        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_MAG_FILTER, LINEAR);
-        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_WRAP_S, REPEAT);
-        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_WRAP_T, REPEAT);
-        call(TEX_PARAM, TEXTURE_2D_ARRAY, TEXTURE_MAX_LEVEL, levels - 1);
+        glTexParameteri(TEXTURE_2D_ARRAY, TEXTURE_MIN_FILTER, LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(TEXTURE_2D_ARRAY, TEXTURE_MAG_FILTER, LINEAR);
+        glTexParameteri(TEXTURE_2D_ARRAY, TEXTURE_WRAP_S, REPEAT);
+        glTexParameteri(TEXTURE_2D_ARRAY, TEXTURE_WRAP_T, REPEAT);
+        glTexParameteri(TEXTURE_2D_ARRAY, TEXTURE_MAX_LEVEL, levels - 1);
     }
 
-    static void bindFramebuffer(int name) { call(BIND_FB, FRAMEBUFFER, name); }
+    static void bindFramebuffer(int name) { glBindFramebuffer(FRAMEBUFFER, name); }
 
     /** Point the bound framebuffer at a texture, and fail loudly if the driver will not have it. */
     static void attach(int texture) {
-        call(FB_TEXTURE, FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, texture, 0);
-        if ((int) call(FB_STATUS, FRAMEBUFFER) != FRAMEBUFFER_COMPLETE)
+        glFramebufferTexture2D(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, texture, 0);
+        if (glCheckFramebufferStatus(FRAMEBUFFER) != FRAMEBUFFER_COMPLETE)
             throw new IllegalStateException("incomplete framebuffer");
     }
 
-    static void bindVertexArray(int name) { call(BIND_VAO, name); }
+    static void bindVertexArray(int name) { glBindVertexArray(name); }
 
-    static void viewport(int w, int h) { call(VIEWPORT, 0, 0, w, h); }
+    static void viewport(int w, int h) { glViewport(0, 0, w, h); }
 
-    static void clear() { call(CLEAR, COLOR_BUFFER_BIT); }
+    static void clear() { glClear(COLOR_BUFFER_BIT); }
 
-    static void useProgram(int program) { call(USE_PROGRAM, program); }
+    static void useProgram(int program) { glUseProgram(program); }
 
     /** The full-screen triangle the passes are drawn with; its vertices come from gl_VertexID. */
-    static void drawFullScreen() { call(DRAW_ARRAYS, TRIANGLES, 0, 3); }
+    static void drawFullScreen() { glDrawArrays(TRIANGLES, 0, 3); }
 
-    static void finish() { call(FINISH); }
+    static void finish() { glFinish(); }
 
     static void readPixels(int w, int h, MemorySegment into) {
-        call(READ_PIXELS, 0, 0, w, h, BGRA, UNSIGNED_INT_8_8_8_8_REV, into);
+        nglReadPixels(0, 0, w, h, BGRA, UNSIGNED_INT_8_8_8_8_REV, into.address());
     }
 
     /** The same, off a float target: four floats a pixel, for checking a shader against Java. */
     static void readFloats(int w, int h, MemorySegment into) {
-        call(READ_PIXELS, 0, 0, w, h, RGBA, FLOAT, into);
+        nglReadPixels(0, 0, w, h, RGBA, FLOAT, into.address());
     }
 
     static int program(String vertex, String fragment) {
-        int p = (int) call(CREATE_PROGRAM);
-        call(ATTACH, p, shader(VERTEX_SHADER, vertex));
-        call(ATTACH, p, shader(FRAGMENT_SHADER, fragment));
-        call(LINK, p);
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment ok = arena.allocate(I32);
-            call(GET_PROGRAM, p, LINK_STATUS, ok);
-            if (ok.get(I32, 0) == 0) throw new IllegalStateException("link: " + log(PROGRAM_LOG, p));
-        }
+        int p = glCreateProgram();
+        glAttachShader(p, shader(VERTEX_SHADER, vertex));
+        glAttachShader(p, shader(FRAGMENT_SHADER, fragment));
+        glLinkProgram(p);
+        if (glGetProgrami(p, LINK_STATUS) == 0)
+            throw new IllegalStateException("link: " + glGetProgramInfoLog(p));
         return p;
     }
 
     private static int shader(int kind, String source) {
-        int s = (int) call(CREATE_SHADER, kind);
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment text = arena.allocateFrom(source), list = arena.allocate(PTR);
-            list.set(PTR, 0, text);
-            call(SHADER_SOURCE, s, 1, list, MemorySegment.NULL);
-            call(COMPILE_SHADER, s);
-            MemorySegment ok = arena.allocate(I32);
-            call(GET_SHADER, s, COMPILE_STATUS, ok);
-            if (ok.get(I32, 0) == 0) throw new IllegalStateException("shader: " + log(SHADER_LOG, s));
-        }
+        int s = glCreateShader(kind);
+        glShaderSource(s, source);
+        glCompileShader(s);
+        if (glGetShaderi(s, COMPILE_STATUS) == 0)
+            throw new IllegalStateException("shader: " + glGetShaderInfoLog(s));
         return s;
     }
 
-    private static String log(MethodHandle get, int object) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment text = arena.allocate(4096), len = arena.allocate(I32);
-            call(get, object, 4096, len, text);
-            return text.getString(0);
-        }
-    }
-
     static void uniform(int program, String name, int value) {
-        call(UNIFORM_1I, location(program, name), value);
+        glUniform1i(glGetUniformLocation(program, name), value);
     }
 
     static void uniform(int program, String name, float value) {
-        call(UNIFORM_1F, location(program, name), value);
+        glUniform1f(glGetUniformLocation(program, name), value);
     }
 
-    private static int location(int program, String name) {
-        try (Arena arena = Arena.ofConfined()) {
-            return (int) call(UNIFORM_LOC, program, arena.allocateFrom(name));
-        }
-    }
+    static void deleteTexture(int name) { glDeleteTextures(name); }
 
-    static void deleteTexture(int name) { free(DELETE_TEXTURES, name); }
+    static void deleteFramebuffer(int name) { glDeleteFramebuffers(name); }
 
-    static void deleteFramebuffer(int name) { free(DELETE_FB, name); }
+    static void deleteVertexArray(int name) { glDeleteVertexArrays(name); }
 
-    static void deleteVertexArray(int name) { free(DELETE_VAO, name); }
+    static void deleteProgram(int name) { glDeleteProgram(name); }
 
-    static void deleteProgram(int name) { call(DELETE_PROGRAM, name); }
-
-    private static void free(MethodHandle del, int name) {
-        try (Arena arena = Arena.ofConfined()) {
-            call(del, 1, arena.allocateFrom(I32, name));
-        }
-    }
-
-    static int error() { return (int) call(GET_ERROR); }
+    static int error() { return glGetError(); }
 
     /** The widest and tallest a texture may be on this card - 16384 on an M3. A table that asks
      *  for more is not refused loudly: the call fails, every fetch from it reads zero, and the
      *  frame comes back plausibly shaded and wrong. Ask first instead. */
-    static int maxTextureSize() {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment n = arena.allocate(I32);
-            call(GET_INTEGER, MAX_TEXTURE_SIZE, n);
-            return n.get(I32, 0);
-        }
-    }
+    static int maxTextureSize() { return glGetInteger(MAX_TEXTURE_SIZE); }
 
     /** Fail where the mistake was made, for the calls that can be given something impossible. */
     static void check(String what) {
@@ -316,7 +208,7 @@ final class Gl {
     static String device() { return string(RENDERER); }
 
     private static String string(int what) {
-        MemorySegment s = (MemorySegment) call(GET_STRING, what);
-        return s.equals(MemorySegment.NULL) ? "?" : s.reinterpret(Long.MAX_VALUE).getString(0);
+        String s = glGetString(what);
+        return s == null ? "?" : s;
     }
 }

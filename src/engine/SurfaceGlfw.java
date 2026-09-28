@@ -8,7 +8,6 @@ import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.nio.IntBuffer;
 import org.lwjgl.glfw.Callbacks;
-import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryUtil;
 
@@ -24,8 +23,9 @@ import org.lwjgl.system.MemoryUtil;
  * What this is for, measured against the AWT one it sits beside:
  *
  * - The pointer is held by {@code GLFW_CURSOR_DISABLED}, so there is no warp: no putting the
- *   pointer back at the middle after every event, no discarding the event the warp itself caused,
- *   and no {@link Pointer}. It also works off macOS, where {@code Pointer.available()} is false.
+ *   pointer back at the middle after every event, and no discarding the event the warp itself
+ *   caused. The warp was a macOS call, so off macOS there was no mouse look at all; this works
+ *   everywhere, which is why {@code Host.canMouseLook()} is now simply true.
  * - {@code glfwGetKeyScancode(GLFW_KEY_W)} is 13 on macOS, which is exactly what {@link Keys}
  *   already calls the W position. The two tables agree on all thirty-three, so keys can move here
  *   without renumbering anything - that is the next step, and until it is taken this relies on
@@ -91,6 +91,8 @@ final class SurfaceGlfw implements Surface, Keys.Source {
     private BufferedImage image;
     private int[] pixels;
     private int program, vao, texture, overlayTex;
+    /** The band of rows the overlay painted into last frame: all that has to be cleared again. */
+    private int bandY0 = Integer.MAX_VALUE, bandY1 = -1;
     private IntBuffer pictureBuf, overlayBuf;
     private double lastX, lastY;
     private boolean haveLast;
@@ -116,8 +118,7 @@ final class SurfaceGlfw implements Surface, Keys.Source {
     @Override
     public void open(String title, int wantW, int wantH, Events to) {
         this.to = to;
-        GLFWErrorCallback.createPrint(System.err).set();
-        if (!glfwInit()) throw new IllegalStateException("GLFW would not start");
+        Glfw.start();
 
         // 3.3 core is the real requirement - GpuWalls' shaders say #version 330 - and macOS gives
         // 4.1 for asking. Forward-compatible, because macOS will not give a core profile otherwise.
@@ -134,11 +135,11 @@ final class SurfaceGlfw implements Surface, Keys.Source {
         double fit = Math.min(1, Math.min((mw[0] - 16) / (double) wantW, (mh[0] - 48) / (double) wantH));
         int w = Math.max(160, (int) (wantW * fit)), h = Math.max(90, (int) (wantH * fit));
 
-        window = glfwCreateWindow(w, h, title, MemoryUtil.NULL, MemoryUtil.NULL);
-        if (window == MemoryUtil.NULL) {
-            glfwTerminate();
-            throw new IllegalStateException("GLFW would not open a window");
-        }
+        // Sharing the engine's context: a texture the renderer writes is a texture this window
+        // can read. Nothing uses that yet - the frame still comes back through the CPU for the
+        // pitch warp - but it is what makes removing that round trip possible at all.
+        window = glfwCreateWindow(w, h, title, MemoryUtil.NULL, Glfw.share());
+        if (window == MemoryUtil.NULL) throw new IllegalStateException("GLFW would not open a window");
         glfwSetWindowPos(window, mx[0] + 8, my[0] + 8);
         glfwMakeContextCurrent(window);
         GL.createCapabilities();
@@ -200,15 +201,35 @@ final class SurfaceGlfw implements Surface, Keys.Source {
             pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
             if (overlayBuf != null) MemoryUtil.memFree(overlayBuf);
             overlayBuf = MemoryUtil.memAllocInt(w * h);
+            bandY0 = Integer.MAX_VALUE;
+            bandY1 = -1;
         }
         if (pictureBuf == null || pictureBuf.capacity() < pw * ph) {
             if (pictureBuf != null) MemoryUtil.memFree(pictureBuf);
             pictureBuf = MemoryUtil.memAllocInt(pw * ph);
         }
-        java.util.Arrays.fill(pixels, 0);
+        // Clear only the rows the overlay wrote last time; everything outside that band is
+        // already transparent and has been since the image was made.
+        if (bandY1 >= bandY0)
+            java.util.Arrays.fill(pixels, bandY0 * w, Math.min(pixels.length, (bandY1 + 1) * w), 0);
         Graphics2D g = image.createGraphics();
         overlay.paint(g);
         g.dispose();
+        // Which rows it actually touched. A HUD is a strip at the top and a minimap in a corner,
+        // so this is usually a third of the drawable and sometimes - in --play, which draws
+        // nothing over the picture - none of it.
+        int y0 = Integer.MAX_VALUE, y1 = -1;
+        for (int y = 0; y < h; y++) {
+            int row = y * w, end = row + w;
+            for (int i = row; i < end; i++)
+                if (pixels[i] != 0) {
+                    if (y < y0) y0 = y;
+                    y1 = y;
+                    break;
+                }
+        }
+        bandY0 = y0;
+        bandY1 = y1;
 
         glfwMakeContextCurrent(window);
         glViewport(0, 0, fbW, fbH);              // the one place that counts in real pixels
@@ -230,16 +251,23 @@ final class SurfaceGlfw implements Surface, Keys.Source {
         rect(ox, h - oy - dh, dw, dh, w, h);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-        // The overlay over all of it, showing the picture through wherever it is transparent.
-        glBindTexture(GL_TEXTURE_2D, overlayTex);
-        overlayBuf.clear();
-        overlayBuf.put(pixels, 0, w * h).flip();
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, overlayBuf);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        rect(0, 0, w, h, w, h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glDisable(GL_BLEND);
+        // The overlay over the top, showing the picture through wherever it is transparent - but
+        // only the band of rows it painted, declared as a texture of its own size. Uploading the
+        // whole drawable cost four megabytes a frame for a HUD that occupies a fifth of it.
+        // The texture is re-declared rather than sub-imaged deliberately: a partial update of a
+        // larger texture measured dearer here, twice (see docs).
+        if (y1 >= y0) {
+            int rows = y1 - y0 + 1;
+            glBindTexture(GL_TEXTURE_2D, overlayTex);
+            overlayBuf.clear();
+            overlayBuf.put(pixels, y0 * w, rows * w).flip();
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, rows, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, overlayBuf);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            rect(0, h - y0 - rows, w, rows, w, h);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDisable(GL_BLEND);
+        }
 
         glfwSwapBuffers(window);
     }
@@ -389,9 +417,7 @@ final class SurfaceGlfw implements Surface, Keys.Source {
         Callbacks.glfwFreeCallbacks(window);
         glfwDestroyWindow(window);
         window = MemoryUtil.NULL;
-        glfwTerminate();
-        GLFWErrorCallback cb = glfwSetErrorCallback(null);
-        if (cb != null) cb.free();
+        Glfw.terminate();
     }
 
     @Override

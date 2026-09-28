@@ -83,8 +83,6 @@ public final class Host {
     /** The window the picture goes to and the controls come from. Null until it is up, and null
      *  for good in a headless capture, which renders frames without ever opening one. */
     private Surface surface;
-    /** --glfw: which of the two windows to open. See Surface. */
-    private final boolean glfw;
     /** Mouse look: the game asked for the pointer to be held at the middle of the window, so that
      *  moving the mouse turns the view without a button held. What the game asked for, which is not
      *  the same as what is happening - it only happens while a window of ours is in front. */
@@ -172,7 +170,6 @@ public final class Host {
         this.winW = o.winW;
         this.winH = o.winH;
         this.targetFps = o.targetFps;
-        this.glfw = o.glfw;
         this.image = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
         this.out = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
         this.hi = o.ss == 1 ? out : new int[RW * RH];   // SS = 1: the pitch warp writes straight into the window image
@@ -231,21 +228,19 @@ public final class Host {
      * out of main().
      */
     public static boolean graphicsCard() {
-        String why = GlPlatform.missing();
-        if (why == null) {
-            try {
-                Gl.context();
-                // Which card, in one line, and on a machine with more than one, which cards it was
-                // not. An integrated GPU draws the frame and reports success at a fraction of the
-                // speed of the one beside it; see GlPlatform.note.
-                System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
-                String note = GlPlatform.get().note(Gl.device());
-                if (note != null) System.err.println("gpu: " + note);
-            } catch (Throwable t) {
-                if (t instanceof VirtualMachineError e) throw e;
-                Throwable c = t.getCause() != null ? t.getCause() : t;
-                why = c.getMessage() != null ? c.getMessage() : c.toString();
-            }
+        String why = null;
+        try {
+            Gl.context();
+            // Which card, in one line, and on a machine with more than one, which cards it was
+            // not. An integrated GPU draws the frame and reports success at a fraction of the
+            // speed of the one beside it; see GpuNote.
+            System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
+            String note = GpuNote.of(Gl.device());
+            if (note != null) System.err.println("gpu: " + note);
+        } catch (Throwable t) {
+            if (t instanceof VirtualMachineError e) throw e;
+            Throwable c = t.getCause() != null ? t.getCause() : t;
+            why = c.getMessage() != null ? c.getMessage() : c.toString();
         }
         if (why != null) System.err.println(why);      // both messages already say what happens next
         return why == null;
@@ -330,9 +325,16 @@ public final class Host {
     /** Whether that view turns with the player or keeps the map the same way up. */
     public void toggleRayFollow() { rayView.toggleFollow(); }
 
-    /** Can this machine hold the pointer still, so that the mouse can look without a button held?
-     *  See {@link Pointer}; off macOS it cannot, and a game should leave dragging in its hints. */
-    public static boolean canMouseLook() { return Pointer.available(); }
+    /**
+     * Can this machine hold the pointer still, so that the mouse can look without a button held?
+     *
+     * It can. This used to be a real question: holding the pointer meant warping it back to the
+     * middle of the window after every event, through a macOS call, so off macOS the answer was no
+     * and a game had to leave dragging in its hints. The window does it now, with one call that
+     * every platform has, so the question is kept for the games that ask it and the answer never
+     * changes.
+     */
+    public static boolean canMouseLook() { return true; }
 
     /** Is mouse look on? */
     public boolean mouseLook() { return mouseLook; }
@@ -347,7 +349,7 @@ public final class Host {
      * pointer is actually held still is the surface's business; see SurfaceAwt.
      */
     public void setMouseLook(boolean on) {
-        mouseLook = on && Pointer.available();
+        mouseLook = on;
         hoverColumn = hoverRow = -1;
         if (surface != null) surface.mouseLook(mouseLook);
     }
@@ -369,7 +371,7 @@ public final class Host {
     /** Open the window and run this game until something stops it. */
     public void run(Game g) throws Exception {
         this.game = g;
-        surface = glfw ? new SurfaceGlfw() : new SurfaceAwt();
+        surface = new SurfaceGlfw();
         surface.open("ColumnRay - " + world.name, winW, winH, events);
         rayView.open(surface, Math.min(640, Math.max(240, surface.width() / 3)));
         if (mouseLook) surface.mouseLook(true);
