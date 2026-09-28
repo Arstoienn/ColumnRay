@@ -1,4 +1,4 @@
-# maps/haven a881d8dbd937d54b61ed77f49306e5097b9f46a6
+# maps/haven 9e66101aa2688ec8eb8ae3b95d185befd662e43e
 # columnray verify 1
 view spot4 320x180 plain=80e67f81df9a0da2 albedo=75ef1db9203e90c0 depth=c9ff680169e8d24a
 view spot6 320x180 plain=b62afc872d762839 albedo=99644da3fdcfe57b depth=bc589a97041c0ad6

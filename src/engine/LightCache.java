@@ -91,6 +91,7 @@ final class LightCache {
             md.update(("lightcache " + VERSION + "\n").getBytes());
             md.update(("light.texel=" + System.getProperty("light.texel", "") + "\n").getBytes());
             md.update(("light.plane=" + System.getProperty("light.plane", "") + "\n").getBytes());
+            md.update(("light.groundTexel=" + System.getProperty("light.groundTexel", "") + "\n").getBytes());
             md.update(("hdr=" + Renderer.hdrBake + "\n").getBytes());   // linear bounce is another bake
             for (Path p : w.sources) md.update(Files.readAllBytes(p));
             SortedMap<String, byte[]> classes = bakeClasses();

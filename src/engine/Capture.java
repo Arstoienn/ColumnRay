@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import javax.imageio.ImageIO;
 
 /**
@@ -420,6 +421,12 @@ public final class Capture {
             if (f[0].equals("black")) { black(); continue; }
             if (f[0].equals("down")) { down(); continue; }
             if (f[0].equals("info")) { info(Integer.parseInt(f[1])); continue; }
+            if (f[0].equals("probe")) { probe(Double.parseDouble(f[1]), Double.parseDouble(f[2])); continue; }
+            if (f[0].equals("sun")) {
+                sunShadow(Double.parseDouble(f[1]), Double.parseDouble(f[2]), Double.parseDouble(f[3]),
+                        Double.parseDouble(f[4]), Double.parseDouble(f[5]));
+                continue;
+            }
             if (f[0].equals("id")) { byId(Integer.parseInt(f[1])); continue; }
             // at:X:Y, not at:X,Y - the spec itself is a comma-separated list.
             if (f[0].equals("at")) { under(Double.parseDouble(f[1]), Double.parseDouble(f[2])); continue; }
@@ -534,6 +541,88 @@ public final class Capture {
         }
         System.out.printf("light.dump tiny:%d: painted %,d of %,d maps (%.1f%%)%n",
                 n, painted, all, 100.0 * painted / all);
+    }
+
+    /**
+     * -Dlight.dump=sun:X0:Y0:X1:Y1:Z - the sun's own shadow on the plane at height Z over that
+     * rectangle, one pixel every five centimetres, one hard ray to the centre of the sun each: what
+     * the geometry says before any lightmap has had a texel to quantise it into. White is lit.
+     * Written as sun.png beside the shots, with the lightmap's half-metre lattice drawn over it.
+     */
+    private void sunShadow(double x0, double y0, double x1, double y1, double z) throws Exception {
+        Map<String, Object> spec = h.world.lighting != null ? h.world.lighting : Map.of();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> sun = spec.get("sun") instanceof Map ? (Map<String, Object>) spec.get("sun") : Map.of();
+        double el = Math.toRadians(World.num(sun, "elevation", 40));
+        double sx = h.world.sunX * Math.cos(el), sy = h.world.sunY * Math.cos(el), sz = Math.sin(el);
+        double step = 0.05, far = 200;
+        int w = (int) Math.round((x1 - x0) / step), hh = (int) Math.round((y1 - y0) / step);
+        Occluder oc = new Occluder(h.world);
+        BufferedImage img = new BufferedImage(w, hh, BufferedImage.TYPE_INT_RGB);
+        int lit = 0;
+        for (int j = 0; j < hh; j++)
+            for (int i = 0; i < w; i++) {
+                double x = x0 + (i + 0.5) * step, y = y1 - (j + 0.5) * step;
+                boolean open = oc.open(x, y, z) && oc.clear(x, y, z, x + sx * far, y + sy * far, z + sz * far);
+                if (open) lit++;
+                int c = open ? 0xE0E0E0 : 0x303030;
+                double fu = (x - Math.floor(x / 0.5) * 0.5), fv = (y - Math.floor(y / 0.5) * 0.5);
+                if (fu < step || fv < step) c = open ? 0xC08080 : 0x803030;     // the texel lattice
+                img.setRGB(i, j, c);
+            }
+        File out = new File(dumpDir(), "sun.png");
+        ImageIO.write(img, "png", out);
+        System.out.printf("light.dump sun: %dx%d samples at z %.2f, %.0f%% lit, wrote %s%n",
+                w, hh, z, 100.0 * lit / (w * hh), out);
+    }
+
+    private static File dumpDir() {
+        String d = System.getProperty("light.dump.dir");
+        return new File(d != null ? d : ".");
+    }
+
+    /**
+     * -Dlight.dump=probe:X:Y: the stack of solid at one point of the map, top to bottom - every
+     * shape whose outline actually contains (x, y), not merely whose map's box does, with where its
+     * top and bottom are *at that point*, and what its top map says there, texel by texel. From
+     * above, the first line is what a camera sees; the rest is what the bake may have had to reason
+     * about underneath it.
+     */
+    private void probe(double x, double y) {
+        record Layer(double top, double bottom, World.Shape s) {}
+        java.util.List<Layer> at = new java.util.ArrayList<>();
+        for (World.Shape s : h.world.shapes) {
+            if (x < s.minX || x > s.maxX || y < s.minY || y > s.maxY) continue;
+            boolean in = switch (s.kind) {
+                case POLY -> Geometry.pointInPoly(x, y, s.xs, s.ys);
+                case CIRCLE -> (x - s.cx) * (x - s.cx) + (y - s.cy) * (y - s.cy) <= s.r * s.r;
+                default -> false;
+            };
+            if (in) at.add(new Layer(s.topAt(x, y), s.bottomAt(x, y), s));
+        }
+        at.sort((a, b) -> Double.compare(b.top(), a.top()));
+        System.out.printf("light.dump probe %.3f,%.3f: %d shapes contain it%n", x, y, at.size());
+        float[] c = new float[3];
+        for (Layer l : at) {
+            World.Shape s = l.s();
+            Lighting.LightMap m = h.lighting.top(s);
+            String light = "no top map";
+            if (m != null) {
+                m.sample(x, y, c);
+                double fu = (x - m.u0) / m.step, fv = (y - m.v0) / m.step;
+                int i = (int) Math.floor(fu), j = (int) Math.floor(fv);
+                StringBuilder t = new StringBuilder();
+                for (int dj = 0; dj <= 1; dj++)
+                    for (int di = 0; di <= 1; di++) {
+                        int ii = Math.max(0, Math.min(m.w - 1, i + di)), jj = Math.max(0, Math.min(m.h - 1, j + dj));
+                        t.append(String.format(" (%.1f,%.1f)=%.2f", m.u(ii), m.v(jj), m.rgb[(jj * m.w + ii) * 3]));
+                    }
+                light = String.format("light %.3f from a %dx%d map;%s", c[0], m.w, m.h, t);
+            }
+            System.out.printf("   top %8.4f  bottom %8.4f  shape %-7d mat %-2d slope %8.4f,%8.4f %s %s%n",
+                    l.top(), l.bottom(), s.id, s.topMat, s.hx, s.hy,
+                    s.amap != null ? "CUT-OUT" : s.mask >= 0 ? "masked " : "solid  ", light);
+        }
     }
 
     /** Every horizontal map whose grid covers the world point (x, y), smallest first: a horizontal
