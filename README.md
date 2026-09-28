@@ -1,6 +1,8 @@
 # ColumnRay
 
-A 2.5D raycasting engine written in plain Java (Swing) with no external libraries.
+A 2.5D raycasting engine written in plain Java, with one dependency: LWJGL, which is the window
+and the OpenGL entry points. Everything that decides what a frame looks like is in this repository
+and depends on nothing.
 
 The renderer casts one ray per screen column and draws each column as a vertical strip whose
 height follows from the perpendicular hit distance. The world is described as a 2D plan of
@@ -19,20 +21,22 @@ and textured geometry while keeping the column-based renderer.
 - Dynamic resolution driven by measured frame time
 - Supersampled anti-aliasing
 - Minimap computed from walkable space, and a top-down debug view of the rays
-- Keyboard input by physical key position, independent of the active layout (macOS)
+- Keyboard input by physical key position, independent of the active layout, on every platform:
+  WASD is a shape on the keyboard and stays where it is on Colemak, Dvorak or Bopomofo
 
 ## Requirements
 
-- JDK 22 or newer. Keys reads the physical key state through the foreign function API,
-  which is a preview feature before 22
-- Developed and tested on macOS. On other platforms, input falls back to AWT key events read
-  as a US QWERTY layout
-- Shading on the card is the default, and needs an OpenGL backend: macOS (CGL) and Windows
-  (WGL) have one, Linux does not yet. Without one it prints a sentence and the CPU renderer
-  carries on, which is the whole engine. `--cpu` asks for that path on purpose. On a machine
-  with two graphics cards, which one draws is Windows' per-application preference for
-  `java.exe` (Settings > System > Display > Graphics), and the card it ended up on is named
-  on the first line of the run
+- JDK 22 or newer. The card is reached through the foreign function API, which is a preview
+  feature before 22
+- LWJGL 3.4.3, fetched by `build.sh` through `lib/fetch.sh` against checksums tracked in that
+  script. The jars are not committed, and a jar that does not hash as the script says it should
+  is deleted rather than used, so a clone needs nothing but a JDK
+- Shading on the card is the default and needs an OpenGL 3.3 core context, which GLFW asks for on
+  every platform. Where the machine cannot give one - a software renderer, a virtual machine, a
+  CI runner - it prints a sentence and the CPU renderer carries on, which is the whole engine.
+  `--cpu` asks for that path on purpose. On a machine with two graphics cards, which one draws is
+  Windows' per-application preference for `java.exe` (Settings > System > Display > Graphics),
+  and the card it ended up on is named on the first line of the run
 
 ## The engine and the game
 
@@ -66,8 +70,8 @@ the size of the body from whoever asks, because the engine does not know how tal
 ./run.sh
 ```
 
-`run.sh` compiles `src/` into `out/` when a source file has changed (see `build.sh`) and starts
-the game with `maps/school.json`. Arguments are passed through to `game.Main`:
+`run.sh` fetches LWJGL if it is missing, compiles `src/` into `out/` when a source file has
+changed (see `build.sh` and `lib/fetch.sh`), and starts the game with `maps/school.json`. Arguments are passed through to `game.Main`:
 
 ```bash
 ./run.sh maps/school.json --size 1920x1080
@@ -150,7 +154,7 @@ Both the sandbox and `--play`:
 | Input | Action |
 |---|---|
 | `W` `A` `S` `D` | Move |
-| Mouse | Look. The pointer is held at the middle of the window and hidden, the way a first-person game has worked for thirty years; where it cannot be held (off macOS) drag with a button down instead |
+| Mouse | Look. The pointer is hidden and captured, the way a first-person game has worked for thirty years. `Tab` hands it back in the sandbox, which needs one for hovering a column |
 | Arrow keys, `Q` / `E` | Look, turn |
 | `Space` / `C` / `Shift` | Jump / crouch / run |
 | `Esc` | Quit |
