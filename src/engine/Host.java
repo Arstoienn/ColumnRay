@@ -1,24 +1,13 @@
 package engine;
 
-import java.awt.Canvas;
 import java.awt.Color;
-import java.awt.Dimension;
 import java.awt.Graphics2D;
-import java.awt.GraphicsEnvironment;
-import java.awt.Rectangle;
 import java.awt.RenderingHints;
-import java.awt.Toolkit;
-import java.awt.Window;
-import java.awt.event.MouseAdapter;
-import java.awt.event.MouseEvent;
 import java.awt.geom.Line2D;
-import java.awt.image.BufferStrategy;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.util.Map;
 import java.util.stream.IntStream;
-import javax.swing.JFrame;
-import javax.swing.SwingUtilities;
 
 /**
  * The engine, from a game's point of view: a window, a frame loop and the buffers between the two.
@@ -91,9 +80,9 @@ public final class Host {
     // Input (the mouse is written on the EDT and read by the main loop; the keys are read straight
     // from the machine by Keys, once a frame)
     private volatile int hoverColumn = -1, hoverRow = -1;        // which pixel of the main view the mouse is over
-    /** The canvas the picture goes to, for the one thing mouse look needs that the loop does not:
-     *  where the middle of the window is on the screen. Null until the window is up. */
-    private Canvas canvas;
+    /** The window the picture goes to and the controls come from. Null until it is up, and null
+     *  for good in a headless capture, which renders frames without ever opening one. */
+    private Surface surface;
     /** Mouse look: the game asked for the pointer to be held at the middle of the window, so that
      *  moving the mouse turns the view without a button held. What the game asked for, which is not
      *  the same as what is happening - it only happens while a window of ours is in front. */
@@ -239,21 +228,19 @@ public final class Host {
      * out of main().
      */
     public static boolean graphicsCard() {
-        String why = GlPlatform.missing();
-        if (why == null) {
-            try {
-                Gl.context();
-                // Which card, in one line, and on a machine with more than one, which cards it was
-                // not. An integrated GPU draws the frame and reports success at a fraction of the
-                // speed of the one beside it; see GlPlatform.note.
-                System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
-                String note = GlPlatform.get().note(Gl.device());
-                if (note != null) System.err.println("gpu: " + note);
-            } catch (Throwable t) {
-                if (t instanceof VirtualMachineError e) throw e;
-                Throwable c = t.getCause() != null ? t.getCause() : t;
-                why = c.getMessage() != null ? c.getMessage() : c.toString();
-            }
+        String why = null;
+        try {
+            Gl.context();
+            // Which card, in one line, and on a machine with more than one, which cards it was
+            // not. An integrated GPU draws the frame and reports success at a fraction of the
+            // speed of the one beside it; see GpuNote.
+            System.err.println("gpu: " + Gl.device() + ", GL " + Gl.version());
+            String note = GpuNote.of(Gl.device());
+            if (note != null) System.err.println("gpu: " + note);
+        } catch (Throwable t) {
+            if (t instanceof VirtualMachineError e) throw e;
+            Throwable c = t.getCause() != null ? t.getCause() : t;
+            why = c.getMessage() != null ? c.getMessage() : c.toString();
         }
         if (why != null) System.err.println(why);      // both messages already say what happens next
         return why == null;
@@ -338,91 +325,56 @@ public final class Host {
     /** Whether that view turns with the player or keeps the map the same way up. */
     public void toggleRayFollow() { rayView.toggleFollow(); }
 
-    /** Can this machine hold the pointer still, so that the mouse can look without a button held?
-     *  See {@link Pointer}; off macOS it cannot, and a game should leave dragging in its hints. */
-    public static boolean canMouseLook() { return Pointer.available(); }
+    /**
+     * Can this machine hold the pointer still, so that the mouse can look without a button held?
+     *
+     * It can. This used to be a real question: holding the pointer meant warping it back to the
+     * middle of the window after every event, through a macOS call, so off macOS the answer was no
+     * and a game had to leave dragging in its hints. The window does it now, with one call that
+     * every platform has, so the question is kept for the games that ask it and the answer never
+     * changes.
+     */
+    public static boolean canMouseLook() { return true; }
 
     /** Is mouse look on? */
     public boolean mouseLook() { return mouseLook; }
 
     /**
-     * Turn mouse look on or off: hold the pointer at the middle of the window and hand the game
-     * how far it moved, instead of asking for a button to be held down.
+     * Turn mouse look on or off: hold the pointer still and hand the game how far it moved,
+     * instead of asking for a button to be held down.
      *
-     * The pointer is hidden while it is on, and put back where the window's middle is after every
-     * event it reports; the hover column the ray view traces goes back to the middle of the picture,
-     * because there is no longer a pointer anywhere else to mean anything. May be asked for before
-     * the window exists - a game's constructor is the natural place - and takes effect when it opens.
+     * The hover column the ray view traces goes back to the middle of the picture, because there
+     * is no longer a pointer anywhere else to mean anything. May be asked for before the window
+     * exists - a game's constructor is the natural place - and takes effect when it opens. How the
+     * pointer is actually held still is the surface's business; see SurfaceAwt.
      */
     public void setMouseLook(boolean on) {
-        mouseLook = on && Pointer.available();
+        mouseLook = on;
         hoverColumn = hoverRow = -1;
-        Canvas c = canvas;
-        if (c != null) SwingUtilities.invokeLater(() -> {
-            c.setCursor(mouseLook ? blankCursor() : java.awt.Cursor.getDefaultCursor());
-            if (mouseLook) recentre();
-        });
+        if (surface != null) surface.mouseLook(mouseLook);
     }
 
-    private static java.awt.Cursor blank;
+    /** What the window reports back: a hand that moved, a pointer over a pixel, a close button. */
+    private final Surface.Events events = new Surface.Events() {
+        @Override public void looked(int dx, int dy) { input.looked(dx, dy); }
 
-    /** A cursor with nothing in it: the pointer is still there, it just must not be seen. */
-    private static java.awt.Cursor blankCursor() {
-        if (blank == null) {
-            BufferedImage dot = new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
-            blank = Toolkit.getDefaultToolkit().createCustomCursor(dot, new java.awt.Point(0, 0), "blank");
+        @Override public void hover(int x, int y) {
+            hoverColumn = x < 0 ? -1 : columnAt(x);
+            hoverRow = x < 0 ? -1 : rowAt(y);
         }
-        return blank;
-    }
 
-    /** Put the pointer back at the middle of the canvas, which is where mouse look measures from. */
-    private void recentre() {
-        Canvas c = canvas;
-        if (c == null || !c.isShowing()) return;
-        java.awt.Point at = c.getLocationOnScreen();
-        // The middle to the pixel, and the same arithmetic the deltas are measured with: warping
-        // half a pixel off would make the event that comes back read as a flick of one, every time.
-        Pointer.moveTo(at.x + c.getWidth() / 2, at.y + c.getHeight() / 2);
-    }
+        @Override public void closed() { running = false; }
+    };
 
     // ---- Main loop ----
 
     /** Open the window and run this game until something stops it. */
     public void run(Game g) throws Exception {
         this.game = g;
-        Canvas canvas = new Canvas();
-        canvas.enableInputMethods(false);                        // an IME (Bopomofo, Pinyin) must not eat the keys
-        SwingUtilities.invokeAndWait(() -> {
-            // The window is the output: --window, fitted onto the screen, whatever is being rendered.
-            // present() scales the picture up into it, so a bigger window costs no rays. The ray
-            // view opens beside it, hidden until the game asks for it.
-            Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
-            int rayW = (int) Math.min(640, screen.width * 0.36);
-            double fit = Math.min(1, Math.min((screen.width - 16) / (double) winW, (screen.height - 48) / (double) winH));
-            JFrame frame = new JFrame("ColumnRay - " + world.name);
-            canvas.setPreferredSize(new Dimension((int) (winW * fit), (int) (winH * fit)));
-            canvas.setIgnoreRepaint(true);
-            canvas.setFocusTraversalKeysEnabled(false);
-            frame.add(canvas);
-            frame.pack();
-            frame.setLocation(screen.x + 8, screen.y + 8);
-            frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
-            frame.addWindowListener(new java.awt.event.WindowAdapter() {
-                @Override public void windowClosing(java.awt.event.WindowEvent e) { running = false; }
-            });
-            frame.setVisible(true);
-            canvas.createBufferStrategy(2);
-            installInput(canvas);
-            rayView.open(frame, rayW);
-            frame.toFront();
-            // toFront() only orders our windows; on macOS it does not make us the active app, so a
-            // game started from a shell that is not in front (an IDE, a script) opens behind it and
-            // every key goes to whatever is. Ask the OS to bring the app itself forward.
-            if (java.awt.Desktop.isDesktopSupported()
-                    && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.APP_REQUEST_FOREGROUND))
-                java.awt.Desktop.getDesktop().requestForeground(true);
-            canvas.requestFocus();
-        });
+        surface = new SurfaceGlfw();
+        surface.open("ColumnRay - " + world.name, winW, winH, events);
+        rayView.open(surface, Math.min(640, Math.max(240, surface.width() / 3)));
+        if (mouseLook) surface.mouseLook(true);
 
         autoRes = targetFps > 0;
         steer = new DynamicResolution(1000.0 / Math.max(1, targetFps), scaleIx);
@@ -447,10 +399,11 @@ public final class Host {
             long now = System.nanoTime();
             double dt = Math.min(0.05, (now - last) / 1e9);
             last = now;
-            input.begin(!Keys.physical() || inFront());
+            input.begin(!Keys.physical() || surface.active());
             game.update(dt, input);
             frame();
-            present(canvas);
+            present();
+            surface.pump();
             rayView.present(view());
             // What this frame cost, before the loop sleeps: the controller asks for a step at most,
             // and frame() applies it between frames.
@@ -466,81 +419,7 @@ public final class Host {
         } catch (IllegalStateException alreadyShuttingDown) {
             // The hook is what stopped us. There is nothing to remove and nothing to worry about.
         }
-        SwingUtilities.invokeAndWait(() -> {
-            rayView.close();
-            for (Window w : Window.getWindows()) w.dispose();
-        });
-    }
-
-    private void installInput(Canvas canvas) {
-        this.canvas = canvas;
-        canvas.addKeyListener(Keys.listener());
-        MouseAdapter drag = new MouseAdapter() {
-            int lx, ly;
-            @Override public void mousePressed(MouseEvent e) {
-                lx = e.getX();
-                ly = e.getY();
-                canvas.requestFocus();
-                if (mouseLook) recentre();                       // a click is also how a game gets the pointer back
-            }
-            @Override public void mouseDragged(MouseEvent e) {
-                if (mouseLook) { looked(e); return; }
-                input.looked(e.getX() - lx, e.getY() - ly);
-                lx = e.getX();
-                ly = e.getY();
-            }
-            @Override public void mouseMoved(MouseEvent e) {
-                if (mouseLook) { looked(e); return; }
-                hoverColumn = columnAt(e.getX());
-                hoverRow = rowAt(e.getY());
-            }
-            @Override public void mouseExited(MouseEvent e) { if (!mouseLook) hoverColumn = hoverRow = -1; }
-        };
-        canvas.addMouseListener(drag);
-        canvas.addMouseMotionListener(drag);
-        // Let go of the pointer the moment another application wants it, and take it again when the
-        // game comes back: a window that is not in front holding the pointer at its own middle is
-        // a window nobody can get away from.
-        canvas.addFocusListener(new java.awt.event.FocusAdapter() {
-            @Override public void focusGained(java.awt.event.FocusEvent e) {
-                if (mouseLook) { canvas.setCursor(blankCursor()); recentre(); }
-            }
-            @Override public void focusLost(java.awt.event.FocusEvent e) {
-                canvas.setCursor(java.awt.Cursor.getDefaultCursor());
-            }
-        });
-        if (mouseLook) {
-            canvas.setCursor(blankCursor());
-            recentre();
-        }
-    }
-
-    /**
-     * One mouse event while the pointer is being held still: how far the hand moved is how far the
-     * event landed from the middle of the window, and then the pointer goes back to the middle.
-     *
-     * An event exactly at the middle is the warp's own arrival coming back round, and counts for
-     * nothing - without that the view would drift, since the pointer is put back on every event
-     * and each of those reports itself.
-     */
-    private void looked(MouseEvent e) {
-        // Not while another application is in front: a window that is not being used holding the
-        // pointer at its own middle is a window nobody can get the mouse away from. The keys are
-        // ignored under the same condition, in the loop.
-        if (!inFront()) return;
-        int dx = e.getX() - canvas.getWidth() / 2, dy = e.getY() - canvas.getHeight() / 2;
-        if (dx == 0 && dy == 0) return;
-        input.looked(dx, dy);
-        recentre();
-    }
-
-    /**
-     * The key state comes from the whole machine, not from our windows, so ignore it unless one of
-     * ours is the active window. AWT events came with that for free.
-     */
-    private static boolean inFront() {
-        for (Window w : Window.getWindows()) if (w.isActive()) return true;
-        return false;
+        surface.close();
     }
 
     /** Window coordinate -> column of the main view; -1 when the point is outside it. */
@@ -600,6 +479,17 @@ public final class Host {
 
     /** One frame of the running game: tell it how far it may tilt, then draw where it says. */
     void frame() {
+        // A window with a context of its own - GLFW's, and its ray-view panel has a second - made
+        // its own current to show the last frame, and none of the card's textures or framebuffers
+        // are in it. Take the engine's back at the top of the frame rather than after each window:
+        // the card is asked for more than just the shading pass (the span textures are built as
+        // the buffers are sized), so there is no one later place that catches all of it.
+        //
+        // Only when there is a card. Naming Gl at all loads it, and its static initialiser asks
+        // GlPlatform for a context - which on a machine with no backend, Linux today, throws the
+        // sentence it was written to throw. An unguarded call here took every CPU frame on Linux
+        // down with it, which is what CI is for.
+        if (useGpu) Gl.reclaim();
         applyWantedScale();
         double limit = pitchLimit();
         game.pitchLimit(limit);
@@ -611,6 +501,17 @@ public final class Host {
 
     /** Render one view, whoever it belongs to: a headless capture's, or a game's. */
     public void frame(View v) {
+        // A window with a context of its own - GLFW's, and its ray-view panel has a second - made
+        // its own current to show the last frame, and none of the card's textures or framebuffers
+        // are in it. Take the engine's back at the top of the frame rather than after each window:
+        // the card is asked for more than just the shading pass (the span textures are built as
+        // the buffers are sized), so there is no one later place that catches all of it.
+        //
+        // Only when there is a card. Naming Gl at all loads it, and its static initialiser asks
+        // GlPlatform for a context - which on a machine with no backend, Linux today, throws the
+        // sentence it was written to throw. An unguarded call here took every CPU frame on Linux
+        // down with it, which is what CI is for.
+        if (useGpu) Gl.reclaim();
         applyWantedScale();
         render(v, pitchLimit());
     }
@@ -813,32 +714,41 @@ public final class Host {
 
     // ---- Output ----
 
-    private void present(Canvas canvas) {
-        BufferStrategy bs = canvas.getBufferStrategy();
-        do {
-            do {
-                Graphics2D g = (Graphics2D) bs.getDrawGraphics();
-                int cw = canvas.getWidth(), ch = canvas.getHeight();
-                double sc = Math.min(cw / (double) W, ch / (double) H);
-                int dw = (int) (W * sc), dh = (int) (H * sc);
-                viewX = (cw - dw) / 2;
-                viewY = (ch - dh) / 2;
-                viewW = dw;
-                viewH = dh;
-                g.setColor(Color.BLACK);
-                g.fillRect(0, 0, cw, ch);
-                drawFrame(g, viewX, viewY, dw, dh, rayView.visible());
-                g.dispose();
-            } while (bs.contentsRestored());
-            bs.show();
-        } while (bs.contentsLost());
-        Toolkit.getDefaultToolkit().sync();
+    /**
+     * Show the frame: the picture, letterboxed into whatever size the window turned out to be,
+     * and whatever the game draws over it.
+     *
+     * Where the view lands inside the window is worked out here rather than by the surface,
+     * because it is the engine that knows the render size - and because columnAt/rowAt have to
+     * undo exactly this arithmetic to turn a pointer back into a column.
+     */
+    private void present() {
+        int cw = surface.width(), ch = surface.height();
+        double sc = Math.min(cw / (double) W, ch / (double) H);
+        int dw = (int) (W * sc), dh = (int) (H * sc);
+        viewX = (cw - dw) / 2;
+        viewY = (ch - dh) / 2;
+        viewW = dw;
+        viewH = dh;
+        surface.present(out, W, H, viewX, viewY, dw, dh,
+                g -> drawOverlay(g, viewX, viewY, dw, dh, rayView.visible()));
     }
 
-    /** The finished picture, scaled into place, and whatever the game draws over it. */
+    /**
+     * The finished picture, scaled into place, and whatever the game draws over it.
+     *
+     * Still one call for a screenshot, which composes a PNG and has no card to scale anything on.
+     * A window does the two halves separately - see Surface.present - because the picture is the
+     * expensive half to rasterise and the cheap half to hand to a card.
+     */
     void drawFrame(Graphics2D g, int ox, int oy, int dw, int dh, boolean markColumn) {
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
         g.drawImage(image, ox, oy, dw, dh, null);
+        drawOverlay(g, ox, oy, dw, dh, markColumn);
+    }
+
+    /** Everything drawn over the picture: the traced column, and whatever the game adds. */
+    void drawOverlay(Graphics2D g, int ox, int oy, int dw, int dh, boolean markColumn) {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
         int col = renderer.traceColumn;
