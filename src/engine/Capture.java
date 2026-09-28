@@ -417,6 +417,9 @@ public final class Capture {
             String[] f = one.trim().split(":");
             if (f[0].equals("big")) { biggest(Integer.parseInt(f[1])); continue; }
             if (f[0].equals("tiny")) { tiny(Integer.parseInt(f[1])); continue; }
+            if (f[0].equals("black")) { black(); continue; }
+            if (f[0].equals("down")) { down(); continue; }
+            if (f[0].equals("info")) { info(Integer.parseInt(f[1])); continue; }
             // at:X:Y, not at:X,Y - the spec itself is a comma-separated list.
             if (f[0].equals("at")) { under(Double.parseDouble(f[1]), Double.parseDouble(f[2])); continue; }
             int id = Integer.parseInt(f[1]);
@@ -439,6 +442,54 @@ public final class Capture {
         List<Lighting.LightMap> all = new java.util.ArrayList<>(h.lighting.maps());
         all.sort((a, b) -> Long.compare((long) b.w * b.h, (long) a.w * a.h));
         for (int i = 0; i < Math.min(n, all.size()); i++) write("big" + i, all.get(i));
+    }
+
+    /** -Dlight.dump=info:ID says what a shape is, for when a debug.who id has to be looked up. */
+    private void info(int id) {
+        World.Shape s = shape(id);
+        System.out.printf("shape %d: %s mat %d topMat %d colour %06x  z %.4f..%.4f  slope top %g,%g bottom %g,%g"
+                + "  box %.2f,%.2f..%.2f,%.2f  img %s  mask %d  top map %s%n",
+                id, s.kind, s.mat, s.topMat, s.color & 0xFFFFFF, s.z0, s.h, s.hx, s.hy, s.zx, s.zy,
+                s.minX, s.minY, s.maxX, s.maxY, s.img != null, s.mask,
+                h.lighting.top(s) == null ? "none"
+                        : String.format("%dx%d at u %.2f v %.2f step %.2f (#%08x)", h.lighting.top(s).w,
+                                h.lighting.top(s).h, h.lighting.top(s).u0, h.lighting.top(s).v0,
+                                h.lighting.top(s).step, System.identityHashCode(h.lighting.top(s))));
+    }
+
+    /** -Dlight.dump=down paints every downward-facing map - a shape's underside, a region's
+     *  ceiling. One of those has no business being visible from above, so a pixel it paints is a
+     *  pixel where the depth test picked the underside of something paper-thin. */
+    private void down() {
+        java.util.Set<Lighting.LightMap> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (World.Shape sh : h.world.shapes)
+            if (h.lighting.bottom(sh) != null) seen.add(h.lighting.bottom(sh));
+        for (World.Region r : h.world.regions)
+            if (h.lighting.ceil(r) != null) seen.add(h.lighting.ceil(r));
+        for (Lighting.LightMap m : seen)
+            for (int k = 0; k < m.rgb.length; k += 3) { m.rgb[k] = 8; m.rgb[k + 1] = 0; m.rgb[k + 2] = 8; }
+        System.out.printf("light.dump down: painted %,d downward-facing maps%n", seen.size());
+    }
+
+    /**
+     * -Dlight.dump=black paints every lightmap that is still all zeroes: one whose every texel
+     * fell inside something solid, so the direct pass skipped all of them and dilate, finding no
+     * valid neighbour anywhere, gave up and left the map as it was allocated. Such a map draws
+     * black. A surface can be perfectly visible and still be one of these - what the bake tested
+     * was where it sampled, not the face.
+     */
+    private void black() {
+        long painted = 0, all = 0;
+        for (Lighting.LightMap m : h.lighting.maps()) {
+            all++;
+            boolean zero = true;
+            for (int i = 0; i < m.rgb.length && zero; i++) zero = m.rgb[i] == 0;
+            if (!zero) continue;
+            painted++;
+            for (int k = 0; k < m.rgb.length; k += 3) { m.rgb[k] = 8; m.rgb[k + 1] = 0; m.rgb[k + 2] = 8; }
+        }
+        System.out.printf("light.dump black: %,d of %,d maps are all zeroes (%.2f%%)%n",
+                painted, all, 100.0 * painted / all);
     }
 
     /**

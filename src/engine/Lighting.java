@@ -1112,7 +1112,19 @@ final class Lighting {
         if (how.contains("only")) System.exit(0);
     }
 
-    /** How far apart two surfaces may be along their normal and still be one plane to the bake. */
+    /**
+     * How far apart two surfaces may be along their normal and still be one plane to the bake.
+     *
+     * A centimetre, which is a fiftieth of a texel: nothing about the light a surface receives
+     * changes over it. Loosening it is not free, and this is not "as loose as you dare". Counting
+     * the texels in maps that end up with one piece on them, over Haven's horizontal pieces:
+     * 3,976 at 1 cm, 3,297 at 2, 30,875 at 5, 134,880 at 10 - it gets worse past 2 cm, because
+     * {@link #runs} starts chaining pieces that {@link #levels} then has to take apart again, and
+     * what it cannot take apart in its few passes it hands back one map each. And 2 cm, which
+     * counts best, *looks* worse: baked and rendered, the shadow across Haven's plaza came back as
+     * hard triangular bands, and the speckling over clean ground went from 125 dark pixels to 326.
+     * The count is not the picture. Change this only with a bake and a look.
+     */
     private static final double SAME_PLANE = Double.parseDouble(System.getProperty("light.plane", "0.01"));
 
     /**
