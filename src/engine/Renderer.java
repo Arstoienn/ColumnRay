@@ -49,7 +49,8 @@ final class Renderer {
     static final boolean WHO_MAP = "map".equals(System.getProperty("debug.who"));
     /** -Ddebug.who=xy: where on the map a plane's pixel is, to a tenth of a metre - x in the high
      *  twelve bits, y in the low twelve, 0xFFFFFF where it is not a plane - so that a patch seen
-     *  in a picture can be looked up by coordinate rather than worked back through the camera. */
+     *  in a picture can be looked up by coordinate rather than worked back through the camera. A
+     *  cut-out's pixel carries its own point where it is at least half there. */
     static final boolean WHO_XY = "xy".equals(System.getProperty("debug.who"));
 
     static final class Camera {
@@ -1422,7 +1423,8 @@ final class Renderer {
             pixels[p] = a >= 0.996 ? c : mix(pixels[p], c, a);
             if (depth != null) {
                 int alb = texAlbedoSet ? texAlbedo : s.albedoColor;
-                albedo[p] = a >= 0.996 ? alb : mix(albedo[p], alb, a);
+                if (WHO && a >= 0.5) albedo[p] = who();                 // a cut-out that shows says so too
+                else if (!WHO) albedo[p] = a >= 0.996 ? alb : mix(albedo[p], alb, a);
                 if (a >= 0.5) depth[p] = (float) t;
             }
         }
