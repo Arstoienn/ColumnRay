@@ -45,7 +45,7 @@ public final class Host {
     /** Render resolution = the ray count. Equals W when SS is 1. */
     int RW, RH;
 
-    private final World world;
+    final World world;
     /**
      * The most overscan the pitch warp may grow the upright image to, as a multiple of a level
      * frame - not as a count of pixels.

@@ -11,6 +11,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 import javax.imageio.ImageIO;
 
 /**
@@ -329,6 +331,7 @@ public final class Capture {
      * build is not a thing to keep in a document.
      */
     public void screenshots(Path list) throws Exception {
+        dumpMaps();
         for (String line : Files.readAllLines(list)) {
             String t = line.trim();
             if (t.isEmpty() || t.startsWith("#")) continue;
@@ -397,5 +400,322 @@ public final class Capture {
                 stream.write(row.array());
             }
         }
+    }
+
+    /**
+     * -Dlight.dump=top:ID[,side:ID:FACE,floor:ID,...]: write one lightmap as a PNG, one pixel a
+     * texel, beside the shots. A debugging aid for the question "is this blocky patch the shape of
+     * the lightmap or the shape of something in the world", which no screenshot can answer: at a
+     * grazing angle a 0.5 m texel is a hundred pixels across and every guess about its size is a
+     * guess. It lives here, and not in {@link Lighting}, on purpose - {@code Capture} is in
+     * {@code LightCache.BAKES_NOT}, so asking for a dump reads the cached bake instead of
+     * spending ten minutes making a fresh one that is supposed to be identical.
+     */
+    private void dumpMaps() throws Exception {
+        String spec = System.getProperty("light.dump");
+        if (spec == null || h.lighting == null) return;
+        for (String one : spec.split(",")) {
+            String[] f = one.trim().split(":");
+            if (f[0].equals("big")) { biggest(Integer.parseInt(f[1])); continue; }
+            if (f[0].equals("tiny")) { tiny(Integer.parseInt(f[1])); continue; }
+            if (f[0].equals("black")) { black(); continue; }
+            if (f[0].equals("down")) { down(); continue; }
+            if (f[0].equals("info")) { info(Integer.parseInt(f[1])); continue; }
+            if (f[0].equals("probe")) { probe(Double.parseDouble(f[1]), Double.parseDouble(f[2])); continue; }
+            if (f[0].equals("sun")) {
+                sunShadow(Double.parseDouble(f[1]), Double.parseDouble(f[2]), Double.parseDouble(f[3]),
+                        Double.parseDouble(f[4]), Double.parseDouble(f[5]));
+                continue;
+            }
+            if (f[0].equals("id")) { byId(Integer.parseInt(f[1])); continue; }
+            // at:X:Y, not at:X,Y - the spec itself is a comma-separated list.
+            if (f[0].equals("at")) { under(Double.parseDouble(f[1]), Double.parseDouble(f[2])); continue; }
+            int id = Integer.parseInt(f[1]);
+            Lighting.LightMap m = switch (f[0]) {
+                case "top" -> h.lighting.top(shape(id));
+                case "bottom" -> h.lighting.bottom(shape(id));
+                case "side" -> h.lighting.side(shape(id), f.length > 2 ? Integer.parseInt(f[2]) : 0);
+                case "floor" -> h.lighting.floor(h.world.regions[id]);
+                case "ceil" -> h.lighting.ceil(h.world.regions[id]);
+                default -> throw new IllegalArgumentException("light.dump: " + one);
+            };
+            if (m == null) { System.out.println("light.dump " + one + ": no map"); continue; }
+            write(one.trim().replace(':', '-'), m);
+        }
+    }
+
+    /** The n maps of this bake with the most texels: the ground and the big walls, which are the
+     *  ones a blocky patch in a picture is likely to be standing on. */
+    private void biggest(int n) throws Exception {
+        List<Lighting.LightMap> all = new java.util.ArrayList<>(h.lighting.maps());
+        all.sort((a, b) -> Long.compare((long) b.w * b.h, (long) a.w * a.h));
+        for (int i = 0; i < Math.min(n, all.size()); i++) write("big" + i, all.get(i));
+    }
+
+    /** -Dlight.dump=id:N finds the map that -Ddebug.who=map wrote as N - its identity hash, masked
+     *  to the 21 bits the albedo buffer has room for - and says what it is and what points at it. */
+    private void byId(int id) {
+        for (Lighting.LightMap m : h.lighting.maps()) {
+            if ((System.identityHashCode(m) & 0x1FFFFF) != id) continue;
+            int tops = 0, bottoms = 0, floors = 0;
+            double z = Double.NaN;
+            World.Shape one = null;
+            for (World.Shape sh : h.world.shapes) {
+                if (h.lighting.top(sh) == m) { tops++; z = sh.h; one = sh; }
+                if (h.lighting.bottom(sh) == m) { bottoms++; z = sh.z0; one = sh; }
+            }
+            for (World.Region r : h.world.regions) if (h.lighting.floor(r) == m) { floors++; z = r.floor; }
+            System.out.printf("map %d: %d x %d texels of %.2f m at u %.2f v %.2f; %d tops, %d bottoms, %d floors; z ~ %.4f%n",
+                    id, m.w, m.h, m.step, m.u0, m.v0, tops, bottoms, floors, z);
+            if (one != null)
+                System.out.printf("   one of them: shape %d mat %d topMat %d slope %g,%g box %.2f,%.2f..%.2f,%.2f%n",
+                        one.id, one.mat, one.topMat, one.hx, one.hy, one.minX, one.minY, one.maxX, one.maxY);
+            return;
+        }
+        System.out.println("light.dump id:" + id + ": no map with that identity");
+    }
+
+    /** -Dlight.dump=info:ID says what a shape is, for when a debug.who id has to be looked up. */
+    private void info(int id) {
+        World.Shape s = shape(id);
+        System.out.printf("shape %d: %s mat %d topMat %d colour %06x  z %.4f..%.4f  slope top %g,%g bottom %g,%g"
+                + "  box %.2f,%.2f..%.2f,%.2f  img %s  mask %d  top map %s%n",
+                id, s.kind, s.mat, s.topMat, s.color & 0xFFFFFF, s.z0, s.h, s.hx, s.hy, s.zx, s.zy,
+                s.minX, s.minY, s.maxX, s.maxY, s.img != null, s.mask,
+                h.lighting.top(s) == null ? "none"
+                        : String.format("%dx%d at u %.2f v %.2f step %.2f (#%08x)", h.lighting.top(s).w,
+                                h.lighting.top(s).h, h.lighting.top(s).u0, h.lighting.top(s).v0,
+                                h.lighting.top(s).step, System.identityHashCode(h.lighting.top(s))));
+    }
+
+    /** -Dlight.dump=down paints every downward-facing map - a shape's underside, a region's
+     *  ceiling. One of those has no business being visible from above, so a pixel it paints is a
+     *  pixel where the depth test picked the underside of something paper-thin. */
+    private void down() {
+        java.util.Set<Lighting.LightMap> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (World.Shape sh : h.world.shapes)
+            if (h.lighting.bottom(sh) != null) seen.add(h.lighting.bottom(sh));
+        for (World.Region r : h.world.regions)
+            if (h.lighting.ceil(r) != null) seen.add(h.lighting.ceil(r));
+        for (Lighting.LightMap m : seen)
+            for (int k = 0; k < m.rgb.length; k += 3) { m.rgb[k] = 8; m.rgb[k + 1] = 0; m.rgb[k + 2] = 8; }
+        System.out.printf("light.dump down: painted %,d downward-facing maps%n", seen.size());
+    }
+
+    /**
+     * -Dlight.dump=black paints every lightmap that is still all zeroes: one whose every texel
+     * fell inside something solid, so the direct pass skipped all of them and dilate, finding no
+     * valid neighbour anywhere, gave up and left the map as it was allocated. Such a map draws
+     * black. A surface can be perfectly visible and still be one of these - what the bake tested
+     * was where it sampled, not the face.
+     */
+    private void black() {
+        long painted = 0, all = 0;
+        for (Lighting.LightMap m : h.lighting.maps()) {
+            all++;
+            boolean zero = true;
+            for (int i = 0; i < m.rgb.length && zero; i++) zero = m.rgb[i] == 0;
+            if (!zero) continue;
+            painted++;
+            for (int k = 0; k < m.rgb.length; k += 3) { m.rgb[k] = 8; m.rgb[k + 1] = 0; m.rgb[k + 2] = 8; }
+        }
+        System.out.printf("light.dump black: %,d of %,d maps are all zeroes (%.2f%%)%n",
+                painted, all, 100.0 * painted / all);
+    }
+
+    /**
+     * -Dlight.dump=tiny:N paints every lightmap no bigger than N texels either way, so a picture
+     * says how much of itself is lit by a map too small to hold a gradient. A lightmap is at least
+     * 2x2 because bilinear wants four corners, and at Haven's half-metre texel that is a metre
+     * across: a converted slab smaller than that gets a map whose texel centres are off the slab
+     * entirely, and answers with the light somewhere else. This runs after the cache is read and
+     * before the first frame, which is why it costs four seconds and not ten minutes.
+     */
+    private void tiny(int n) {
+        long painted = 0, all = 0;
+        for (Lighting.LightMap m : h.lighting.maps()) {
+            all++;
+            if (m.w > n || m.h > n) continue;
+            painted++;
+            for (int k = 0; k < m.rgb.length; k += 3) { m.rgb[k] = 8; m.rgb[k + 1] = 0; m.rgb[k + 2] = 8; }
+        }
+        System.out.printf("light.dump tiny:%d: painted %,d of %,d maps (%.1f%%)%n",
+                n, painted, all, 100.0 * painted / all);
+    }
+
+    /**
+     * -Dlight.dump=sun:X0:Y0:X1:Y1:Z - the sun's own shadow on the plane at height Z over that
+     * rectangle, one pixel every five centimetres, one hard ray to the centre of the sun each: what
+     * the geometry says before any lightmap has had a texel to quantise it into. White is lit.
+     * Written as sun.png beside the shots, with the lightmap's half-metre lattice drawn over it.
+     */
+    private void sunShadow(double x0, double y0, double x1, double y1, double z) throws Exception {
+        Map<String, Object> spec = h.world.lighting != null ? h.world.lighting : Map.of();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> sun = spec.get("sun") instanceof Map ? (Map<String, Object>) spec.get("sun") : Map.of();
+        double el = Math.toRadians(World.num(sun, "elevation", 40));
+        double sx = h.world.sunX * Math.cos(el), sy = h.world.sunY * Math.cos(el), sz = Math.sin(el);
+        double step = 0.05, far = 200;
+        int w = (int) Math.round((x1 - x0) / step), hh = (int) Math.round((y1 - y0) / step);
+        Occluder oc = new Occluder(h.world);
+        BufferedImage img = new BufferedImage(w, hh, BufferedImage.TYPE_INT_RGB);
+        int lit = 0;
+        for (int j = 0; j < hh; j++)
+            for (int i = 0; i < w; i++) {
+                double x = x0 + (i + 0.5) * step, y = y1 - (j + 0.5) * step;
+                boolean open = oc.open(x, y, z) && oc.clear(x, y, z, x + sx * far, y + sy * far, z + sz * far);
+                if (open) lit++;
+                int c = open ? 0xE0E0E0 : 0x303030;
+                double fu = (x - Math.floor(x / 0.5) * 0.5), fv = (y - Math.floor(y / 0.5) * 0.5);
+                if (fu < step || fv < step) c = open ? 0xC08080 : 0x803030;     // the texel lattice
+                img.setRGB(i, j, c);
+            }
+        File out = new File(dumpDir(), "sun.png");
+        ImageIO.write(img, "png", out);
+        System.out.printf("light.dump sun: %dx%d samples at z %.2f, %.0f%% lit, wrote %s%n",
+                w, hh, z, 100.0 * lit / (w * hh), out);
+    }
+
+    private static File dumpDir() {
+        String d = System.getProperty("light.dump.dir");
+        return new File(d != null ? d : ".");
+    }
+
+    /**
+     * -Dlight.dump=probe:X:Y: the stack of solid at one point of the map, top to bottom - every
+     * shape whose outline actually contains (x, y), not merely whose map's box does, with where its
+     * top and bottom are *at that point*, and what its top map says there, texel by texel. From
+     * above, the first line is what a camera sees; the rest is what the bake may have had to reason
+     * about underneath it.
+     */
+    private void probe(double x, double y) {
+        record Layer(double top, double bottom, World.Shape s) {}
+        java.util.List<Layer> at = new java.util.ArrayList<>();
+        for (World.Shape s : h.world.shapes) {
+            if (x < s.minX || x > s.maxX || y < s.minY || y > s.maxY) continue;
+            boolean in = switch (s.kind) {
+                case POLY -> Geometry.pointInPoly(x, y, s.xs, s.ys);
+                case CIRCLE -> (x - s.cx) * (x - s.cx) + (y - s.cy) * (y - s.cy) <= s.r * s.r;
+                default -> false;
+            };
+            if (in) at.add(new Layer(s.topAt(x, y), s.bottomAt(x, y), s));
+        }
+        at.sort((a, b) -> Double.compare(b.top(), a.top()));
+        System.out.printf("light.dump probe %.3f,%.3f: %d shapes contain it%n", x, y, at.size());
+        float[] c = new float[3];
+        for (Layer l : at) {
+            World.Shape s = l.s();
+            Lighting.LightMap m = h.lighting.top(s);
+            String light = "no top map";
+            if (m != null) {
+                m.sample(x, y, c);
+                double fu = (x - m.u0) / m.step, fv = (y - m.v0) / m.step;
+                int i = (int) Math.floor(fu), j = (int) Math.floor(fv);
+                StringBuilder t = new StringBuilder();
+                for (int dj = 0; dj <= 1; dj++)
+                    for (int di = 0; di <= 1; di++) {
+                        int ii = Math.max(0, Math.min(m.w - 1, i + di)), jj = Math.max(0, Math.min(m.h - 1, j + dj));
+                        t.append(String.format(" (%.1f,%.1f)=%.2f", m.u(ii), m.v(jj), m.rgb[(jj * m.w + ii) * 3]));
+                    }
+                light = String.format("light %.3f from a %dx%d map;%s", c[0], m.w, m.h, t);
+            }
+            System.out.printf("   top %8.4f  bottom %8.4f  shape %-7d mat %-2d slope %8.4f,%8.4f %s %s%n",
+                    l.top(), l.bottom(), s.id, s.topMat, s.hx, s.hy,
+                    s.amap != null ? "CUT-OUT" : s.mask >= 0 ? "masked " : "solid  ", light);
+        }
+    }
+
+    /** Every horizontal map whose grid covers the world point (x, y), smallest first: a horizontal
+     *  map's u and v are the world's x and y, so standing somewhere and asking what is under your
+     *  feet is one box test. The ground of a converted map is many planes at many heights, and the
+     *  one a picture shows is rarely the biggest. */
+    private void under(double x, double y) throws Exception {
+        record Found(double z, String what, Lighting.LightMap m) {}
+        java.util.List<Found> hit = new java.util.ArrayList<>();
+        for (World.Shape s : h.world.shapes) {
+            for (int k = 0; k < 2; k++) {
+                Lighting.LightMap m = k == 0 ? h.lighting.top(s) : h.lighting.bottom(s);
+                if (m == null || !covers(m, x, y)) continue;
+                hit.add(new Found(k == 0 ? s.h : s.z0,
+                        String.format("%s%d mat %d slope %.2g,%.2g", k == 0 ? "top " : "bottom ", s.id,
+                                k == 0 ? s.topMat : s.mat,
+                                k == 0 ? s.hx : s.zx, k == 0 ? s.hy : s.zy), m));
+            }
+        }
+        for (World.Region r : h.world.regions) {
+            if (h.lighting.floor(r) != null && covers(h.lighting.floor(r), x, y))
+                hit.add(new Found(r.floor, "floor of region " + r.id, h.lighting.floor(r)));
+            if (h.lighting.ceil(r) != null && covers(h.lighting.ceil(r), x, y))
+                hit.add(new Found(r.ceil, "ceiling of region " + r.id, h.lighting.ceil(r)));
+        }
+        hit.sort((a, b) -> Double.compare(a.z(), b.z()));
+        // Hundreds of converted triangles share one merged map, so the interesting count is how
+        // many distinct maps there are, not how many faces point at them.
+        java.util.Map<Lighting.LightMap, int[]> seen = new java.util.IdentityHashMap<>();
+        java.util.List<Found> firsts = new java.util.ArrayList<>();
+        for (Found f : hit) {
+            int[] c = seen.get(f.m());
+            if (c == null) { seen.put(f.m(), new int[]{1}); firsts.add(f); } else c[0]++;
+        }
+        System.out.printf("light.dump at %.2f,%.2f: %d horizontal faces over this point, on %d distinct maps%n",
+                x, y, hit.size(), firsts.size());
+        int n = 0;
+        for (Found f : firsts) {
+            float[] c = new float[3];
+            f.m().sample(x, y, c);
+            System.out.printf("   z %8.3f  %-38s %4d x %-4d texels, %4d faces  light here %.3f %.3f %.3f%n",
+                    f.z(), f.what(), f.m().w, f.m().h, seen.get(f.m())[0], c[0], c[1], c[2]);
+            // A small map, texel by texel with the world point each one stands on: two maps snapped
+            // to the same lattice sample the same places, so this says whether they disagree about
+            // the light or merely about where they measured it.
+            Lighting.LightMap m = f.m();
+            if (m.w * m.h <= 12) {
+                StringBuilder b = new StringBuilder("        ");
+                for (int j = 0; j < m.h; j++)
+                    for (int i = 0; i < m.w; i++)
+                        b.append(String.format("(%.2f,%.2f)=%.3f ", m.u(i), m.v(j), m.rgb[(j * m.w + i) * 3]));
+                System.out.println(b);
+            }
+            if (n < 12) write("at" + n++, f.m());
+        }
+    }
+
+    private static boolean covers(Lighting.LightMap m, double x, double y) {
+        return x >= m.u0 && x <= m.u0 + (m.w - 1) * m.step && y >= m.v0 && y <= m.v0 + (m.h - 1) * m.step;
+    }
+
+    private void write(String name, Lighting.LightMap m) throws Exception {
+        {
+            System.out.printf("light.dump %s: %d x %d texels of %.3f m, u %.2f..%.2f, v %.2f..%.2f%s%n",
+                    name, m.w, m.h, m.step, m.u0, m.u0 + (m.w - 1) * m.step,
+                    m.v0, m.v0 + (m.h - 1) * m.step, m.base != null ? " (a view onto a shared map)" : "");
+            float[] rgb = m.rgb;
+            float hi = 0;
+            for (float v : rgb) hi = Math.max(hi, v);
+            if (hi <= 0) hi = 1;
+            int scale = Math.max(1, Math.min(16, 512 / Math.max(m.w, m.h)));
+            java.awt.image.BufferedImage img =
+                    new java.awt.image.BufferedImage(m.w * scale, m.h * scale, java.awt.image.BufferedImage.TYPE_INT_RGB);
+            for (int j = 0; j < m.h; j++)
+                for (int i = 0; i < m.w; i++) {
+                    int k = (j * m.w + i) * 3;
+                    int r = lvl(rgb[k] / hi), g = lvl(rgb[k + 1] / hi), b = lvl(rgb[k + 2] / hi);
+                    int c = (r << 16) | (g << 8) | b;
+                    for (int dy = 0; dy < scale; dy++)
+                        for (int dx = 0; dx < scale; dx++) img.setRGB(i * scale + dx, j * scale + dy, c);
+                }
+            File out = new File("lightmap-" + name + ".png");
+            javax.imageio.ImageIO.write(img, "png", out);
+            System.out.println("wrote " + out + "  (peak " + hi + ", " + scale + " px a texel)");
+        }
+    }
+
+    private World.Shape shape(int id) {
+        for (World.Shape s : h.world.shapes) if (s.id == id) return s;
+        throw new IllegalArgumentException("no shape " + id);
+    }
+
+    private static int lvl(double v) {
+        return (int) Math.round(255 * Math.pow(Math.max(0, Math.min(1, v)), 1 / 2.2));
     }
 }
