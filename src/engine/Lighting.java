@@ -269,6 +269,22 @@ final class Lighting {
         // asking for a bake; the bake it would start does not end.
         if (!(texel > 0) || !Double.isFinite(texel))
             throw new IllegalArgumentException("lighting texel must be a positive size in metres, not " + texel);
+        // The ground's own texel, when a map wants it finer than the walls'. A shadow falls on the
+        // ground, and a camera looks down at it at a grazing angle that spreads one texel over a
+        // hundred pixels. A sun shadow's edge is sharper than half a metre - Haven's sun is a disc
+        // two degrees across, so a roof seven metres up casts an edge a quarter of a metre wide -
+        // and on a half-metre lattice every such edge that runs across it at an angle comes out as
+        // a staircase. At the foot of Haven's walls that staircase, and the thin shadows of the
+        // cables overhead, were what read as wedges of light and dark; drawn with one hard ray every
+        // five centimetres the same ground shows one straight edge and a few thin lines. Walls are
+        // seen face on and have few such edges, so they stay coarse: on Haven the ground - which is
+        // every level or sloped top, roofs included - is under a million texels at half a metre and
+        // the walls sixteen, so the ground can take sixteen times as many for less than doubling
+        // the bake.
+        double groundTexel = Double.parseDouble(System.getProperty("light.groundTexel",
+                String.valueOf(World.num(spec, "groundTexel", texel))));
+        if (!(groundTexel > 0) || !Double.isFinite(groundTexel))
+            throw new IllegalArgumentException("lighting groundTexel must be a positive size in metres, not " + groundTexel);
         samples = count(ind, "samples", 32, 1, 65_536);
         bounces = count(ind, "bounces", 2, 1, 64);                   // pass 1 is the sky's as well
         reach = World.num(ind, "reach", 40);
@@ -410,7 +426,7 @@ final class Lighting {
         List<Piece> pieces = new ArrayList<>(flats);
         pieces.addAll(tilts);
         pieces.addAll(walls);
-        merge(jobs, pieces, texel);
+        merge(jobs, pieces, texel, groundTexel);
 
         // One task per texel row across every surface, spread over all cores. The direct pass
         // stands alone; every gather pass after it reads the totals the pass before wrote, so each
@@ -1073,7 +1089,7 @@ final class Lighting {
      * does not pay for the empty rectangle between them, and a run that would still cost four times
      * its pieces is left as it was.
      */
-    private void merge(List<Job> jobs, List<Piece> pieces, double texel) {
+    private void merge(List<Job> jobs, List<Piece> pieces, double wallTexel, double groundTexel) {
         Map<String, List<Piece>> planes = new java.util.LinkedHashMap<>();
         for (Piece p : pieces) planes.computeIfAbsent(p.plane(), k -> new ArrayList<>()).add(p);
         // Every run of every plane, laid out in the order its first piece was registered. The key
@@ -1084,10 +1100,10 @@ final class Lighting {
         for (Piece p : pieces) when.put(p, when.size());
         List<List<Piece>> out = new ArrayList<>();
         for (List<Piece> plane : planes.values())
-            for (List<Piece> run : runs(plane, texel)) out.addAll(levels(run));
+            for (List<Piece> run : runs(plane, ground(plane.get(0)) ? groundTexel : wallTexel)) out.addAll(levels(run));
         out.sort(java.util.Comparator.comparingInt(run -> when.get(run.get(0))));
-        for (List<Piece> run : out) share(jobs, run, texel);
-        stats(out, texel);
+        for (List<Piece> run : out) share(jobs, run, ground(run.get(0)) ? groundTexel : wallTexel);
+        stats(out, wallTexel);
     }
 
     /** -Dmerge.stats: where the pieces went, by kind. With =only it stops before the bake, so the
@@ -1235,7 +1251,6 @@ final class Lighting {
             apart += p.texels(texel);
             colors.putIfAbsent(p.color(), colors.size());
         }
-        double u0b = u0, v0b = v0;           // the pieces' own box, before the grid is snapped out to the lattice
         u0 = snap(u0, texel);
         v0 = snap(v0, texel);
         double together = Math.max(2, Math.ceil((u1 - u0) / texel) + 1)
@@ -1269,14 +1284,141 @@ final class Lighting {
                 for (int i = i0; i <= i1; i++)
                     if (p.has(m.u(i), m.v(j))) m.own[j * m.w + i] = c;
         }
-        jobs.add(new Job(m, first.place(u0, u1 - u0), new boolean[m.w * m.h],
-                new float[m.w * m.h * 3], new float[m.w * m.h * 3],
-                first instanceof Tilted ? new Own(u0b, v0b, u1, v1) : null));
+        jobs.add(new Job(m, ground(first) ? onItsOwn(run, m, u0, v0, texel) : first.place(u0, u1 - u0),
+                new boolean[m.w * m.h], new float[m.w * m.h * 3], new float[m.w * m.h * 3], null));
         for (Piece p : run) {
             if (p.origin() == 0) { p.take(m); continue; }
             LightMap v = m.view(u0 - p.origin());
             viewMaps.add(v);
             p.take(v);
+        }
+    }
+
+    /**
+     * Where a shared map of ground takes its samples: each one on the piece that is actually there,
+     * rather than on the first piece's plane carried across the whole map.
+     *
+     * A map shared by a run of pieces used to be sampled on one plane, the first piece's. For level
+     * ground that is exact; for a converted map's paving, whose triangles lie at slopes of six to
+     * eleven per cent and agree only within a centimetre where they meet, it is not. Carried a few
+     * metres from the piece it came from, one plane passes into the ground in some places and hangs
+     * clear of it in others, and the texels there learn the light at the wrong height or, skipped
+     * as inside something, none at all.
+     *
+     * Now a sample is placed on whichever piece contains it and is highest there - what a camera
+     * above would see at that exact point - found among the pieces whose box meets that texel's
+     * footprint. A sample no piece contains goes on the plane of the piece that holds the nearest
+     * texel, read inside that piece's own box, so a sliver with a slope of 33 cannot throw it metres.
+     * The runs themselves are what they were, so a map of level ground - all of school - samples
+     * exactly where it did and bakes byte for byte the same. On Haven it is a modest improvement,
+     * not a cure for anything in particular: hard one-pixel light edges on the paving camera fell
+     * from 59 to 55 per ten thousand. (The stepped wedges near walls were a different thing, a sun
+     * shadow sharper than the texel; see groundTexel.)
+     */
+    private static Place onItsOwn(List<Piece> run, LightMap m, double u0, double v0, double texel) {
+        final int w = m.w, h = m.h;
+        final Place[] planes = new Place[run.size()];
+        for (int q = 0; q < planes.length; q++) planes[q] = run.get(q).place(0, 0);
+        // The piece nearest each texel, for samples no outline claims.
+        final int[] owner = new int[w * h];
+        final double[] top = new double[w * h];
+        java.util.Arrays.fill(owner, -1);
+        for (int q = 0; q < run.size(); q++) {
+            Piece p = run.get(q);
+            int i0 = (int) Math.max(0, Math.floor((p.u0() - u0) / texel));
+            int i1 = (int) Math.min(w - 1, Math.ceil((p.u1() - u0) / texel));
+            int j0 = (int) Math.max(0, Math.floor((p.v0() - v0) / texel));
+            int j1 = (int) Math.min(h - 1, Math.ceil((p.v1() - v0) / texel));
+            for (int j = j0; j <= j1; j++)
+                for (int i = i0; i <= i1; i++) {
+                    int k = j * w + i;
+                    boolean inside = p.has(m.u(i), m.v(j));
+                    int held = owner[k];
+                    boolean heldInside = held >= 0 && run.get(held).has(m.u(i), m.v(j));
+                    double z = dir(p) * zIn(p, m.u(i), m.v(j));
+                    if (held < 0 || (inside && !heldInside) || (inside == heldInside && z >= top[k])) {
+                        owner[k] = q;
+                        top[k] = z;
+                    }
+                }
+        }
+        fill(owner, w, h);
+        // Every texel's candidates, laid out flat: the pieces whose box meets its footprint.
+        final int[] from = new int[w * h + 1];
+        for (Piece p : run) {
+            int[] r = footprint(p, u0, v0, w, h, texel);
+            for (int j = r[2]; j <= r[3]; j++) for (int i = r[0]; i <= r[1]; i++) from[j * w + i + 1]++;
+        }
+        for (int k = 0; k < w * h; k++) from[k + 1] += from[k];
+        final int[] cand = new int[from[w * h]];
+        int[] at = from.clone();
+        for (int q = 0; q < run.size(); q++) {
+            int[] r = footprint(run.get(q), u0, v0, w, h, texel);
+            for (int j = r[2]; j <= r[3]; j++) for (int i = r[0]; i <= r[1]; i++) cand[at[j * w + i]++] = q;
+        }
+        final Place fallback = run.get(0).place(0, 0);
+        return (u, v, pt, n) -> {
+            int i = (int) Math.max(0, Math.min(w - 1, Math.round((u - u0) / texel)));
+            int j = (int) Math.max(0, Math.min(h - 1, Math.round((v - v0) / texel)));
+            int k = j * w + i, best = -1;
+            double bz = Double.NEGATIVE_INFINITY;
+            for (int x = from[k]; x < from[k + 1]; x++) {
+                Piece q = run.get(cand[x]);
+                if (!q.has(u, v)) continue;
+                double z = dir(q) * q.zAt(u, v);
+                if (z > bz) { bz = z; best = cand[x]; }
+            }
+            if (best >= 0) { planes[best].at(u, v, pt, n); return; }
+            int o = owner[k];
+            if (o < 0) { fallback.at(u, v, pt, n); return; }
+            Piece q = run.get(o);
+            planes[o].at(Math.max(q.u0(), Math.min(q.u1(), u)), Math.max(q.v0(), Math.min(q.v1(), v)), pt, n);
+            pt[0] = u;
+            pt[1] = v;
+        };
+    }
+
+    /** The pieces that are ground: parameterised by the world's (x, y). */
+    private static boolean ground(Piece p) { return p instanceof Flat || p instanceof Tilted; }
+
+    private static int dir(Piece p) { return p instanceof Flat f ? f.dir() : ((Tilted) p).dir(); }
+
+    /** A piece's own plane at (u, v), read inside its own box: a sliver a centimetre wide can have a
+     *  slope of 33, and extrapolated half a metre that is sixteen metres from where the sliver is. */
+    private static double zIn(Piece p, double u, double v) {
+        return p.zAt(Math.max(p.u0(), Math.min(p.u1(), u)), Math.max(p.v0(), Math.min(p.v1(), v)));
+    }
+
+    /** The texels of a w x h lattice at (u0, v0) whose footprint - the square of side {@code step}
+     *  around its centre - meets p's box, as {i0, i1, j0, j1}. */
+    private static int[] footprint(Piece p, double u0, double v0, int w, int h, double step) {
+        int i0 = (int) Math.max(0, Math.ceil((p.u0() - u0) / step - 0.5));
+        int i1 = (int) Math.min(w - 1, Math.floor((p.u1() - u0) / step + 0.5));
+        int j0 = (int) Math.max(0, Math.ceil((p.v0() - v0) / step - 0.5));
+        int j1 = (int) Math.min(h - 1, Math.floor((p.v1() - v0) / step + 0.5));
+        return new int[] {i0, Math.max(i0 - 1, i1), j0, Math.max(j0 - 1, j1)};
+    }
+
+    /** Texels no piece's box reached take the owner of a neighbour that has one, spreading outwards
+     *  the way dilate spreads light. */
+    private static void fill(int[] owner, int w, int h) {
+        boolean missing = true;
+        for (int pass = 0; pass < w + h && missing; pass++) {
+            missing = false;
+            int[] next = owner.clone();
+            for (int j = 0; j < h; j++)
+                for (int i = 0; i < w; i++) {
+                    int k = j * w + i;
+                    if (owner[k] >= 0) continue;
+                    int got = -1;
+                    for (int dj = -1; dj <= 1 && got < 0; dj++)
+                        for (int di = -1; di <= 1 && got < 0; di++) {
+                            int ii = i + di, jj = j + dj;
+                            if (ii >= 0 && jj >= 0 && ii < w && jj < h && owner[jj * w + ii] >= 0) got = owner[jj * w + ii];
+                        }
+                    if (got >= 0) next[k] = got; else missing = true;
+                }
+            System.arraycopy(next, 0, owner, 0, owner.length);
         }
     }
 
