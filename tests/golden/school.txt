@@ -6,4 +6,4 @@ view courtyard-up 320x180 plain=37d6e663674eec3b albedo=319d3f606967e17a depth=4
 view courtyard-down 320x180 plain=23328b9e42476216 albedo=ba2c2855e788182f depth=c993f707e770101d
 view pool 320x180 plain=1b4a45ed3019125b albedo=4c218ba11b748c21 depth=5e5ebd10f833cb27
 view landing 320x180 plain=fe0a04daed99dc88 albedo=afa75178bc0862b2 depth=914f5855a9e250a8
-lightmap e0c6e0f727337760 rays=19913014
+lightmap 41b550c02888660c rays=19913014

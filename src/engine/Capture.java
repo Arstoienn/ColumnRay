@@ -501,6 +501,17 @@ public final class Capture {
             f.m().sample(x, y, c);
             System.out.printf("   z %8.3f  %-38s %4d x %-4d texels, %4d faces  light here %.3f %.3f %.3f%n",
                     f.z(), f.what(), f.m().w, f.m().h, seen.get(f.m())[0], c[0], c[1], c[2]);
+            // A small map, texel by texel with the world point each one stands on: two maps snapped
+            // to the same lattice sample the same places, so this says whether they disagree about
+            // the light or merely about where they measured it.
+            Lighting.LightMap m = f.m();
+            if (m.w * m.h <= 12) {
+                StringBuilder b = new StringBuilder("        ");
+                for (int j = 0; j < m.h; j++)
+                    for (int i = 0; i < m.w; i++)
+                        b.append(String.format("(%.2f,%.2f)=%.3f ", m.u(i), m.v(j), m.rgb[(j * m.w + i) * 3]));
+                System.out.println(b);
+            }
             if (n < 12) write("at" + n++, f.m());
         }
     }
