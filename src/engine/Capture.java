@@ -420,6 +420,7 @@ public final class Capture {
             if (f[0].equals("black")) { black(); continue; }
             if (f[0].equals("down")) { down(); continue; }
             if (f[0].equals("info")) { info(Integer.parseInt(f[1])); continue; }
+            if (f[0].equals("id")) { byId(Integer.parseInt(f[1])); continue; }
             // at:X:Y, not at:X,Y - the spec itself is a comma-separated list.
             if (f[0].equals("at")) { under(Double.parseDouble(f[1]), Double.parseDouble(f[2])); continue; }
             int id = Integer.parseInt(f[1]);
@@ -442,6 +443,29 @@ public final class Capture {
         List<Lighting.LightMap> all = new java.util.ArrayList<>(h.lighting.maps());
         all.sort((a, b) -> Long.compare((long) b.w * b.h, (long) a.w * a.h));
         for (int i = 0; i < Math.min(n, all.size()); i++) write("big" + i, all.get(i));
+    }
+
+    /** -Dlight.dump=id:N finds the map that -Ddebug.who=map wrote as N - its identity hash, masked
+     *  to the 21 bits the albedo buffer has room for - and says what it is and what points at it. */
+    private void byId(int id) {
+        for (Lighting.LightMap m : h.lighting.maps()) {
+            if ((System.identityHashCode(m) & 0x1FFFFF) != id) continue;
+            int tops = 0, bottoms = 0, floors = 0;
+            double z = Double.NaN;
+            World.Shape one = null;
+            for (World.Shape sh : h.world.shapes) {
+                if (h.lighting.top(sh) == m) { tops++; z = sh.h; one = sh; }
+                if (h.lighting.bottom(sh) == m) { bottoms++; z = sh.z0; one = sh; }
+            }
+            for (World.Region r : h.world.regions) if (h.lighting.floor(r) == m) { floors++; z = r.floor; }
+            System.out.printf("map %d: %d x %d texels of %.2f m at u %.2f v %.2f; %d tops, %d bottoms, %d floors; z ~ %.4f%n",
+                    id, m.w, m.h, m.step, m.u0, m.v0, tops, bottoms, floors, z);
+            if (one != null)
+                System.out.printf("   one of them: shape %d mat %d topMat %d slope %g,%g box %.2f,%.2f..%.2f,%.2f%n",
+                        one.id, one.mat, one.topMat, one.hx, one.hy, one.minX, one.minY, one.maxX, one.maxY);
+            return;
+        }
+        System.out.println("light.dump id:" + id + ": no map with that identity");
     }
 
     /** -Dlight.dump=info:ID says what a shape is, for when a debug.who id has to be looked up. */
