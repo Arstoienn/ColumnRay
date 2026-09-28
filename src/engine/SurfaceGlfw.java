@@ -23,8 +23,9 @@ import org.lwjgl.system.MemoryUtil;
  * What this is for, measured against the AWT one it sits beside:
  *
  * - The pointer is held by {@code GLFW_CURSOR_DISABLED}, so there is no warp: no putting the
- *   pointer back at the middle after every event, no discarding the event the warp itself caused,
- *   and no {@link Pointer}. It also works off macOS, where {@code Pointer.available()} is false.
+ *   pointer back at the middle after every event, and no discarding the event the warp itself
+ *   caused. The warp was a macOS call, so off macOS there was no mouse look at all; this works
+ *   everywhere, which is why {@code Host.canMouseLook()} is now simply true.
  * - {@code glfwGetKeyScancode(GLFW_KEY_W)} is 13 on macOS, which is exactly what {@link Keys}
  *   already calls the W position. The two tables agree on all thirty-three, so keys can move here
  *   without renumbering anything - that is the next step, and until it is taken this relies on

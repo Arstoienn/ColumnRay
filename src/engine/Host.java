@@ -325,9 +325,16 @@ public final class Host {
     /** Whether that view turns with the player or keeps the map the same way up. */
     public void toggleRayFollow() { rayView.toggleFollow(); }
 
-    /** Can this machine hold the pointer still, so that the mouse can look without a button held?
-     *  See {@link Pointer}; off macOS it cannot, and a game should leave dragging in its hints. */
-    public static boolean canMouseLook() { return Pointer.available(); }
+    /**
+     * Can this machine hold the pointer still, so that the mouse can look without a button held?
+     *
+     * It can. This used to be a real question: holding the pointer meant warping it back to the
+     * middle of the window after every event, through a macOS call, so off macOS the answer was no
+     * and a game had to leave dragging in its hints. The window does it now, with one call that
+     * every platform has, so the question is kept for the games that ask it and the answer never
+     * changes.
+     */
+    public static boolean canMouseLook() { return true; }
 
     /** Is mouse look on? */
     public boolean mouseLook() { return mouseLook; }
@@ -342,7 +349,7 @@ public final class Host {
      * pointer is actually held still is the surface's business; see SurfaceAwt.
      */
     public void setMouseLook(boolean on) {
-        mouseLook = on && Pointer.available();
+        mouseLook = on;
         hoverColumn = hoverRow = -1;
         if (surface != null) surface.mouseLook(mouseLook);
     }
