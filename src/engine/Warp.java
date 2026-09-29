@@ -131,7 +131,7 @@ final class Warp {
 
     /**
      * The same resampling as {@link #apply}, as a table the card reads one row of per output row:
-     * eight floats a row, for {@link GpuWarp}.
+     * eight floats a row, for {@link GpuWalls#shadeWarped}.
      *
      * The card works in float and apply() in double, and a float carrying a source x of a few
      * thousand is a quarter of a thousandth of a pixel out - enough for some pixel in every frame to
@@ -142,6 +142,11 @@ final class Warp {
      * for any i under 8192, and only the low half's product - a few pixels at most - is rounded.
      */
     void rows(java.lang.foreign.MemorySegment into) {
+        rows(into, 0, 8);
+    }
+
+    /** The same, row j's eight floats at float index {@code at + j * stride}. */
+    void rows(java.lang.foreign.MemorySegment into, long at, int stride) {
         double w2 = rw / 2.0, h2 = rh / 2.0;
         int yHi = y1 - 1;
         for (int j = 0; j < rh; j++) {
@@ -150,7 +155,7 @@ final class Warp {
             double sx = cx + (0.5 - w2) * k, base = Math.floor(sx), kh = high(k);
             float[] row = {ys, (float) base, (float) (sx - base), (float) kh, (float) (k - kh), x0, x1 - 1, 0};
             java.lang.foreign.MemorySegment.copy(row, 0, into, java.lang.foreign.ValueLayout.JAVA_FLOAT,
-                    j * 8L * Float.BYTES, 8);
+                    (at + (long) j * stride) * Float.BYTES, 8);
         }
     }
 

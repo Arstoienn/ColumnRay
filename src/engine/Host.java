@@ -581,8 +581,8 @@ public final class Host {
             }
         }
         if (shownOnCard) {
-            gpu.shade(spans, masks, c, srcH / 2.0 + c.pitch, renderer.focal(), RH);
-            cardWarp.apply(gpu.target(), warp);
+            gpu.shadeWarped(spans, masks, c, srcH / 2.0 + c.pitch, renderer.focal(), RH, warp, cardWarp);
+            cardWarp.submit();
             if (readCardWarp) cardWarp.read(hi);
             return;
         }
