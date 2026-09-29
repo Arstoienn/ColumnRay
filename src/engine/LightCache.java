@@ -74,7 +74,7 @@ final class LightCache {
             "Minimap", "RayView", "DynamicResolution", "Keys", "LightCache", "Hash",
             "Surface", "SurfaceGlfw",
             "Gl", "GlMaterials", "GpuMatCheck", "GpuCheck", "GpuSpans", "GpuWalls",
-            "GpuLights", "GpuTextures", "GpuMaterials", "GpuTable", "GpuMasks",
+            "GpuLights", "GpuTextures", "GpuMaterials", "GpuTable", "GpuMasks", "GpuWarp",
             "Glfw", "GpuNote");
 
     private LightCache() {}

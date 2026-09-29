@@ -92,6 +92,13 @@ interface Surface extends AutoCloseable {
     void present(int[] picture, int pw, int ph, int ox, int oy, int dw, int dh, Painter overlay);
 
     /**
+     * The same, for a picture that is already on the card: {@code texture} is a name in the
+     * engine's GL context, which every window shares, so there is nothing to upload. This is what
+     * the frame arrives as once the pitch warp runs there too (see {@link GpuWarp}).
+     */
+    void present(int texture, int ox, int oy, int dw, int dh, Painter overlay);
+
+    /**
      * Let the window system do its work, once a frame.
      *
      * AWT has a thread of its own for this and needs nothing; GLFW does not, and its events arrive

@@ -132,8 +132,8 @@ final class SurfaceGlfw implements Surface, Keys.Source {
         int w = Math.max(160, (int) (wantW * fit)), h = Math.max(90, (int) (wantH * fit));
 
         // Sharing the engine's context: a texture the renderer writes is a texture this window
-        // can read. Nothing uses that yet - the frame still comes back through the CPU for the
-        // pitch warp - but it is what makes removing that round trip possible at all.
+        // can read, which is how a frame warped on the card is shown without coming back through
+        // the CPU (see GpuWarp).
         window = glfwCreateWindow(w, h, title, MemoryUtil.NULL, Glfw.share());
         if (window == MemoryUtil.NULL) throw new IllegalStateException("GLFW would not open a window");
         glfwSetWindowPos(window, mx[0] + 8, my[0] + 8);
@@ -191,6 +191,32 @@ final class SurfaceGlfw implements Surface, Keys.Source {
      */
     @Override
     public void present(int[] picture, int pw, int ph, int ox, int oy, int dw, int dh, Painter overlay) {
+        if (pictureBuf == null || pictureBuf.capacity() < pw * ph) {
+            if (pictureBuf != null) MemoryUtil.memFree(pictureBuf);
+            pictureBuf = MemoryUtil.memAllocInt(pw * ph);
+        }
+        paintOverlay(overlay);
+        glfwMakeContextCurrent(window);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        // Java's packed ARGB int, read straight by the card: BGRA with a reversed 8_8_8_8. The
+        // copy into a native buffer first is deliberate: uploading from the int[] itself measured
+        // dearer (see docs).
+        pictureBuf.clear();
+        pictureBuf.put(picture, 0, pw * ph).flip();
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pw, ph, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, pictureBuf);
+        show(texture, ox, oy, dw, dh);
+    }
+
+    /** A picture the engine left on the card: no upload at all, just drawn from where it is. */
+    @Override
+    public void present(int picture, int ox, int oy, int dw, int dh, Painter overlay) {
+        paintOverlay(overlay);
+        glfwMakeContextCurrent(window);
+        show(picture, ox, oy, dw, dh);
+    }
+
+    /** Paint the overlay into its image and note the band of rows it touched. */
+    private void paintOverlay(Painter overlay) {
         int w = winW, h = winH;
         if (image == null || image.getWidth() != w || image.getHeight() != h) {
             image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
@@ -199,10 +225,6 @@ final class SurfaceGlfw implements Surface, Keys.Source {
             overlayBuf = MemoryUtil.memAllocInt(w * h);
             bandY0 = Integer.MAX_VALUE;
             bandY1 = -1;
-        }
-        if (pictureBuf == null || pictureBuf.capacity() < pw * ph) {
-            if (pictureBuf != null) MemoryUtil.memFree(pictureBuf);
-            pictureBuf = MemoryUtil.memAllocInt(pw * ph);
         }
         // Clear only the rows the overlay wrote last time; everything outside that band is
         // already transparent and has been since the image was made.
@@ -226,8 +248,11 @@ final class SurfaceGlfw implements Surface, Keys.Source {
         }
         bandY0 = y0;
         bandY1 = y1;
+    }
 
-        glfwMakeContextCurrent(window);
+    /** The picture into its letterbox, the overlay's band over it, and the swap. */
+    private void show(int picture, int ox, int oy, int dw, int dh) {
+        int w = winW, h = winH, y0 = bandY0, y1 = bandY1;
         glViewport(0, 0, fbW, fbH);              // the one place that counts in real pixels
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -237,13 +262,7 @@ final class SurfaceGlfw implements Surface, Keys.Source {
 
         // The picture, into its letterbox. The drawable counts from the bottom and the frame from
         // the top, so the rectangle goes over flipped.
-        glBindTexture(GL_TEXTURE_2D, texture);
-        // Java's packed ARGB int, read straight by the card: BGRA with a reversed 8_8_8_8, and
-        // straight out of the engine's own array - LWJGL uploads from an int[] without a copy
-        // through a native buffer, which was costing a 19 MB memcpy a frame on its own.
-        pictureBuf.clear();
-        pictureBuf.put(picture, 0, pw * ph).flip();
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pw, ph, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, pictureBuf);
+        glBindTexture(GL_TEXTURE_2D, picture);
         rect(ox, h - oy - dh, dw, dh, w, h);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
