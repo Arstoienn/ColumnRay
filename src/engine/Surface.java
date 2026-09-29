@@ -16,9 +16,9 @@ import java.awt.Graphics2D;
  * the engine and only where to paint it belongs here. A surface is handed a {@link Painter} and
  * gives it a {@link Graphics2D} over its drawable; it never decides what goes in one.
  *
- * {@link SurfaceAwt} is the implementation this engine has always had, moved rather than rewritten.
- * A GLFW one is the reason the interface exists: it answers {@link #pump()} with real work, it can
- * hold the pointer without {@link Pointer}'s warp, and it reaches Linux, which has no backend today.
+ * {@link SurfaceGlfw} is the only implementation. The AWT window the engine had from the start sat
+ * behind this line too until 2026-09-28: off macOS it could not read the keyboard, and on macOS it
+ * could not have the card once GLFW owned the context.
  */
 interface Surface extends AutoCloseable {
 

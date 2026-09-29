@@ -53,15 +53,18 @@ view, `,` `.` render resolution by hand, `V` dynamic resolution on and off. `--p
 second list, and nothing drawn over the picture either; see "Two games on one engine" below.
 
 **The mouse looks without a button held.** A window is told where the pointer is and never how far
-the hand moved, so the second is had by arranging for the first to be the same every time: the
-pointer is hidden and put back to the middle of the window after every event it reports, and the
-next event's distance from the middle is the movement (`Host.looked`, `Pointer`). Two things make
-that work rather than drift - an event that lands exactly on the middle is the warp's own arrival
-coming back round and must count for nothing, and the warp has to go to the same integer middle the
-deltas are measured against, or every event reads as a flick of one pixel. `CGWarpMouseCursorPosition`
-moves the pointer and needs no permission; `java.awt.Robot` posts an event instead and would need
-Accessibility, which is why it is not used. Off macOS there is no warp, `Host.canMouseLook()` is
-false, and the mouse looks by dragging with a button down, as it always did.
+the hand moved. GLFW answers that directly: `GLFW_CURSOR_DISABLED` hides the pointer and stops
+clamping it, and the difference between two reports is the movement (`Host.looked`). It is one
+call and it works on every platform, so `Host.canMouseLook()` is simply true.
+
+It used to be a warp, and the warp is worth remembering because the same trap waits in any toolkit
+that does not offer this. The pointer was put back at the middle of the window after every event,
+so the next event's distance from the middle was the movement - `CGWarpMouseCursorPosition`,
+through the FFM API, in an `engine.Pointer` that is gone since 2026-09-28. Two things kept it from
+drifting: an event exactly at the middle was the warp's own arrival coming back round and counted
+for nothing, and the warp went to the same *integer* middle the deltas were measured against,
+because half a pixel out made every event read as a flick of one. The warp was a macOS call, so off
+macOS the mouse only looked while a button was held.
 
 **The walk has a velocity in it.** Moving by `speed * dt` in whatever direction the keys point makes
 the top speed instant in both directions, and makes the air as steerable as the floor. `Player` now
@@ -74,44 +77,28 @@ with the stride and dips on a landing, because in a first-person view speed is r
 and nothing else. Neither moves the body - both are an offset on `Player.eye()` - and both are zero
 the moment a camera is placed, so no screenshot, digest or golden frame can see them.
 
-**Those are places on the keyboard, not letters.** AWT will not say which key was pressed: on macOS
-it works out the key code for a letter key from the character that key produces under the current
-layout, so on Colemak the key in the S position arrives as `R` and the one in the D position as `S`,
-and WASD would answer the wrong way round.
+**Those are places on the keyboard, not letters.** WASD is a shape on the keyboard, not four
+letters. A toolkit that names a key by the character it produces puts that shape somewhere else on
+every layout that is not US QWERTY: on Colemak the key in the S position produces R and the one in
+the D position produces S, so a game listening for letters would answer the wrong way round, and on
+Bopomofo it would hear nothing it knew.
 
-So `Keys` does not go through AWT. macOS gives every key position a fixed number - the scan code the
-hardware sends, 13 for the key a US board prints `W` on, whatever a layout later makes of it - and
-`CGEventSourceKeyState` answers whether the key at a given number is down right now. The game asks
-that once a frame for the keys it cares about, through the FFM API (hence
-`--enable-native-access=ALL-UNNAMED` in `run.sh`). Nothing has to know which layout is selected, so
-nothing has to keep asking: switch to Bopomofo mid-jump and the same keys keep working, because the
-question was never about letters. An input method is kept from swallowing the keys as well, for the
-window's sake.
+So a key in `Keys` is a position. The numbers are macOS virtual key codes, because that is what the
+engine read from the machine when it asked macOS directly, and GLFW's key tokens turn out to be the
+same positions said differently: `glfwGetKeyScancode(GLFW_KEY_W)` is 13, which is what `Keys.W` has
+always been, and all thirty-three the game uses agree - `SurfaceGlfw.check()` says so out loud if
+they ever stop. The window answers for held keys through `Keys.Source`, so `Keys` never learns which
+toolkit it is. Naming a key is the one place the layout still matters, and it goes the other way:
+`glfwGetKeyName` says what this keyboard prints on a position, read from the layout in force at the
+moment it is asked, so on Colemak the HUD hint reads `WARS move`; AWT's `getKeyText` names the keys
+no layout prints anything on.
 
-Naming them is the one place the layout still matters, and it goes the other way: given a position,
-`UCKeyTranslate` says what this keyboard prints on it, so on Colemak the HUD hint reads `WARS move`.
-That is asked once, before AWT starts, because Text Services belongs to the process's first thread
-and answers the game loop with a trap rather than an answer.
-
-Asking it that early has a trap of its own. The first call checks the process in with the system,
-and a process with no window yet checks in as background-only, a type AWT does not undo when the
-window opens. A background-only app can never be the active one: the window came up, clicking it did
-nothing, and every key went to whatever app was in front (`lsappinfo` showed `type="BackgroundOnly"`;
-with the call skipped, `Foreground`). So `Keys` first declares the process an ordinary app with
-`TransformProcessType`, which is what AWT would have done, and only then asks for the key caps.
-
-Reading the machine's key state means reading it whichever of the two windows is focused - but also
-whatever else is in front, so the keys are ignored unless one of our windows is the active one. Off
-macOS, or on a JVM that will not let us call out, the AWT events come back as a fallback, read as a
-plain US QWERTY board.
-
-On macOS the fallback is also what runs when the app that started the game has no Input Monitoring
-permission (started from a desktop app rather than a Terminal that has it): the key state then
-says "not held" for every key, forever. AWT on macOS names a letter key by what the layout prints on
-it and carries no position (a `KeyEvent`'s raw code is only filled in on X11), so on Colemak the S
-position arrives as `VK_R`. The key caps read at startup turn that round: `VK_R` is the position that
-prints R, which is S, so WASD stays WARS. A letter no tracked position prints (`VK_G` comes from the
-T position on Colemak) is ignored rather than filed under its QWERTY place.
+This used to be three hundred lines of FFM calls, because AWT could answer neither question:
+`CGEventSourceKeyState` for whether a position was down, and `UCKeyTranslate` behind Text Services for
+its cap - asked once before any window existed, because Text Services belongs to the process's first
+thread, and preceded by `TransformProcessType`, because that first call checked the process in as
+background-only and the game once came up taking no keys at all (`lsappinfo` said
+`type="BackgroundOnly"`). All of that went on 2026-09-28, with the AWT window.
 
 One ray is cast per rendered column, so **the rendered width is literally the ray count**:
 `--size` sets the output resolution and `--ss N` renders at N times that and averages back down,
@@ -465,11 +452,11 @@ synchronises by itself. Taking that redundant sync out was worth a third of scho
 4.6 ms to 3.3 - and came out of a review of this branch rather than out of a profile.
 
 The readback is a stall by construction: the CPU waits for a frame it cannot start the next one
-without. Presenting the card's texture directly would remove it, and on this stack there is no
-way to: Java2D cannot wrap a GL texture as an `Image`, and the escape hatch is JAWT with native
-code of its own on a deprecated macOS view. A ring of pixel buffer objects could overlap the read
-with the next frame's ray walk at the cost of a frame of latency, which is an optimisation rather
-than a way out.
+without. It is not there because of the window any more - the window is GLFW and shares the
+engine's context, so the shaded texture is already where the window could draw it - but because the
+pitch warp (`Warp`) runs on the CPU between the shading and the window. Moving the warp onto the
+card is what removes it. A ring of pixel buffer objects could overlap the read with the next frame's
+ray walk at the cost of a frame of latency, which is an optimisation rather than a way out.
 
 ### What it is worth on a desktop
 
@@ -599,37 +586,28 @@ Lowering it means fewer surfaces to compare - which is the map, not the loop.
 
 ### Platform
 
-The GL entry points are the same C functions everywhere. Two things are not - which library holds
-them, and how to get a context with no window behind it - and those are `GlPlatform`. macOS
-(`GlCgl`, which is CGL) and Windows (`GlWgl`, which is WGL) are written; on anything else - Linux -
-`--gpu` prints one sentence and the CPU renderer carries on, which is the whole engine.
-`-Dgl.platform=none` forces that path so the sentence can be tested on a machine that does have a
-backend.
+OpenGL reaches the engine through LWJGL, and the context is a hidden GLFW window (`Glfw.root()`)
+that every visible window is created sharing. That is one path on every platform. Until 2026-09-28
+it was a `GlPlatform` with a backend per operating system - CGL on macOS, WGL on Windows, and none at
+all on Linux, because getting a context with no window behind it is the one part of OpenGL that was
+never standardised. GLFW does it everywhere, so Linux has a card path for the first time: CI runs
+`--gpu` there under `xvfb-run` on Mesa's llvmpipe, and the whole gate passes with the numbers an M3
+gives.
 
-There are two ways to have no card and they arrive differently. No backend for the operating
-system is a question `GlPlatform` answers before `Gl` is loaded, which matters because loading
-`Gl` is what would fail. A backend with no card behind it - a Windows machine with no OpenGL
-driver, a virtual machine, a CI runner offering Microsoft's software renderer - only shows up
-when the context is asked for, and it comes out of `Gl`'s field initialisers as an
-`ExceptionInInitializerError`. `Host.graphicsCard` catches both and prints one sentence. The Windows CI job
-runs `--gpu` on a runner that has no card precisely so that the second path is exercised by
-something other than hope.
-
-The two backends are not the same shape under the interface. CGL makes a context out of nothing.
-WGL cannot: the pixel format that decides what a context can do belongs to a device context, and a
-device context comes from a window, so `GlWgl` registers a one-pixel window that is never shown and
-never painted, purely to hang a format on. And `opengl32.dll` exports OpenGL 1.1 and stops - the
-export table was frozen in 1996 - so every call younger than that, every framebuffer and shader and
-vertex array, comes from `wglGetProcAddress`, which only answers a thread that already has a
-context. `Gl` resolves its entry points while its class initialises, so on Windows the context has
-to exist before the lookup does; `GlWgl.library()` makes it.
+A machine with no card - no display, no OpenGL driver, a virtual machine, a Windows CI runner that
+offers no core profile - shows up only when the context is asked for, as an
+`ExceptionInInitializerError` out of `Gl`'s field initialisers. `Host.graphicsCard` catches it and
+prints one sentence, and the CPU renderer, which is the whole engine, carries on. `-Dglfw=none`
+forces that path on a machine that has a card, which is how it is tested here rather than on CI:
+naming `Gl` at all loads it, so a line that only *mentions* it on a CPU path takes every frame down.
 
 **Two cards is a trap.** On a machine with an integrated GPU and a discrete one, OpenGL takes
 whichever card Windows prefers for `java.exe` - a per-application setting in Settings > System >
 Display > Graphics, read once when the JVM starts. It is not the card the window is on: placing the
 hidden window on the discrete card's monitor was written, run and measured making no difference at
-all, which is why that code is not here and the measurement is in `GlWgl.note`. So `--gpu` prints
-the renderer string and, when there is more than one card, the name of the one it did not use.
+all, which is why that code is not here. So `--gpu` prints the renderer string and, when there is
+more than one card, the name of the one it did not use (`GpuNote`, the one piece of the old WGL
+backend worth keeping).
 "Intel UHD Graphics 770" is an answer that looks exactly like success.
 
 One GLSL note that only Windows found: `packed` is a reserved word in the language. Apple's
@@ -890,8 +868,8 @@ vertical line in the world, so it converges like every other vertical.
 ## The engine and the game
 
 The engine is a library and `game` is the program that uses it. `engine` has no `main`: the order
-things have to happen in at start-up - ask the keyboard what its keys are called before AWT starts,
-ask for a graphics context before AWT starts, load the map, open a window - is the game's to get
+things have to happen in at start-up - ask for a graphics context before AWT does anything, load the
+map, open a window - is the game's to get
 right, because it is the game that knows whether a window is going to open at all. `game.Main` is
 those ten lines.
 
@@ -957,7 +935,6 @@ they were before the split.
 | `src/engine/DynamicResolution.java` | the render scale, picked from measured frame time |
 | `src/engine/RayView.java` | the top-down ray view window |
 | `src/engine/Keys.java` | physical key state: the controls go by where a key sits, not by its letter |
-| `src/engine/Pointer.java` | holding the pointer still, which is how a mouse looks instead of pointing |
 | `src/engine/Hash.java` | digests of a frame and of a bake, for the golden test |
 | `src/engine/Json.java` | minimal JSON parser (`//` comments allowed) |
 | `src/game/Main.java` | where a run starts: the command line, the map, the engine, then play or capture |
@@ -966,10 +943,11 @@ they were before the split.
 | `src/game/Play.java` | `--play`: the same walking with nothing drawn over it |
 | `src/game/Player.java` | movement, gravity, steps, crouch, jump, and what the camera does about them |
 | `src/game/Hud.java` | the overlay text and the minimap, drawn over the frame |
-| `src/engine/Gl.java` | the OpenGL entry points, one line each |
-| `src/engine/GlPlatform.java` | which library holds them and how to get a context; the only per-OS part |
-| `src/engine/GlCgl.java` | the macOS backend: OpenGL.framework and CGL |
-| `src/engine/GlWgl.java` | the Windows backend: a hidden window, WGL, and `wglGetProcAddress` |
+| `src/engine/Gl.java` | OpenGL through LWJGL, and the context the card path draws in |
+| `src/engine/Glfw.java` | the library's lifetime, and the hidden window that owns the engine's context |
+| `src/engine/Surface.java` | the window seam: where the picture goes and where the controls come from |
+| `src/engine/SurfaceGlfw.java` | the GLFW window: the picture, the pointer, the keys, the ray view panel |
+| `src/engine/GpuNote.java` | says when a machine has a second card the frame did not go to |
 | `src/engine/GlMaterials.java` | `Materials`' procedural detail and masks, in GLSL |
 | `src/engine/GpuWalls.java` | the card's pass: the shader, the uploads and the readback |
 | `src/engine/GpuSpans.java` | the renderer's intervals, per column, as a card can read them |
@@ -979,6 +957,7 @@ they were before the split.
 | `src/engine/GpuLights.java` | the baked lightmaps packed into one float atlas |
 | `src/engine/GpuTable.java` | how a table of records is laid out so a card will allocate it |
 | `src/engine/GpuCheck.java` | how far the card's picture is from the CPU's, camera by camera |
+| `src/engine/GpuMatCheck.java` | how far `GlMaterials` is from `Materials`, material by material |
 | `maps/school.json` | the demo map |
 
 ## How it works

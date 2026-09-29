@@ -12,7 +12,8 @@ import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryUtil;
 
 /**
- * The GLFW window: one library call for each of the things {@link SurfaceAwt} hand-built.
+ * The window: GLFW, which is one library call for each of the things the AWT window that came
+ * before it had to hand-build.
  *
  * The frame still arrives as a {@link Graphics2D}, because that is what {@code Game.overlay} is
  * made of and a screenshot draws the very same overlay with no window anywhere. So the painter
@@ -20,22 +21,17 @@ import org.lwjgl.system.MemoryUtil;
  * strip - the same shape {@code GpuWalls} uses, and the same BGRA/8888_REV upload, which is Java's
  * packed ARGB int read straight by the card with no repacking on the way.
  *
- * What this is for, measured against the AWT one it sits beside:
- *
  * - The pointer is held by {@code GLFW_CURSOR_DISABLED}, so there is no warp: no putting the
  *   pointer back at the middle after every event, and no discarding the event the warp itself
- *   caused. The warp was a macOS call, so off macOS there was no mouse look at all; this works
- *   everywhere, which is why {@code Host.canMouseLook()} is now simply true.
- * - {@code glfwGetKeyScancode(GLFW_KEY_W)} is 13 on macOS, which is exactly what {@link Keys}
- *   already calls the W position. The two tables agree on all thirty-three, so keys can move here
- *   without renumbering anything - that is the next step, and until it is taken this relies on
- *   {@code Keys} reading the machine directly, which only macOS does.
- * - Linux has no {@code GlPlatform} backend at all; GLFW has one.
+ *   caused. It works on every platform, which is why {@code Host.canMouseLook()} is simply true.
+ * - The keys are answered here, as {@link Keys.Source}: {@code glfwGetKeyScancode(GLFW_KEY_W)} is
+ *   13, which is exactly what {@link Keys} calls the W position, and the two tables agree on all
+ *   thirty-three - {@code check()} says so out loud if they ever stop. A key cap is read from the
+ *   layout in force at the moment it is asked for.
+ * - The ray view is a {@link Surface.Panel}, a second GLFW window sharing the engine's context.
  *
- * Two things it does not do yet. It does not open the ray view, which is a second AWT window and
- * needs a second GLFW one ({@code RayView} is null-safe when it was never opened, so the loop is
- * happy). And it takes the GL context whenever it shows a frame, so the engine asks for its own
- * back through {@link Gl#reclaim()}; when the card's work moves onto this context, that goes away.
+ * It takes the GL context whenever it shows a frame, so the engine asks for its own back through
+ * {@link Gl#reclaim()}; when the card's work moves onto this context, that goes away.
  */
 final class SurfaceGlfw implements Surface, Keys.Source {
 
@@ -129,7 +125,7 @@ final class SurfaceGlfw implements Surface, Keys.Source {
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
-        // --window fitted onto the screen there actually is, the same arithmetic SurfaceAwt does.
+        // --window fitted onto the screen there actually is.
         int[] mx = new int[1], my = new int[1], mw = new int[1], mh = new int[1];
         glfwGetMonitorWorkarea(glfwGetPrimaryMonitor(), mx, my, mw, mh);
         double fit = Math.min(1, Math.min((mw[0] - 16) / (double) wantW, (mh[0] - 48) / (double) wantH));

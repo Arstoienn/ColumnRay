@@ -13,9 +13,9 @@ import java.nio.file.Path;
  * capture.
  *
  * The engine has no {@code main} of its own, deliberately. It is a library that a game drives, and
- * the order things happen in at start-up - ask the keyboard what its keys are called, ask for a
- * graphics context, open a window - is the game's to get right, because it is the game that knows
- * whether a window is going to open at all.
+ * the order things happen in at start-up - ask for a graphics context, load the map, open a window
+ * - is the game's to get right, because it is the game that knows whether a window is going to
+ * open at all.
  *
  * Usage: java -cp out game.Main [map.json] [--shot out.png [x y angle pitch [column]]] [--bench]
  */
@@ -26,9 +26,9 @@ public final class Main {
         Options o = Options.parse(args);
         if (o == null) return;
         if (Options.headless(args)) System.setProperty("java.awt.headless", "true");
-        // Also before AWT, and for the same sort of reason: a graphics context asked for after the
-        // toolkit has started gets no accelerated pixel format on macOS. Host.graphicsCard() says
-        // why not, when there is no card; the CPU renderer runs anywhere.
+        // Before AWT does anything: a graphics context asked for after the toolkit has started gets
+        // no accelerated pixel format on macOS. Host.graphicsCard() says why not, when there is no
+        // card; the CPU renderer runs anywhere.
         if (o.gpu) o.gpu = Host.graphicsCard();
 
         Host host = new Host(World.load(Path.of(o.map)), o);
