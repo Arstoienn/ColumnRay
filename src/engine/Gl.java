@@ -22,9 +22,10 @@ import org.lwjgl.opengl.GL;
  * {@link #context} makes a context with no window behind it, which is now a hidden GLFW window -
  * see {@link Glfw}. Rendering goes into a framebuffer and comes back through {@link #readPixels}.
  * A one-off measurement on 2026-09-19 (the spike that decided the card was worth having) put that trade: at 1080p the read costs 1.8 ms against a CPU frame of 23.7,
- * so it is worth paying until it is not. What would stop it being paid is the pitch warp moving
- * onto the card as well, because that is what the frame comes back to the CPU for; every window is
- * already made sharing this context, so the texture would be there waiting for it.
+ * so it is worth paying until it is not. A window no longer pays it: the pitch warp runs on the
+ * card too ({@link GpuWarp}) and the window, made sharing this context, draws the result where it
+ * lies. A capture and {@code --gpu-verify} still read back, the one for depth and albedo and the
+ * other to compare.
  */
 final class Gl {
     static final int TEXTURE_2D = 0x0DE1, FLOAT = 0x1406, RGBA = 0x1908, UNSIGNED_BYTE = 0x1401,
@@ -145,6 +146,8 @@ final class Gl {
     static void drawFullScreen() { glDrawArrays(TRIANGLES, 0, 3); }
 
     static void finish() { glFinish(); }
+
+    static void flush() { glFlush(); }
 
     static void readPixels(int w, int h, MemorySegment into) {
         nglReadPixels(0, 0, w, h, BGRA, UNSIGNED_INT_8_8_8_8_REV, into.address());

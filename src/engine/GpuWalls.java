@@ -161,6 +161,21 @@ final class GpuWalls implements AutoCloseable {
      *  Pixels no span covers are the sky, exactly as Renderer.fillRest leaves them. */
     void draw(GpuSpans spans, GpuMasks masks, int[] into, Renderer.Camera cam, double horizon,
               double focal, int viewH) {
+        shade(spans, masks, cam, horizon, focal, viewH);
+        long t3 = STATS ? System.nanoTime() : 0;
+        Gl.readPixels(w, h, back);
+        MemorySegment.copy(back, ValueLayout.JAVA_INT, 0, into, 0, w * h);
+        if (STATS) readNs += System.nanoTime() - t3;
+    }
+
+    /** The shaded upright frame, where {@link #shade} left it: for {@link GpuWarp} to read on the
+     *  card instead of it coming back here. */
+    int target() { return target; }
+
+    /** Draw one frame's worth of spans and the masked surfaces over them into {@link #target},
+     *  and leave it there. */
+    void shade(GpuSpans spans, GpuMasks masks, Renderer.Camera cam, double horizon,
+               double focal, int viewH) {
         long t0 = STATS ? System.nanoTime() : 0;
         int[] count = spans.count(), maskCount = masks.count();
         int wantSpan = Math.max(1, spans.most()) * GpuSpans.TEXELS + HEADER;
@@ -212,13 +227,10 @@ final class GpuWalls implements AutoCloseable {
         Gl.drawFullScreen();
         if (STATS) Gl.finish();                  // only to put the draw and the read in separate
         long t3 = STATS ? System.nanoTime() : 0; // columns: glReadPixels synchronises by itself
-        Gl.readPixels(w, h, back);
-        MemorySegment.copy(back, ValueLayout.JAVA_INT, 0, into, 0, w * h);
         if (STATS) {
             packNs += t1 - t0;
             uploadNs += t2 - t1;
             drawNs += t3 - t2;
-            readNs += System.nanoTime() - t3;
             frames++;
         }
     }
