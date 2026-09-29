@@ -4,7 +4,7 @@ view spot4 320x180 plain=80e67f81df9a0da2 albedo=75ef1db9203e90c0 depth=c9ff6801
 view spot6 320x180 plain=b62afc872d762839 albedo=99644da3fdcfe57b depth=bc589a97041c0ad6
 view spot7 320x180 plain=e6f4897378f68372 albedo=458ac51b7f7e8895 depth=841b55687617d34f
 view spot8 320x180 plain=89015974af4d82ef albedo=aee07aca8b463833 depth=e1469b4230a9439d
-view spot9 320x180 plain=6a010d65d2192ebf albedo=00e99a0f6181a6c4 depth=f78229c1b6fe7d19
+view spot9 320x180 plain=fa35ebba15311440 albedo=1c4830b6adc3280c depth=e37057250d9ca96c
 view spot10 320x180 plain=caefd6208da71389 albedo=bcc7dc902822138d depth=2604ced06276c50b
 view spot8-up 320x180 plain=42780a79fbd5ea7c albedo=3038358185185add depth=d107de45cf84ba47
 view spot6-down 320x180 plain=dde381cc37e24d04 albedo=a0f02b2e14566a69 depth=eac39d6c4a4139fa

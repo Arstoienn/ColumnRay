@@ -63,6 +63,10 @@ final class Renderer {
         boolean baked;        // shade from the baked lightmaps (Lighting) instead of the old flat model
         // Which part of the buffer to render this frame: columns [x0, x1), rows [y0, y1).
         int x0, y0, x1 = Integer.MAX_VALUE, y1 = Integer.MAX_VALUE;
+        // And within that, the rows [rowLo[x], rowHi[x]) of each column, or every row when null:
+        // what the pitch warp can read of it (Warp.columnRows). A column told it has less to fill
+        // fills sooner, and a ray stops as soon as its column is full.
+        int[] rowLo, rowHi;
     }
 
     /** What kind of thing the ray ran into. Only SHAPE and PORTAL events get a number in the ray view. */
@@ -540,6 +544,10 @@ final class Renderer {
             lit = lighting;
             baked = cam.baked && lit != null;
             int y0 = Math.max(0, cam.y0), y1 = Math.min(H, cam.y1);
+            if (cam.rowLo != null) {
+                y0 = Math.max(y0, cam.rowLo[x]);
+                y1 = Math.min(y1, cam.rowHi[x]);
+            }
             open = y1 > y0 ? 1 : 0;
             o0[0] = y0;
             o1[0] = y1;

@@ -529,7 +529,7 @@ size, read a percentile with the series beside it.
 
 ### How far the camera looks up, and what stops it
 
-`World.MAX_PITCH` is 45 degrees, and it is the engine's number rather than a budget for any one
+`World.MAX_PITCH` is 55 degrees (45 until 2026-09-30), and it is the engine's number rather than a budget for any one
 map. What a tilted frame costs differs enormously - school renders 45 degrees in 9.2 ms on the
 card where Haven takes 139 - but that is the renderer's problem to solve and dynamic resolution's
 to absorb. Shortening the camera on the map that happens to be slow would hide the problem in the
@@ -541,7 +541,7 @@ Under both sits a hard ceiling that is about the machine and not about taste. Th
 as a tangent and runs away at 90 degrees less the vertical half-FOV - 60.6 degrees at the default
 90-degree field of view, and it was 69.6 when the default was 67 - so `Warp.fits` returns the
 furthest pitch whose upright image still fits a budget, and `Host` clamps to it every frame. The
-budget is **a multiple of a level frame (16), not a count of pixels**: the overscan a pitch needs is
+budget is **a multiple of a level frame (80, it was 16), not a count of pixels**: the overscan a pitch needs is
 a fixed ratio of the frame at any render size, so a budget in pixels would let the camera tilt
 further on a small window than on a large one. As a multiple it stops at the same angle at 640x360,
 at 1280x720 and at 3840x2160 alike. It is worked out by asking `Warp.plan` itself rather than by a
@@ -553,6 +553,18 @@ budget allows 48.5 degrees of pitch at 90 degrees across, where it allowed 55.1 
 gone from ten degrees to three and a half. What a tilt costs went up with it - at 720p, 45 degrees
 asks for a 4142x2111 buffer, 9.5 level frames, against 2902x1680 and 5.3 before. Raising either
 number now means measuring the other.
+
+**Raised to 55 on 2026-09-30, because the overscan stopped being paid for whole.** The card now shades
+only the upright pixels the warp reads (`GpuWalls.shadeWarped`) and each column fills only the rows
+it can be read in (`Warp.columnRows`), so a bigger upright image costs its rays and its memory rather
+than itself. 55 degrees asks for 11352x6175 at 720p, 76 level frames, which the budget of 80 admits;
+the curve is one over the distance to 60.6 degrees from there (58 is 355 frames, 60 is 6,126), so
+this is about as far as it goes. On the card there is a second ceiling that is not a multiple of
+anything: no texture may pass `GL_MAX_TEXTURE_SIZE` (16384 on an M3), and the upright frame and the
+span texture - a row a column, with the warp's table of output rows under them - are textures. A
+request past it is not refused, it reads zero, so `Host.pitchLimit` also stops where they fit
+(`Warp.fitsWithin`); at 1920x1080 that is a little under 55. The upright frame's own texture is
+only given storage if an upright frame is ever drawn, which a window never does.
 
 ### What looking up costs, and one thing that did not help
 
