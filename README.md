@@ -213,17 +213,9 @@ JAVA_OPTS=-Xmx8g ./run.sh maps/haven/haven.json --feet 3
 
 ![Mid Doors](docs/images/mid-doors.jpg)
 
-**Garage**
-
-![Garage](docs/images/garage.jpg)
-
 **C Long**
 
 ![C Long](docs/images/c-long.jpg)
-
-**Flowerpot**
-
-![Flowerpot](docs/images/flowerpot.jpg)
 
 **Heaven and Hell**
 
@@ -235,6 +227,8 @@ Heaven, on the left, is the upper floor of A Tower; Hell, on the right, is the r
 it. Beneath each view is its ray view, the engine's top-down debug window (`R`), which draws every
 column's ray over the plan of the map and lists, for the centre column, each shape the ray met and
 how many rows it filled.
+
+More pictures of the map are in [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven#pictures).
 
 ## Benchmarking and verification
 
@@ -267,8 +261,14 @@ how many rows it filled.
 | `src/engine/DynamicResolution.java` | Frame-time-driven render scaling |
 | `src/engine/Minimap.java` | Minimap |
 | `src/engine/RayView.java` | Top-down ray debug view |
-| `src/engine/Keys.java` | Physical key state |
-| `src/engine/Pointer.java` | Holding the mouse pointer still, so the mouse can look without a button held |
+| `src/engine/Keys.java` | Key positions, which the window answers |
+| `src/engine/Surface.java` | The window seam: where the picture goes and the controls come from |
+| `src/engine/SurfaceGlfw.java` | The GLFW window: the picture, the pointer, the keys, the ray view |
+| `src/engine/Glfw.java` | The library's lifetime and the hidden window that owns the engine's context |
+| `src/engine/Gl.java` | OpenGL through LWJGL, and the context the card path draws in |
+| `src/engine/Gpu*.java`, `GlMaterials.java` | Shading on the card: spans, walls, masks, materials, textures, lightmaps |
+| `src/engine/GpuNote.java` | Says when a machine has a second graphics card the frame did not go to |
+| `src/engine/GpuCheck.java`, `GpuMatCheck.java` | How far the card's picture and materials are from the CPU's |
 | `src/engine/Hash.java` | Digests for the golden test |
 | `src/engine/Json.java` | JSON parser (supports `//` comments) |
 | `src/game/Main.java` | Where a run starts: command line, map, engine, then play or capture |

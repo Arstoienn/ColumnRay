@@ -17,7 +17,8 @@ import java.lang.foreign.ValueLayout;
  * factor lands on a colour channel, so an error of 1/255 is the most that could ever show in a
  * picture; the tolerance below is a tenth of that.
  *
- *     ./build.sh && java --enable-native-access=ALL-UNNAMED -cp out engine.GpuMatCheck
+ *     ./build.sh && java -XstartOnFirstThread --enable-native-access=ALL-UNNAMED \
+ *         -cp "out:$(ls lib/*.jar | tr '\n' ':')" engine.GpuMatCheck        (-XstartOnFirstThread on macOS only)
  */
 final class GpuMatCheck {
     private static final int N = 256;                 // samples across u and across v
