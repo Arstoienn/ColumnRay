@@ -77,6 +77,20 @@ final class Warp {
         return lo;
     }
 
+    /** The largest pitch whose upright image is at most maxW wide and maxH tall: the card's limit,
+     *  where fits() is the budget's. Asked of plan() for the same reason. */
+    static double fitsWithin(boolean shear, int rw, int rh, double focal, int maxW, int maxH) {
+        Warp w = new Warp();
+        double lo = 0, hi = Math.PI / 2;
+        for (int i = 0; i < 40; i++) {
+            double mid = 0.5 * (lo + hi);
+            w.plan(mid, shear, rw, rh, focal);
+            if (w.needW() <= maxW && w.needH() <= maxH) lo = mid;
+            else hi = mid;
+        }
+        return lo;
+    }
+
     /** Pin the warp to the buffer the renderer will draw into, and set the window it must fill. */
     void place(double centerX, int srcW, int srcH, Renderer.Camera c) {
         cx = centerX;

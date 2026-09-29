@@ -47,9 +47,13 @@ final class GpuWalls implements AutoCloseable {
     private int program;                       // built on the first draw: its text depends on the images
     private int warped;                        // the same, shading straight into the tilted view
     private int vao;
-    private final int target, frame, spanTex, maskTex, w, h, columns;
+    private final int target, frame, spanTex, maskTex, w, h, columns, tableRows;
     private MemorySegment spanBuf, maskBuf;
-    private final MemorySegment back;
+    /** The upright frame's storage on the card and here, made the first time an upright frame is
+     *  drawn. A window warps on the card and draws straight into the tilted view, so it never needs
+     *  either - and tilted 55 degrees each would be a third of a gigabyte. */
+    private MemorySegment back;
+    private boolean targetMade;
     private final Arena buffers;
     /** How wide the span and mask textures are, in texels: a high-water mark, not a worst case.
      *  School fills eight span slots a column out of five hundred it may have, and holding the
@@ -57,9 +61,11 @@ final class GpuWalls implements AutoCloseable {
     private int spanCap, maskCap;
     private final Arena own;
 
-    /** For a window, which needs the buffers to outlive the call that made them. */
-    GpuWalls(int w, int h, int columns) {
-        this(Arena.ofShared(), w, h, columns, true);
+    /** For a window, which needs the buffers to outlive the call that made them. tableRows is the
+     *  most rows a tilted view drawn by shadeWarped will have, whose table rides in the span
+     *  texture under the columns' rows. */
+    GpuWalls(int w, int h, int columns, int tableRows) {
+        this(Arena.ofShared(), w, h, columns, tableRows, true);
     }
 
     private GpuLights lights;
@@ -77,27 +83,22 @@ final class GpuWalls implements AutoCloseable {
     }
 
     GpuWalls(Arena arena, int w, int h, int columns) {
-        this(arena, w, h, columns, false);
+        this(arena, w, h, columns, 0, false);
     }
 
-    private GpuWalls(Arena arena, int w, int h, int columns, boolean owns) {
+    private GpuWalls(Arena arena, int w, int h, int columns, int tableRows, boolean owns) {
         this.own = owns ? arena : null;
         this.buffers = arena;
         this.w = w;
         this.h = h;
         this.columns = columns;
+        this.tableRows = tableRows;
         Gl.context();
 
         target = Gl.texture();
-        Gl.bindTexture(target);
-        Gl.texImage(Gl.RGBA8, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE, MemorySegment.NULL);
-        Gl.texUnfiltered();
         frame = Gl.framebuffer();
-        Gl.bindFramebuffer(frame);
-        Gl.attach(target);
         vao = Gl.vertexArray();
         Gl.bindVertexArray(vao);
-        Gl.viewport(w, h);
 
         spanTex = Gl.texture();
         Gl.activeTexture(0);
@@ -107,9 +108,18 @@ final class GpuWalls implements AutoCloseable {
         Gl.activeTexture(MASK_UNIT);
         Gl.bindTexture(maskTex);
         Gl.texUnfiltered();
+    }
 
-
-        back = arena.allocate((long) w * h * 4);
+    /** Give the upright frame its storage, the first time one is drawn. */
+    private void makeTarget() {
+        if (targetMade) return;
+        Gl.bindTexture(target);
+        Gl.texImage(Gl.RGBA8, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE, MemorySegment.NULL);
+        Gl.texUnfiltered();
+        Gl.bindFramebuffer(frame);
+        Gl.attach(target);
+        back = buffers.allocate((long) w * h * 4);
+        targetMade = true;
     }
 
     /**
@@ -203,13 +213,19 @@ final class GpuWalls implements AutoCloseable {
                        double focal, int viewH, Warp warp, GpuWarp out) {
         long t0 = STATS ? System.nanoTime() : 0;
         int table = warp == null ? 0 : out.height();     // the table's rows, under the columns'
+        if (table > tableRows)
+            throw new IllegalStateException("a tilted view of " + table + " rows, with room for " + tableRows);
+        if (table == 0) {
+            Gl.activeTexture(0);                         // spanTex takes this unit back below
+            makeTarget();
+        }
         int[] count = spans.count(), maskCount = masks.count();
         int wantSpan = Math.max(1, spans.most()) * GpuSpans.TEXELS + HEADER;
         int wantMask = Math.max(1, masks.most()) * GpuMasks.TEXELS;
-        if (wantSpan > spanCap) spanCap = grow(spanTex, 0, wantSpan, columns + h);
+        if (wantSpan > spanCap) spanCap = grow(spanTex, 0, wantSpan, columns + tableRows);
         if (wantMask > maskCap) maskCap = grow(maskTex, MASK_UNIT, wantMask, columns);
-        if (spanBuf == null || spanCap * 4L * (columns + h) * Float.BYTES > spanBuf.byteSize())
-            spanBuf = buffers.allocate((long) spanCap * 4 * (columns + h) * Float.BYTES);
+        if (spanBuf == null || spanCap * 4L * (columns + tableRows) * Float.BYTES > spanBuf.byteSize())
+            spanBuf = buffers.allocate((long) spanCap * 4 * (columns + tableRows) * Float.BYTES);
         if (maskBuf == null || maskCap * 4L * columns * Float.BYTES > maskBuf.byteSize())
             maskBuf = buffers.allocate((long) maskCap * 4 * columns * Float.BYTES);
         int spanW = pack(spans.data(), count, spans.perColumn(), GpuSpans.TEXELS,
