@@ -159,6 +159,70 @@ final class Warp {
         }
     }
 
+    /**
+     * Which rows of each upright column the warp can read: rows [lo[x], hi[x]) of buffer column x,
+     * empty when it reads none of them. Rendering only these is rendering everything the tilted
+     * view is made of, and a column that is told it has less to fill fills sooner, so its ray
+     * stops sooner.
+     *
+     * It is generous on purpose. Output row j reads one upright row and the columns from the first
+     * x it takes to the last, and those are counted whole, so a column is included in every row
+     * whose span passes over it even where the stretch steps over it without reading it - the
+     * icicles a column range would otherwise have at the top of a tilted frame. Each span is also
+     * one column wider at both ends than apply() reads: the card takes its x through a float table
+     * (see rows) and on an exact tie can land one column over, and whatever it lands on has to have
+     * been rendered. Output rows read upright rows in order, top to bottom, which is what makes the
+     * first and the last row covering a column its range.
+     *
+     * {@code next} is scratch, at least srcW + 1 long.
+     */
+    void columnRows(int[] lo, int[] hi, int[] next, int srcW) {
+        if (spanA == null || spanA.length < rh) {
+            spanA = new int[rh];
+            spanB = new int[rh];
+            spanY = new int[rh];
+        }
+        double w2 = rw / 2.0, h2 = rh / 2.0;
+        int yHi = y1 - 1;
+        for (int j = 0; j < rh; j++) {
+            double v = h2 - (j + 0.5), k = rowScale(v);
+            spanY[j] = Math.max(0, Math.min(yHi, (int) Math.floor(hz - rowSource(v))));
+            double first = cx + (0.5 - w2) * k, last = first + (rw - 1) * k;
+            spanA[j] = Math.max(x0, Math.min(x1 - 1, (int) Math.floor(first) - 1));
+            spanB[j] = Math.max(x0, Math.min(x1 - 1, (int) Math.floor(last) + 1));
+        }
+        java.util.Arrays.fill(lo, 0, srcW, 0);
+        java.util.Arrays.fill(hi, 0, srcW, 0);
+        // The first row over each column, then the last: each walk hands every column out once,
+        // skipping the ones already handed out through next[], so it is linear in the columns.
+        for (int x = 0; x <= srcW; x++) next[x] = x;
+        for (int j = 0; j < rh; j++)
+            for (int x = unclaimed(next, spanA[j]); x <= spanB[j]; x = unclaimed(next, x + 1)) {
+                lo[x] = spanY[j];
+                next[x] = x + 1;
+            }
+        for (int x = 0; x <= srcW; x++) next[x] = x;
+        for (int j = rh - 1; j >= 0; j--)
+            for (int x = unclaimed(next, spanA[j]); x <= spanB[j]; x = unclaimed(next, x + 1)) {
+                hi[x] = spanY[j] + 1;
+                next[x] = x + 1;
+            }
+    }
+
+    private int[] spanA, spanB, spanY;
+
+    /** The first column from x on that no row has claimed yet, shortening the path as it goes. */
+    private static int unclaimed(int[] next, int x) {
+        int r = x;
+        while (next[r] != r) r = next[r];
+        while (next[x] != r) {
+            int n = next[x];
+            next[x] = r;
+            x = n;
+        }
+        return r;
+    }
+
     /** k rounded to eleven significant bits. */
     private static double high(double k) {
         if (k == 0) return 0;

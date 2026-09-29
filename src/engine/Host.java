@@ -93,6 +93,8 @@ public final class Host {
     Lighting lighting;                                           // null with --flat
 
     private final Warp warp = new Warp();                        // this frame's pitch warp; see Warp
+    private int[] rowLo, rowHi, rowNext;                         // the rows of each column it can read
+    private static final boolean ROWS = !"false".equals(System.getProperty("warp.rows"));
     /** --gpu: the card shades the frame the CPU's columns worked out. Null on the CPU path, and
      *  rebuilt whenever the pitch warp grows the render buffer under it. */
     volatile boolean useGpu;
@@ -650,6 +652,16 @@ public final class Host {
             renderer.resize(srcW, srcH, src);
         }
         warp.place(renderer.centerX(), srcW, srcH, c);
+        // Render only what the warp can read: looking up 45 degrees, each column's range is about
+        // three fifths of the buffer's height, and the ray stops once that much is filled.
+        if (rowLo == null || rowLo.length < srcW) {
+            rowLo = new int[srcW];
+            rowHi = new int[srcW];
+            rowNext = new int[srcW + 1];
+        }
+        warp.columnRows(rowLo, rowHi, rowNext, srcW);
+        c.rowLo = ROWS ? rowLo : null;                          // -Dwarp.rows=false: every row, to compare
+        c.rowHi = ROWS ? rowHi : null;
         // Both dimensions: the overscan grows with pitch, and there is no rule that says the
         // width has to grow with the height. A height that changed on its own used to leave the
         // card drawing at the old size and GpuSpans' skip mask too short for the new one.
