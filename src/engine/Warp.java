@@ -129,6 +129,41 @@ final class Warp {
         });
     }
 
+    /**
+     * The same resampling as {@link #apply}, as a table the card reads one row of per output row:
+     * eight floats a row, for {@link GpuWarp}.
+     *
+     * The card works in float and apply() in double, and a float carrying a source x of a few
+     * thousand is a quarter of a thousandth of a pixel out - enough for some pixel in every frame to
+     * fall on the other side of a column boundary and take its neighbour's colour. So what a float
+     * cannot hold is worked out here in double and handed over in pieces the card can add exactly:
+     * the source row itself, the integer part of the row's first x, its fraction, and the stretch
+     * split in two. The high half keeps eleven significant bits, so i times it is exact in a float
+     * for any i under 8192, and only the low half's product - a few pixels at most - is rounded.
+     */
+    void rows(java.lang.foreign.MemorySegment into) {
+        double w2 = rw / 2.0, h2 = rh / 2.0;
+        int yHi = y1 - 1;
+        for (int j = 0; j < rh; j++) {
+            double v = h2 - (j + 0.5), k = rowScale(v);
+            int ys = Math.max(0, Math.min(yHi, (int) Math.floor(hz - rowSource(v))));
+            double sx = cx + (0.5 - w2) * k, base = Math.floor(sx), kh = high(k);
+            float[] row = {ys, (float) base, (float) (sx - base), (float) kh, (float) (k - kh), x0, x1 - 1, 0};
+            java.lang.foreign.MemorySegment.copy(row, 0, into, java.lang.foreign.ValueLayout.JAVA_FLOAT,
+                    j * 8L * Float.BYTES, 8);
+        }
+    }
+
+    /** k rounded to eleven significant bits. */
+    private static double high(double k) {
+        if (k == 0) return 0;
+        int e = Math.getExponent(k);
+        return Math.scalb(Math.floor(Math.scalb(k, 10 - e)), e - 10);
+    }
+
+    /** The widest output a table from {@link #rows} is exact for. */
+    static final int ROWS_MAX_WIDTH = 8192;
+
     /** The source (renderer) column that output pixel (i, j) comes from. */
     int sourceColumn(int i, int j) {
         double k = rowScale(rh / 2.0 - (j + 0.5));

@@ -73,6 +73,10 @@ public final class Capture {
     public void bench() {
         int warmup = Integer.getInteger("bench.warmup", 400), frames = Integer.getInteger("bench.frames", 720);
         View v = game.view().copy();              // the game's own camera, ours to spin
+        // The frame a window gets: warped on the card and never read back. A frame that stays on
+        // the card is only handed to the driver by the time h.frame returns, so each timed one is
+        // waited for (settle) - otherwise this would time the handing over and not the drawing.
+        h.warpOnCard(true, false);
         for (double p : new double[] {0, h.pitchLimit()}) {   // level, and fully tilted (the most overscan)
             v.pitch = p;
             // The warmup frames are the same turn as the timed ones and nobody is holding a stop
@@ -101,6 +105,7 @@ public final class Capture {
                 long t0 = System.nanoTime();
                 v.heading += 2 * Math.PI / frames;
                 h.frame(v);
+                h.settle();
                 ns[i] = System.nanoTime() - t0;
             }
             long[] sorted = ns.clone();
@@ -110,8 +115,9 @@ public final class Capture {
             double p99 = sorted[Math.min(frames - 1, (int) Math.ceil(frames * 0.99) - 1)] / 1e6;
             double worst = sorted[frames - 1] / 1e6;
             double mean = Arrays.stream(ns).average().orElse(0) / 1e6;
-            System.out.printf("BENCH %dx%d rendered %dx%d ss %d pitch %.0f %s rays %d median %.3f p95 %.3f p99 %.3f max %.3f mean %.3f ms  (median %.0f fps)%n",
+            System.out.printf("BENCH %dx%d rendered %dx%d ss %d pitch %.0f %s%s rays %d median %.3f p95 %.3f p99 %.3f max %.3f mean %.3f ms  (median %.0f fps)%n",
                     h.W, h.H, h.RW, h.RH, h.SS, Math.toDegrees(v.pitch), h.shear() ? "shear" : "true",
+                    h.shownOnCard() ? " warp card" : h.useGpu ? " warp cpu" : "",
                     h.renderer.drawnX1 - h.renderer.drawnX0, median, p95, p99, worst, mean, 1000 / median);
             h.gpuStats();
             dump(ns, v.pitch);
@@ -220,6 +226,11 @@ public final class Capture {
         // same camera at several tilts checks it several times over. That is a little wasted work
         // and no wrong answer.
         double[] pitches = {0, 8, 17, 25, Math.toDegrees(h.pitchLimit())};
+        // The frame a window gets, warped on the card, read back here so it can be held to the
+        // CPU's. -Dwarp.cpu=true checks the older path instead, which is still what a frame falls
+        // back to when the card was not given all of it.
+        h.warpOnCard(true, true);
+        int onCard = 0, frames = 0;
         int worstAll = 0, rung = h.scaleIndex();
         java.util.Set<String> sizes = new java.util.LinkedHashSet<>();
         long failed = 0, pixels = 0, drops = 0, notGiven = 0;
@@ -264,6 +275,8 @@ public final class Capture {
                 h.setUseGpu(true);
                 h.frame(game.view());
                 int skipped = h.gpuSkipped();
+                frames++;
+                if (h.shownOnCard()) onCard++;
 
                 int worst = 0, over = 0;
                 long sum = 0;
@@ -300,6 +313,7 @@ public final class Capture {
         System.out.printf("%nworst %d of 255 anywhere; %d of %d pixels over 8 (%.4f%%); "
                         + "%d pixels the card was not given; %d dropped%n",
                 worstAll, failed, pixels, bad, notGiven, drops);
+        System.out.printf("%d of %d frames warped on the card%n", onCard, frames);
         System.out.printf("%d render sizes, %d of them an odd number of columns wide: %s%n",
                 sizes.size(), sizes.stream().filter(z -> Integer.parseInt(z.split("x")[0]) % 2 == 1).count(),
                 String.join(" ", sizes));

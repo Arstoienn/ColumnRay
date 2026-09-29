@@ -134,6 +134,33 @@ public final class Host {
     }
     private GpuSpans spans;
     private GpuMasks masks;
+    /**
+     * The pitch warp on the card, and whether this frame went through it.
+     *
+     * Only a window asks for it (and {@code --gpu-verify}, which reads its result back to check
+     * it): a capture writes depth and albedo and a golden digest is the double warp's, so every
+     * headless path keeps {@link Warp#apply}. -Dwarp.cpu=true puts a window back on that path too,
+     * which is how the two are compared.
+     */
+    private GpuWarp cardWarp;
+    private boolean warpOnCard, readCardWarp, shownOnCard;
+    private static final boolean WARP_CPU = Boolean.getBoolean("warp.cpu");
+
+    /** Let frames be warped on the card; {@code readBack} brings each one into {@link #out}
+     *  as well, which is only for checking it. */
+    void warpOnCard(boolean on, boolean readBack) {
+        warpOnCard = on && !WARP_CPU;
+        readCardWarp = readBack;
+    }
+
+    /** Did the last frame stay on the card? Then {@link #out} is not what was shown. */
+    boolean shownOnCard() { return shownOnCard; }
+
+    /** Wait for the card to finish the last frame, so that a stopwatch around a frame on the card
+     *  measures the frame and not the handing over of it. Nothing to wait for otherwise. */
+    void settle() {
+        if (useGpu && gpu != null) Gl.finish();
+    }
     private GpuLights gpuLights;
     private GpuTextures gpuImages;
     private GpuMaterials gpuMaterials;
@@ -370,6 +397,7 @@ public final class Host {
         this.game = g;
         surface = new SurfaceGlfw();
         surface.open("ColumnRay - " + world.name, winW, winH, events);
+        warpOnCard(true, false);
         rayView.open(surface, Math.min(640, Math.max(240, surface.width() / 3)));
         if (mouseLook) surface.mouseLook(true);
 
@@ -534,6 +562,30 @@ public final class Host {
         if (spans != null) spans.reset();
         if (masks != null) masks.reset();
         renderer.render(c);
+        // The whole frame on the card: shaded there, warped there, and shown from there, with
+        // nothing read back. Only when the card was given every pixel - a frame with rows it was
+        // not given is merged on the CPU (see shadeOnGpu) - and never for a capture, whose depth
+        // and albedo the card does not have, or for supersampling, which averages on the CPU.
+        shownOnCard = warpOnCard && useGpu && gpu != null && !c.captureDepth && SS == 1
+                && !spans.anySkipped() && RW <= Warp.ROWS_MAX_WIDTH;
+        if (shownOnCard && (cardWarp == null || cardWarp.width() != RW || cardWarp.height() != RH)) {
+            try {
+                if (cardWarp != null) cardWarp.close();
+                cardWarp = null;
+                cardWarp = new GpuWarp(RW, RH);
+            } catch (RuntimeException | LinkageError cannot) {
+                // Not the end of the card: the frame is shaded there and warped here, as before.
+                System.err.println("gpu: the pitch warp stays on the CPU: " + cannot.getMessage());
+                warpOnCard = false;
+                shownOnCard = false;
+            }
+        }
+        if (shownOnCard) {
+            gpu.shade(spans, masks, c, srcH / 2.0 + c.pitch, renderer.focal(), RH);
+            cardWarp.apply(gpu.target(), warp);
+            if (readCardWarp) cardWarp.read(hi);
+            return;
+        }
         // Both: the card's resources are now kept in step even while it is switched off (see
         // preparePitch), so their existence no longer means it is the card drawing this frame.
         if (useGpu && gpu != null) shadeOnGpu(c);
@@ -656,6 +708,11 @@ public final class Host {
             gpu.close();
             gpu = null;
         }
+        if (cardWarp != null) {
+            cardWarp.close();
+            cardWarp = null;
+        }
+        shownOnCard = false;
         spans = null;
         masks = null;
         gpuPixels = null;
@@ -727,8 +784,9 @@ public final class Host {
         viewY = (ch - dh) / 2;
         viewW = dw;
         viewH = dh;
-        surface.present(out, W, H, viewX, viewY, dw, dh,
-                g -> drawOverlay(g, viewX, viewY, dw, dh, rayView.visible()));
+        Surface.Painter overlay = g -> drawOverlay(g, viewX, viewY, dw, dh, rayView.visible());
+        if (shownOnCard) surface.present(cardWarp.texture(), viewX, viewY, dw, dh, overlay);
+        else surface.present(out, W, H, viewX, viewY, dw, dh, overlay);
     }
 
     /**
