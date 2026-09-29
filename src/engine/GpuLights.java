@@ -131,8 +131,6 @@ final class GpuLights {
 
     int maps() { return count; }
 
-    int atlasSide() { return side; }
-
     /** Bind the two textures on the units the shader expects. */
     void bind() {
         Gl.activeTexture(2);

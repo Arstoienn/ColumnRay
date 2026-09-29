@@ -21,7 +21,7 @@ import org.lwjgl.opengl.GL;
  *
  * {@link #context} makes a context with no window behind it, which is now a hidden GLFW window -
  * see {@link Glfw}. Rendering goes into a framebuffer and comes back through {@link #readPixels}.
- * {@code GpuSpike} measured that trade: at 1080p the read costs 1.8 ms against a CPU frame of 23.7,
+ * A one-off measurement on 2026-09-19 (the spike that decided the card was worth having) put that trade: at 1080p the read costs 1.8 ms against a CPU frame of 23.7,
  * so it is worth paying until it is not. What would stop it being paid is the pitch warp moving
  * onto the card as well, because that is what the frame comes back to the CPU for; every window is
  * already made sharing this context, so the texture would be there waiting for it.

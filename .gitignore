@@ -28,3 +28,6 @@ out.tmp/
 # platform that Maven Central already hosts; what belongs in the history is the version and the
 # hash, which are in the script.
 /lib/*.jar
+# what -Dlight.dump writes when light.dump.dir is not given
+lightmap-*.png
+sun.png

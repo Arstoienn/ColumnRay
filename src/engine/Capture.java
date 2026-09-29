@@ -704,7 +704,7 @@ public final class Capture {
                     for (int dy = 0; dy < scale; dy++)
                         for (int dx = 0; dx < scale; dx++) img.setRGB(i * scale + dx, j * scale + dy, c);
                 }
-            File out = new File("lightmap-" + name + ".png");
+            File out = new File(dumpDir(), "lightmap-" + name + ".png");
             javax.imageio.ImageIO.write(img, "png", out);
             System.out.println("wrote " + out + "  (peak " + hi + ", " + scale + " px a texel)");
         }
