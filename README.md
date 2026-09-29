@@ -213,17 +213,9 @@ JAVA_OPTS=-Xmx8g ./run.sh maps/haven/haven.json --feet 3
 
 ![Mid Doors](docs/images/mid-doors.jpg)
 
-**Garage**
-
-![Garage](docs/images/garage.jpg)
-
 **C Long**
 
 ![C Long](docs/images/c-long.jpg)
-
-**Flowerpot**
-
-![Flowerpot](docs/images/flowerpot.jpg)
 
 **Heaven and Hell**
 
@@ -235,6 +227,8 @@ Heaven, on the left, is the upper floor of A Tower; Hell, on the right, is the r
 it. Beneath each view is its ray view, the engine's top-down debug window (`R`), which draws every
 column's ray over the plan of the map and lists, for the centre column, each shape the ray met and
 how many rows it filled.
+
+More pictures of the map are in [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven#pictures).
 
 ## Benchmarking and verification
 
