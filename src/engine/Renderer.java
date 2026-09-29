@@ -332,6 +332,9 @@ final class Renderer {
     /** Scratch state for a single column; one instance per thread. */
     private final class Column {
         private int[] o0 = new int[H + 2], o1 = new int[H + 2], n0 = new int[H + 2], n1 = new int[H + 2];
+        private final int[] q0 = new int[H + 2], q1 = new int[H + 2];     // paintCands' copy of the open rows
+        private int[] riv = new int[8];                                 // nearest()'s rivals, from rivals()
+        private int rivN;
         private int open;                                   // number of row intervals still empty
         private final int[] stamp = new int[world.shapes.length];
         private final int[] nodes = new int[128];           // the tree walk's stack; a tree is ~log2(n) deep
@@ -1572,7 +1575,10 @@ final class Renderer {
             // blended over that afterwards. Rows already closed were closed by something nearer.
             for (int i = 0; i < nc; i++) {
                 Cand c = cands.get(i);
-                if (c.plane != null && c.plane.masked && c.ib > c.ia) recordPlane(i);
+                if (c.plane != null && c.plane.masked && c.ib > c.ia) {
+                    rivals(i);
+                    recordPlane(i);
+                }
             }
             for (int i = 0; i < nc; i++) {
                 Cand c = cands.get(i);
@@ -1600,14 +1606,27 @@ final class Renderer {
                 if (alone) {
                     rows = paint(c.ia, c.ib, 0, c.z, c.slope, c.base);
                 } else {
-                    int run = -1;
-                    for (int y = c.ia; y <= c.ib; y++) {
-                        boolean win = y < c.ib && nearest(i, y);
-                        if (win && run < 0) {
-                            run = y;
-                        } else if (!win && run >= 0) {
-                            rows += paint(run, y, 0, c.z, c.slope, c.base);
-                            run = -1;
+                    // Only the rows still open are asked who wins them: a closed row cannot be
+                    // painted whoever wins it, and asking cost most of school's frame - a ceiling
+                    // near the eye spans hundreds of rows the walls took long ago. The open rows
+                    // are copied first because paint() rewrites the list; nothing but this
+                    // candidate paints until the loop ends, so the copy stays true for every row
+                    // not yet passed. paint() splits a run at closed rows by itself, so ending runs
+                    // at the edges of open intervals hands it the same spans in the same order.
+                    rivals(i);
+                    int n = open;
+                    System.arraycopy(o0, 0, q0, 0, n);
+                    System.arraycopy(o1, 0, q1, 0, n);
+                    for (int k = 0; k < n; k++) {
+                        int y0 = Math.max(q0[k], c.ia), y1 = Math.min(q1[k], c.ib), run = -1;
+                        for (int y = y0; y <= y1; y++) {
+                            boolean win = y < y1 && nearest(i, y);
+                            if (win && run < 0) {
+                                run = y;
+                            } else if (!win && run >= 0) {
+                                rows += paint(run, y, 0, c.z, c.slope, c.base);
+                                run = -1;
+                            }
                         }
                     }
                 }
@@ -1619,13 +1638,27 @@ final class Renderer {
             }
         }
 
-        /** Whether candidate i is the first thing the ray through row y meets, of those wanting it. */
+        /** The candidates that can contest a row of candidate i: solid, and wanting some of its
+         *  rows. nearest() asks only these, rather than every candidate once a row. */
+        private void rivals(int i) {
+            Cand c = cands.get(i);
+            if (riv.length < nc) riv = new int[nc];
+            rivN = 0;
+            for (int j = 0; j < nc; j++) {
+                Cand d = cands.get(j);
+                if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked))   // a cut-out hides nothing
+                    riv[rivN++] = j;
+            }
+        }
+
+        /** Whether candidate i is the first thing the ray through row y meets, of those wanting it.
+         *  rivals(i) must have been called for this i. */
         private boolean nearest(int i, int y) {
             double di = depthAt(cands.get(i), y);
-            for (int j = 0; j < nc; j++) {
-                if (j == i) continue;
+            for (int r = 0; r < rivN; r++) {
+                int j = riv[r];
                 Cand d = cands.get(j);
-                if (y < d.ia || y >= d.ib || (d.plane != null && d.plane.masked)) continue;   // a cut-out hides nothing
+                if (y < d.ia || y >= d.ib) continue;
                 double dj = depthAt(d, y);
                 if (dj < di || (dj == di && j < i)) return false;
             }
