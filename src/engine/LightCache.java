@@ -73,7 +73,7 @@ final class LightCache {
             "Host", "Game", "View", "Input", "Body", "Options", "Renderer", "Warp", "Capture",
             "Minimap", "RayView", "DynamicResolution", "Keys", "LightCache", "Hash",
             "Surface", "SurfaceGlfw",
-            "Gl", "GlMaterials", "GpuSpike", "GpuMatCheck", "GpuCheck", "GpuSpans", "GpuWalls",
+            "Gl", "GlMaterials", "GpuMatCheck", "GpuCheck", "GpuSpans", "GpuWalls",
             "GpuLights", "GpuTextures", "GpuMaterials", "GpuTable", "GpuMasks",
             "Glfw", "GpuNote");
 

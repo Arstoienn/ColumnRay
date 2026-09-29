@@ -218,14 +218,11 @@ public final class Host {
      * accelerated pixel format on macOS - the same ordering trap that once left the window taking
      * no keys, in the other direction.
      *
-     * Two different things can be missing and both end the same way: a sentence, and the CPU
-     * renderer, which runs anywhere. There may be no backend for this operating system, which
-     * GlPlatform can answer without loading Gl - deliberately, because loading Gl is what fails.
-     * Or there may be a backend and no card for it to find: a Windows machine with no OpenGL
-     * driver, a virtual machine, a CI runner that offers Microsoft's software renderer. That one
-     * only shows up when the context is actually asked for, and it arrives as an
-     * ExceptionInInitializerError out of Gl's own field initialisers, which is not a thing to let
-     * out of main().
+     * A missing card ends one way: a sentence, and the CPU renderer, which runs anywhere. It is a
+     * machine with no display, a Windows machine with no OpenGL driver, a virtual machine, a CI
+     * runner that offers no core profile - and it only shows up when the context is actually asked
+     * for, arriving as an ExceptionInInitializerError out of Gl's own field initialisers, which is
+     * not a thing to let out of main(). -Dglfw=none reproduces it on a machine that has a card.
      */
     public static boolean graphicsCard() {
         String why = null;
@@ -346,7 +343,7 @@ public final class Host {
      * The hover column the ray view traces goes back to the middle of the picture, because there
      * is no longer a pointer anywhere else to mean anything. May be asked for before the window
      * exists - a game's constructor is the natural place - and takes effect when it opens. How the
-     * pointer is actually held still is the surface's business; see SurfaceAwt.
+     * pointer is actually held still is the surface's business; see SurfaceGlfw.
      */
     public void setMouseLook(boolean on) {
         mouseLook = on;
@@ -486,9 +483,9 @@ public final class Host {
         // the buffers are sized), so there is no one later place that catches all of it.
         //
         // Only when there is a card. Naming Gl at all loads it, and its static initialiser asks
-        // GlPlatform for a context - which on a machine with no backend, Linux today, throws the
-        // sentence it was written to throw. An unguarded call here took every CPU frame on Linux
-        // down with it, which is what CI is for.
+        // for a context - which on a machine with no display throws the sentence it was written
+        // to throw. An unguarded call here once took every CPU frame on Linux down with it, which
+        // is what CI is for; -Dglfw=none reproduces that here.
         if (useGpu) Gl.reclaim();
         applyWantedScale();
         double limit = pitchLimit();
@@ -508,9 +505,9 @@ public final class Host {
         // the buffers are sized), so there is no one later place that catches all of it.
         //
         // Only when there is a card. Naming Gl at all loads it, and its static initialiser asks
-        // GlPlatform for a context - which on a machine with no backend, Linux today, throws the
-        // sentence it was written to throw. An unguarded call here took every CPU frame on Linux
-        // down with it, which is what CI is for.
+        // for a context - which on a machine with no display throws the sentence it was written
+        // to throw. An unguarded call here once took every CPU frame on Linux down with it, which
+        // is what CI is for; -Dglfw=none reproduces that here.
         if (useGpu) Gl.reclaim();
         applyWantedScale();
         render(v, pitchLimit());

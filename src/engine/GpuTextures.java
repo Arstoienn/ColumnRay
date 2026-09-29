@@ -233,11 +233,6 @@ final class GpuTextures {
                                 mean.g == 0.0 ? 1.0 : clamp(texel.g / mean.g, 0.0, 4.0),
                                 mean.b == 0.0 ? 1.0 : clamp(texel.b / mean.b, 0.0, 4.0));
                 }
-
-                /** Materials.Texture.lod: log2 of the footprint in level-0 texels, clamped. */
-                float imageLod(float w, float side, float levels) {
-                    return min(levels - 1.0, log2(max(1.0, w * side)));
-                }
                 """);
         return decl.toString();
     }
