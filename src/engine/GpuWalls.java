@@ -267,8 +267,8 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "viewH", (float) viewH);
         Gl.uniform(program, "foc", (float) focal);
         Gl.uniform(program, "halfW", w / 2.0f);
-        Gl.uniform(program, "camX", (float) cam.x);
-        Gl.uniform(program, "camY", (float) cam.y);
+        Gl.uniform(program, "viewX", (float) cam.x);
+        Gl.uniform(program, "viewY", (float) cam.y);
         Gl.uniform(program, "dirX", (float) cam.dirX);
         Gl.uniform(program, "dirY", (float) cam.dirY);
         Gl.uniform(program, "fogOn", Renderer.fogOn ? 1f : 0f);
@@ -362,7 +362,10 @@ final class GpuWalls implements AutoCloseable {
                 %s
                 %s
                 uniform sampler2D spans;
-                uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
+                uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, viewX, viewY, dirX, dirY;
+                // Where the ray this pixel is shaded along starts: the eye, or the eye mirrored in a
+                // pane while its reflection is shaded (reflectAt). Not uniforms, for that reason.
+                float camX, camY;
                 uniform float fogOn, maxDist, hdr, exposure;
                 float rayX, rayY, dk;
                 out vec4 frag;
@@ -583,9 +586,9 @@ final class GpuWalls implements AutoCloseable {
                 /** One pixel of the column as the renderer painted it, masks and all: what a
                  *  puddle is made of, and what it reflects. wet and wetZ say whether the row is
                  *  a floor with standing water, and at what height. */
-                vec3 pixelAt(int col, int row, out float wet, out float wetZ) {
-                    vec2 have = texelFetch(spans, ivec2(0, col), 0).rg;   // the row's header
-                    int n = int(have.x);
+                /** The surface the spans tagged tag put in this row, or -1 where none do. */
+                vec3 surfaceAt(int col, int row, int tag, out float wet, out float wetZ) {
+                    int n = int(texelFetch(spans, ivec2(0, col), 0).x);
                     vec3 colour = vec3(-1.0);          // nothing has claimed this row yet
                     wet = 0.0;
                     wetZ = 0.0;
@@ -593,9 +596,10 @@ final class GpuWalls implements AutoCloseable {
                         int at = 1 + s * 4;                  // past the header texel
                         vec4 a = texelFetch(spans, ivec2(at, col), 0);
                         if (row < int(a.y) || row >= int(a.z)) continue;
+                        vec4 e = texelFetch(spans, ivec2(at + 3, col), 0);
+                        if (int(e.z) != tag) continue;       // another pane's reflection, or the view's
                         vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
                         vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
-                        vec4 e = texelFetch(spans, ivec2(at + 3, col), 0);
                         int mat = int(a.w), lm = int(b.z), rec = int(e.x);
                         if (c.w == 0.0) {
                             float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
@@ -609,9 +613,25 @@ final class GpuWalls implements AutoCloseable {
                         }
                         break;
                     }
+                    return colour;
+                }
+
+                vec3 pixelAt(int col, int row, out float wet, out float wetZ) {
+                    vec3 colour = surfaceAt(col, row, 0, wet, wetZ);
                     if (colour.r < 0.0) colour = sky(row);   // Renderer.fillRest
                     // Renderer.blendMasked, in the same place: over the finished column.
-                    return blendMasks(col, row, int(have.y), colour);
+                    return blendMasks(col, row, int(texelFetch(spans, ivec2(0, col), 0).y), colour);
+                }
+
+                /** Renderer.mirror, shaded: what the tag-th pane in this column reflects in this
+                 *  row, seen from the eye mirrored in it, e, along the mirrored ray, q. */
+                vec3 reflectAt(int col, int row, int tag, vec2 e, vec2 q) {
+                    float sx = camX, sy = camY, qx = rayX, qy = rayY;
+                    camX = e.x; camY = e.y; rayX = q.x; rayY = q.y;
+                    float w, wz;
+                    vec3 c = surfaceAt(col, row, tag, w, wz);
+                    camX = sx; camY = sy; rayX = qx; rayY = qy;
+                    return c.r < 0.0 ? sky(row) : c;
                 }
 
                 /** Renderer.depthOf: how far away the surface in this row is, infinite for sky. */
@@ -621,6 +641,7 @@ final class GpuWalls implements AutoCloseable {
                         int at = 1 + s * 4;
                         vec4 a = texelFetch(spans, ivec2(at, col), 0);
                         if (row < int(a.y) || row >= int(a.z)) continue;
+                        if (int(texelFetch(spans, ivec2(at + 3, col), 0).z) != 0) continue;
                         vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
                         if (c.w == 0.0) return c.x * foc / dk;
                         vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
@@ -654,6 +675,8 @@ final class GpuWalls implements AutoCloseable {
                 }
 
                 void main() {
+                    camX = viewX;
+                    camY = viewY;
                     ivec2 at = source();
                     int col = at.x;
                     // The column's ray, worked out the way Column.render does, so the floor lands

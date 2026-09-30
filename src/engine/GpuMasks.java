@@ -113,6 +113,32 @@ final class GpuMasks {
         return true;
     }
 
+    /**
+     * A pane of glass (Materials.GLASS): its tint and angle, and where what it reflects is - the
+     * spans tagged {@code tag} in this column, seen from the eye mirrored in the pane, (ex, ey),
+     * along the mirrored ray (qx, qy). Laid out as
+     *
+     *     x     y0     y1     3
+     *     tag   -      -      sq
+     *     -     -1     rgb    -
+     *     ex    ey     qx     qy
+     */
+    boolean addGlass(int x, int y0, int y1, double sq, int rgb, int tag,
+                     double ex, double ey, double qx, double qy) {
+        int at = slot(x, y0, y1, Materials.GLASS);
+        if (at < 0) return false;
+        data[at + 4] = tag;
+        data[at + 7] = (float) sq;
+        data[at + 9] = -1;
+        data[at + 10] = rgb;
+        data[at + 12] = (float) ex;
+        data[at + 13] = (float) ey;
+        data[at + 14] = (float) qx;
+        data[at + 15] = (float) qy;
+        count[x]++;
+        return true;
+    }
+
     /** A cut-out's top or bottom: each row finds its own distance on the plane, as a plane span
      *  does, and the plane's own shading then applies. */
     boolean addPlane(int x, int y0, int y1, double z, double slope,
@@ -165,6 +191,8 @@ final class GpuMasks {
             float cutAlpha(int rec, vec2 pq, float w) { return 1.0; }
             #endif
 
+            vec3 reflectAt(int col, int row, int tag, vec2 e, vec2 q);   // GpuWalls, after the spans
+
             vec3 blendMasks(int col, int row, int n, vec3 under) {
                 // Backwards: the renderer appended them as the ray met them, so this is far to near.
                 for (int i = n - 1; i >= 0; i--) {
@@ -193,7 +221,7 @@ final class GpuMasks {
                         if (kind == 3) {                       // Materials.GLASS, as Renderer.blendMasked
                             float k = 1.0 - b.w, f = 0.04 + 0.96 * k * k * k * k * k;
                             alpha = f + (1.0 - f) * alpha;
-                            over = mixPixel(shade(c.z, GLASS_TINT), sky(row), f / alpha);
+                            over = mixPixel(shade(c.z, GLASS_TINT), reflectAt(col, row, int(b.x), d.xy, d.zw), f / alpha);
                         } else {
                             over = wallColour(mat, lm, rec, c.z, b.x, z, narrow, b.w, c.x);
                         }

@@ -1142,11 +1142,16 @@ See the comments at the top of `maps/school.json`. In short:
   clockwise), so a map can be shown the way round its players know it.
 - **Glass**: `"mask": "glass"` on a wall or a box makes its sides panes. Not a lit surface: what is
   behind shows through darkened towards a shadow of the shape's `color` (`Materials.GLASS_ALPHA`,
-  `Renderer.GLASS_TINT`), and Fresnel (Schlick, four per cent straight on) turns it into a mirror of
-  the sky at a grazing angle - the sky at the same height in the view, since what is really across
-  the street would take a ray into another column. The bake lets light through it as through the
-  gaps in a tree, so a room behind a window is sunlit. Give a window its frame as thin boxes;
-  real glass is noticed by its frame and its reflections, not by itself.
+  `Renderer.GLASS_TINT`), and Fresnel (Schlick, four per cent straight on) turns it into a mirror at a
+  grazing angle. What it mirrors is what is really there: a pane is a vertical mirror, so the ray
+  it sends back is level, and what it shows is what the eye mirrored in the pane sees along the
+  mirrored ray - the same column renderer run a second time for the pane's rows, from that eye, with
+  nothing nearer than the pane (`Renderer.mirrors`, `mirror`). A point met t away projects to the
+  row it would in the view t away, so the projection carries over whole. On the card the second
+  run's spans go in tagged with the pane and are shaded from the mirrored eye (`GpuWalls.reflectAt`).
+  A reflection leaves out masked surfaces - leaves and other panes. The bake lets light through
+  glass as through the gaps in a tree, so a room behind a window is sunlit. Give a window its frame
+  as thin boxes.
 - **Puddles**: a floor of `water` is standing water everywhere and reflects on its own; `"puddles": 0.3` on any other region covers about that share of its floor with standing water
   (`Materials.puddle`: two octaves of noise in world coordinates, so a puddle stays put). Wet ground
   is darkened, and the water reflects what the column itself drew: a level mirror sends a ray back
