@@ -284,7 +284,7 @@ public final class World {
             throw new IllegalArgumentException("cell must be a finite positive size in metres");
         for (int i = 0; i < regions.length; i++) regions[i].id = i;
         boolean wet = false;
-        for (Region r : regions) wet |= r.puddles > 0;
+        for (Region r : regions) wet |= r.puddles > 0 || r.floorMat == Materials.WATER;
         this.puddles = wet;
         for (int i = 0; i < shapes.length; i++) shapes[i].id = i;
         // -Ddebug.shapes=12,34: what those ids are, for reading back an id a debug buffer caught.

@@ -671,12 +671,12 @@ final class GpuWalls implements AutoCloseable {
                     if (cover > 0.0) {                       // Renderer.reflect
                         float t = (eye - z) * foc / ((float(row) + 0.5 - hz) * dk);
                         if (t > 0.0 && t <= maxDist) {
-                            float wet = puddleAt(camX + rayX * t, camY + rayY * t, cover);
+                            float wet = cover >= 2.0 ? 1.0 : puddleAt(camX + rayX * t, camY + rayY * t, cover);
                             if (wet > 0.004) {
                                 float v = eye - z, h = t * length(vec2(rayX, rayY));
                                 float k = 1.0 - v / sqrt(h * h + v * v);
                                 float f = wet * (WATER_F0 + (1.0 - WATER_F0) * k * k * k * k * k);
-                                colour = mixPixel(colour, vec3(0.0), wet * WET_DARK);
+                                if (cover < 2.0) colour = mixPixel(colour, vec3(0.0), wet * WET_DARK);
                                 if (f > 0.004) colour = mixPixel(colour, mirroredAt(col, row, t, z), f);
                             }
                         }

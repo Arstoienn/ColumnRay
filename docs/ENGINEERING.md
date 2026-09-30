@@ -1147,7 +1147,7 @@ See the comments at the top of `maps/school.json`. In short:
   the street would take a ray into another column. The bake lets light through it as through the
   gaps in a tree, so a room behind a window is sunlit. Give a window its frame as thin boxes;
   real glass is noticed by its frame and its reflections, not by itself.
-- **Puddles**: `"puddles": 0.3` on a region covers about that share of its floor with standing water
+- **Puddles**: a floor of `water` is standing water everywhere and reflects on its own; `"puddles": 0.3` on any other region covers about that share of its floor with standing water
   (`Materials.puddle`: two octaves of noise in world coordinates, so a puddle stays put). Wet ground
   is darkened, and the water reflects what the column itself drew: a level mirror sends a ray back
   up in the same vertical plane, which is the column's own, so the reflection is a walk up its rows

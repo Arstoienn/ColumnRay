@@ -39,6 +39,9 @@ final class Renderer {
      *  where a physicist would say two, because a puddle is seen against dry ground and reads by
      *  contrast - and how much darker wet ground is than dry, which is the other half of seeing it. */
     static final double WATER_F0 = 0.10, WET_DARK = 0.5;
+    /** What a floor of water - a pool, a pond - stands for where a puddle's share would go: water
+     *  everywhere, and nothing to darken, since its own colour is already water's. */
+    static final double POOL = 2;
     static final double MAX_DIST = 80;
     static final int MAX_STOREYS = 8;      // how many storeys can stack at one (x, y)
     /** Two faces on one plane never tie exactly: a ray meets each through its own endpoints, so
@@ -1614,7 +1617,8 @@ final class Renderer {
                     if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked)) alone = false;
                 }
                 int rows = 0;
-                puddle = c.plane == null && c.kind == EventKind.FLOOR && c.region != null ? c.region.puddles : 0;
+                puddle = c.plane == null && c.kind == EventKind.FLOOR && c.region != null
+                        ? (c.region.floorMat == Materials.WATER ? POOL : c.region.puddles) : 0;
                 shKind = 2;
                 shSurf = c.surf;
                 shZ = c.z;
@@ -1956,11 +1960,11 @@ final class Renderer {
                 for (int y = wetY0[w]; y < wetY1[w]; y++) {
                     double t = (eye - z) * F / ((y + 0.5 - hz) * dk);
                     if (!(t > 0) || t > MAX_DIST) continue;
-                    double wet = Materials.puddle(px + rx * t, py + ry * t, cover);
+                    double wet = cover >= POOL ? 1 : Materials.puddle(px + rx * t, py + ry * t, cover);
                     if (wet <= 0.004) continue;
                     double v = eye - z, h = t * len, cos = v / Math.sqrt(h * h + v * v), k = 1 - cos;
                     double f = wet * (WATER_F0 + (1 - WATER_F0) * k * k * k * k * k);
-                    int ground = mix(before[y], 0, wet * WET_DARK);
+                    int ground = cover >= POOL ? before[y] : mix(before[y], 0, wet * WET_DARK);
                     pixels[y * W + x] = f <= 0.004 ? ground : mix(ground, mirrored(y, t, z), f);
                 }
             }
