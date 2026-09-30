@@ -190,11 +190,17 @@ final class GpuMasks {
                                 ? maskAt(kind, b.x * d.x, (z - d.z) * d.y, b.z)
                                 : cutAlpha(int(d.x), vec2(b.x, z), narrow / b.w);
                         if (alpha <= 0.004) continue;
-                        over = wallColour(mat, lm, rec, c.z, b.x, z, narrow, b.w, c.x);
+                        if (kind == 3) {                       // Materials.GLASS, as Renderer.blendMasked
+                            float k = 1.0 - b.w, f = 0.04 + 0.96 * k * k * k * k * k;
+                            alpha = f + (1.0 - f) * alpha;
+                            over = mixPixel(shade(c.z, GLASS_TINT), sky(row), f / alpha);
+                        } else {
+                            over = wallColour(mat, lm, rec, c.z, b.x, z, narrow, b.w, c.x);
+                        }
                     }
                     under = alpha >= 0.996 ? over : mixPixel(under, over, alpha);
                 }
                 return under;
             }
-            """;
+            """.replace("GLASS_TINT", Float.toString((float) Renderer.GLASS_TINT));
 }

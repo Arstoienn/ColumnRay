@@ -1140,6 +1140,21 @@ See the comments at the top of `maps/school.json`. In short:
   is made of shapes, as in an imported map; the minimap does not count it as somewhere to stand.
 - `"minimap": {"rotate": -90}` at the top level turns the minimap by quarter turns (degrees,
   clockwise), so a map can be shown the way round its players know it.
+- **Glass**: `"mask": "glass"` on a wall or a box makes its sides panes. Not a lit surface: what is
+  behind shows through darkened towards a shadow of the shape's `color` (`Materials.GLASS_ALPHA`,
+  `Renderer.GLASS_TINT`), and Fresnel (Schlick, four per cent straight on) turns it into a mirror of
+  the sky at a grazing angle - the sky at the same height in the view, since what is really across
+  the street would take a ray into another column. The bake lets light through it as through the
+  gaps in a tree, so a room behind a window is sunlit. Give a window its frame as thin boxes;
+  real glass is noticed by its frame and its reflections, not by itself.
+- **Puddles**: a floor of `water` is standing water everywhere and reflects on its own; `"puddles": 0.3` on any other region covers about that share of its floor with standing water
+  (`Materials.puddle`: two octaves of noise in world coordinates, so a puddle stays put). Wet ground
+  is darkened, and the water reflects what the column itself drew: a level mirror sends a ray back
+  up in the same vertical plane, which is the column's own, so the reflection is a walk up its rows
+  to the first surface nearer than the reflected ray (`Renderer.reflect`, `mirrored`), and the same
+  walk on the card (`GpuWalls.mirroredAt`). No second ray, and the column constraint untouched.
+  What the column did not draw - a wall hidden behind a nearer post - the reflection does not have.
+  On a map with puddles each column also renders the rows its puddles reflect (`Warp.mirrorRows`).
 
 ## Storeys
 

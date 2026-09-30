@@ -225,6 +225,17 @@ final class Warp {
 
     private int[] spanA, spanB, spanY;
 
+    /**
+     * Grow each column's rows to take in the rows a puddle in it reflects: a floor at row y shows
+     * what the column has between y and its mirror about the horizon, 2 hz - y, so the column has to
+     * have drawn those too. Only on a map with standing water; everywhere else the rows the warp
+     * reads are all a column needs.
+     */
+    void mirrorRows(int[] lo, int[] hi, int srcW) {
+        for (int x = 0; x < srcW; x++)
+            if (hi[x] > lo[x]) lo[x] = Math.max(0, Math.min(lo[x], (int) Math.floor(2 * hz - hi[x])));
+    }
+
     /** The first column from x on that no row has claimed yet, shortening the path as it goes. */
     private static int unclaimed(int[] next, int x) {
         int r = x;

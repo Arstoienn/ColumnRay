@@ -31,6 +31,17 @@ final class Renderer {
      */
     static final double DEFAULT_FOV = 90;
     static final double NEAR = 1e-3;
+    /** How far a reflected ray may be behind the surface a row shows and still be taken to have hit
+     *  it, rather than to have passed behind it: half a metre, and a tenth of the distance more,
+     *  since a far row stands for a longer stretch of ray. */
+    static final double REFLECT_THICK = 0.5;
+    /** Water on the ground: how much of a puddle is mirror looked at straight down - ten per cent,
+     *  where a physicist would say two, because a puddle is seen against dry ground and reads by
+     *  contrast - and how much darker wet ground is than dry, which is the other half of seeing it. */
+    static final double WATER_F0 = 0.10, WET_DARK = 0.5;
+    /** What a floor of water - a pool, a pond - stands for where a puddle's share would go: water
+     *  everywhere, and nothing to darken, since its own colour is already water's. */
+    static final double POOL = 2;
     static final double MAX_DIST = 80;
     static final int MAX_STOREYS = 8;      // how many storeys can stack at one (x, y)
     /** Two faces on one plane never tie exactly: a ray meets each through its own endpoints, so
@@ -556,6 +567,7 @@ final class Renderer {
             maskedN = 0;
             if (sink != null) Arrays.fill(cpuUnder, false);
             planeN = 0;
+            segN = wetN = 0;
             crossings = 0;
             cells = tests = hits = 0;
             endT = -1;
@@ -577,6 +589,7 @@ final class Renderer {
             }
             fillRest();
             blendMasked();
+            if (wetN > 0 && (sink == null || under)) reflect();
 
             rayEnd[x] = endT;
             cellsVisited[x] = cells;
@@ -1370,7 +1383,14 @@ final class Renderer {
                     double a = Materials.mask(s.mask, m.u * invU, (z - s.z0) * invV, m.w);
                     if (a <= 0.004) continue;
                     int c;
-                    if (m.lm != null) {
+                    if (s.mask == Materials.GLASS) {
+                        // Not a lit surface: what is behind, darkened towards the tint, and the sky
+                        // in the proportion Fresnel says. a is the part of the pixel that is not
+                        // what is behind; of that, f / a is the mirror and the rest the tint.
+                        double f = glass(m.sq);
+                        a = f + (1 - f) * a;
+                        c = mix(shade(s.color, GLASS_TINT), y < hz ? sky(y) : 0x3a3c40, f / a);
+                    } else if (m.lm != null) {
                         m.lm.sample(m.u, z, L);
                         c = sideColor(s, m.u, z, m.t, m.sq, m.f, L);
                     } else {
@@ -1597,6 +1617,8 @@ final class Renderer {
                     if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked)) alone = false;
                 }
                 int rows = 0;
+                puddle = c.plane == null && c.kind == EventKind.FLOOR && c.region != null
+                        ? (c.region.floorMat == Materials.WATER ? POOL : c.region.puddles) : 0;
                 shKind = 2;
                 shSurf = c.surf;
                 shZ = c.z;
@@ -1639,6 +1661,7 @@ final class Renderer {
                     }
                 }
                 spanKind = 0;
+                puddle = 0;
                 if (tr != null && rows > 0) {
                     if (c.plane != null) notePlane(c.plane, rows);
                     else noteSurface(c.kind, c.region, ta, tb, rows);
@@ -1833,7 +1856,7 @@ final class Renderer {
                     if (spanKind == 1) onCard = sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq,
                             spanMat, spanRgb, spanFog, spanLm, spanTex);
                     else if (spanKind == 2) onCard = sink.addPlane(x, s0, s1, spanZ, spanSlope,
-                            spanLight, spanMat, spanRgb, spanLm, spanTex);
+                            spanLight, spanMat, spanRgb, spanLm, spanTex, puddle);
                     else for (int y = s0; y < s1; y++) sink.skip(x, y);
                     // Rows the card has not got are the CPU's, and so is anything blended on top
                     // of them: the blend needs something underneath, and this is where it says so.
@@ -1858,6 +1881,7 @@ final class Renderer {
                     }
                 }
                 filled += s1 - s0;
+                if (world.puddles) keep(s0, s1, t, z, slope);
                 if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above
                 if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // leftover below
             }
@@ -1865,6 +1889,107 @@ final class Renderer {
             o0 = n0; o1 = n1; n0 = t0; n1 = t1;
             open = m;
             return filled;
+        }
+
+        // ---- Puddles: a reflection found in the column itself ----
+
+        /** The share of standing water on the floor paint() is filling now, or 0 (World.Region). */
+        private double puddle;
+        /** What each painted run of this column is, so a reflection can ask how far away a row is:
+         *  t for a wall, and z and slope for a plane. Kept only on a map with puddles. */
+        private int segN, wetN;
+        private int[] segY0 = new int[64], segY1 = new int[64];
+        private double[] segT = new double[64], segZ = new double[64], segSlope = new double[64];
+        /** The runs of wet floor, which reflect() goes back over. */
+        private int[] wetY0 = new int[16], wetY1 = new int[16];
+        private double[] wetZ = new double[16], wetCover = new double[16];
+        /** The column as it was before any reflection went in: a puddle reflects the picture, not
+         *  another puddle's reflection of it, and the card, which cannot write back, does the same. */
+        private int[] before;
+
+        private void keep(int y0, int y1, double t, double z, double slope) {
+            if (segN == segY0.length) {
+                int n = segN * 2;
+                segY0 = Arrays.copyOf(segY0, n); segY1 = Arrays.copyOf(segY1, n);
+                segT = Arrays.copyOf(segT, n); segZ = Arrays.copyOf(segZ, n); segSlope = Arrays.copyOf(segSlope, n);
+            }
+            segY0[segN] = y0; segY1[segN] = y1; segT[segN] = t; segZ[segN] = z; segSlope[segN] = slope;
+            segN++;
+            if (puddle > 0) {
+                if (wetN == wetY0.length) {
+                    int n = wetN * 2;
+                    wetY0 = Arrays.copyOf(wetY0, n); wetY1 = Arrays.copyOf(wetY1, n);
+                    wetZ = Arrays.copyOf(wetZ, n); wetCover = Arrays.copyOf(wetCover, n);
+                }
+                wetY0[wetN] = y0; wetY1[wetN] = y1; wetZ[wetN] = z; wetCover[wetN] = puddle;
+                wetN++;
+            }
+        }
+
+        /** How far away the surface this column shows in row y is: infinite for the sky. */
+        private double depthOf(int y) {
+            for (int k = 0; k < segN; k++) {
+                if (y < segY0[k] || y >= segY1[k]) continue;
+                if (segT[k] > 0) return segT[k];
+                double d = (eye - segZ[k]) * F / ((y + 0.5 - hz) * dk + segSlope[k] * F);
+                return d > 0 && Double.isFinite(d) ? d : Double.POSITIVE_INFINITY;
+            }
+            return Double.POSITIVE_INFINITY;
+        }
+
+        /**
+         * Water on the floor, reflecting.
+         *
+         * A level puddle turns a ray back up at the angle it came down, and the ray it sends up is in
+         * the same vertical plane as the one that came in - the plane this column already drew, top
+         * to bottom. So the reflection is not another ray: it is a walk up this column's own rows,
+         * which is the column constraint answering a question that usually needs a second render.
+         * What the column did not draw - a wall hidden behind a nearer post - the reflection does not
+         * have, which is the screen-space reflection's one weakness, and here it is only a column's.
+         *
+         * How much of the puddle is mirror is Fresnel (WATER_F0 straight down, nearly all of it at a
+         * grazing angle), times how wet the ground is there (Materials.puddle); the ground under it
+         * is darkened by the same wetness first.
+         */
+        private void reflect() {
+            if (before == null || before.length < H) before = new int[H];
+            for (int y = 0; y < H; y++) before[y] = pixels[y * W + x];
+            double len = Math.hypot(rx, ry);
+            for (int w = 0; w < wetN; w++) {
+                double z = wetZ[w], cover = wetCover[w];
+                for (int y = wetY0[w]; y < wetY1[w]; y++) {
+                    double t = (eye - z) * F / ((y + 0.5 - hz) * dk);
+                    if (!(t > 0) || t > MAX_DIST) continue;
+                    double wet = cover >= POOL ? 1 : Materials.puddle(px + rx * t, py + ry * t, cover);
+                    if (wet <= 0.004) continue;
+                    double v = eye - z, h = t * len, cos = v / Math.sqrt(h * h + v * v), k = 1 - cos;
+                    double f = wet * (WATER_F0 + (1 - WATER_F0) * k * k * k * k * k);
+                    int ground = cover >= POOL ? before[y] : mix(before[y], 0, wet * WET_DARK);
+                    pixels[y * W + x] = f <= 0.004 ? ground : mix(ground, mirrored(y, t, z), f);
+                }
+            }
+        }
+
+        /**
+         * What the ray reflected at row y's puddle, t away at height z, meets.
+         *
+         * Seen from the eye, that ray runs up the screen from the puddle's row hz + K to hz - K, the
+         * row it would reach at infinity, where K = F (eye - z) / (t dk); at row y' it is
+         * 2t / ((y' - hz) / K + 1) away. So walk up the rows: the first whose surface is nearer than
+         * the ray is there, and not by so much that the ray must have passed behind it, is what the
+         * puddle shows. The floor between the puddle and the horizon can never be it - the ray is
+         * above the floor all the way - so that needs no special case.
+         */
+        private int mirrored(int y, double t, double z) {
+            double K = F * (eye - z) / (t * dk);
+            int top = (int) Math.floor(hz - K);
+            for (int yy = y - 1; yy >= 0 && yy >= top; yy--) {
+                double c = (yy + 0.5 - hz) / K + 1;
+                if (c <= 0) break;
+                double tr = 2 * t / c, d = depthOf(yy);
+                if (tr >= d && tr - d <= REFLECT_THICK + 0.1 * d) return before[yy];
+            }
+            return sky(Math.max(0, top));
         }
 
         private int clampRow(double v) {
@@ -1889,6 +2014,23 @@ final class Renderer {
     private static double fog(double t) {
         return fogOn ? Math.max(0.3, 1 - t / 45) : 1;
     }
+
+    /**
+     * How much of what a pane of glass shows is the sky it reflects rather than the glass and what
+     * is behind it, for a pane met at cos between the ray and its normal: Schlick's approximation of
+     * Fresnel, with the four per cent a pane reflects straight on. Straight on, a window is mostly
+     * window; at a grazing angle down a street it is a mirror. What it mirrors is the sky at the
+     * same height in the view, or the haze below the horizon - a vertical pane sends a ray back up at
+     * the angle it came in, and what is really there would take another ray, into another column.
+     */
+    static double glass(double cos) {
+        double k = 1 - cos;
+        return 0.04 + 0.96 * k * k * k * k * k;
+    }
+
+    /** How bright a pane's own colour is where it tints what is behind it: a shadow of it, not the
+     *  colour a wall of it would be lit to - glass scatters next to nothing. */
+    static final double GLASS_TINT = 0.35;
 
     /** src over dst, by a. */
     private static int mix(int dst, int src, double a) {

@@ -698,6 +698,7 @@ public final class Host {
             rowNext = new int[srcW + 1];
         }
         warp.columnRows(rowLo, rowHi, rowNext, srcW);
+        if (world.puddles) warp.mirrorRows(rowLo, rowHi, srcW);
         c.rowLo = ROWS ? rowLo : null;                          // -Dwarp.rows=false: every row, to compare
         c.rowHi = ROWS ? rowHi : null;
         // Both dimensions: the overscan grows with pitch, and there is no rule that says the
