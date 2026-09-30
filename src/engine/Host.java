@@ -53,11 +53,29 @@ public final class Host {
      * A multiple, because the overscan a pitch needs is a fixed ratio of the frame at any render
      * size, so a budget in pixels would let the camera tilt further on a small window than on a
      * large one. The camera is a control and a control does not change its range when the
-     * resolution does. As a multiple it stops at the same angle everywhere: about 55 degrees,
-     * which is past what World.MAX_PITCH asks for and well short of the tangent running away - 68
-     * degrees is 1,494 level frames, where the allocation itself used to fail.
+     * resolution does. As a multiple it stops at the same angle everywhere: 55.6 degrees at the
+     * 90-degree field of view, just past World.MAX_PITCH, which asks for 76.
+     *
+     * It was 16, which stopped the camera at 48.5, while every pixel of the upright image was
+     * shaded and every row of every column filled. Neither is true any more (GpuWalls.shadeWarped,
+     * Warp.columnRows), so a bigger image costs its rays and its memory rather than itself.
      */
-    private static final long OVERSCAN_LIMIT = 16;
+    private static final long OVERSCAN_LIMIT = 80;
+
+    /**
+     * On the card there is a second ceiling, and it is not a multiple of anything: no texture may
+     * be wider or taller than the card allows - 16384 on an M3 - and the upright frame, and the
+     * span texture with a row a column and the warp's table under them, are textures. A request
+     * past it is not refused; the call fails and every fetch reads zero. So the pitch stops where
+     * they fit (pitchLimit), and the buffer grows no further than that (preparePitch). Zero until
+     * the card is asked.
+     */
+    private int texMax;
+
+    private int texMax() {
+        if (texMax == 0) texMax = Gl.maxTextureSize();
+        return texMax;
+    }
     BufferedImage image;
     int[] out;                    // the W x H pixels the window sees
     private int[] hi;             // the RW x RH tilted view after the pitch warp; same array as `out` when SS = 1
@@ -93,6 +111,8 @@ public final class Host {
     Lighting lighting;                                           // null with --flat
 
     private final Warp warp = new Warp();                        // this frame's pitch warp; see Warp
+    private int[] rowLo, rowHi, rowNext;                         // the rows of each column it can read
+    private static final boolean ROWS = !"false".equals(System.getProperty("warp.rows"));
     /** --gpu: the card shades the frame the CPU's columns worked out. Null on the CPU path, and
      *  rebuilt whenever the pitch warp grows the render buffer under it. */
     volatile boolean useGpu;
@@ -317,9 +337,21 @@ public final class Host {
      * a function of both.
      */
     public double pitchLimit() {
-        return Math.min(world.maxPitch,
+        double limit = Math.min(world.maxPitch,
                 Warp.fits(shear, RW, RH, renderer.focal(), OVERSCAN_LIMIT * (long) RW * RH));
+        // Only when there is a card: naming Gl on a machine without one is what -Dglfw=none catches.
+        if (useGpu)
+            limit = Math.min(limit, Warp.fitsWithin(shear, RW, RH, renderer.focal(), cardWidth(), cardHeight()));
+        return limit;
     }
+
+    /** The widest upright buffer the card can take: its span texture is a row a column with the
+     *  warp's table of RH rows under them, and the buffer is kept an even number of columns wide,
+     *  which may add one. */
+    private int cardWidth() { return texMax() - RH - 2; }
+
+    /** The tallest: the upright frame is a texture of its own. */
+    private int cardHeight() { return texMax() - 2; }
 
     /** Move the render scale one step along the ladder, and stop the frame-time controller from
      *  steering it. */
@@ -581,8 +613,8 @@ public final class Host {
             }
         }
         if (shownOnCard) {
-            gpu.shade(spans, masks, c, srcH / 2.0 + c.pitch, renderer.focal(), RH);
-            cardWarp.apply(gpu.target(), warp);
+            gpu.shadeWarped(spans, masks, c, srcH / 2.0 + c.pitch, renderer.focal(), RH, warp, cardWarp);
+            cardWarp.submit();
             if (readCardWarp) cardWarp.read(hi);
             return;
         }
@@ -630,7 +662,15 @@ public final class Host {
     private void preparePitch(Renderer.Camera c, double pitch) {
         warp.plan(pitch, shear, RW, RH, renderer.focal());
         if (warp.needW() > srcW || warp.needH() > srcH) {        // grow only: an unused margin costs nothing
-            srcW = Math.max(srcW, (int) (warp.needW() * 1.1));
+            // A tenth to spare, so a camera tilting a degree at a time does not reallocate every
+            // frame - but never past what the card can hold, which pitchLimit already kept the
+            // need itself inside.
+            int wantW = (int) (warp.needW() * 1.1), wantH = (int) (warp.needH() * 1.1);
+            if (useGpu) {
+                wantW = Math.min(wantW, cardWidth());
+                wantH = Math.min(wantH, cardHeight());
+            }
+            srcW = Math.max(srcW, Math.max(wantW, warp.needW()));
             // An even number of columns, always.
             //
             // The warp reads the window [cx - needW/2, cx + needW/2) out of the buffer, cx is the
@@ -645,11 +685,21 @@ public final class Host {
             // cancels exactly - which is what docs/GPU-REVIEW.md found when it went looking for
             // this in the wrong dimension.
             srcW += srcW & 1;
-            srcH = Math.max(srcH, (int) (warp.needH() * 1.1));
+            srcH = Math.max(srcH, Math.max(wantH, warp.needH()));
             src = new int[srcW * srcH];
             renderer.resize(srcW, srcH, src);
         }
         warp.place(renderer.centerX(), srcW, srcH, c);
+        // Render only what the warp can read: looking up 45 degrees, each column's range is about
+        // three fifths of the buffer's height, and the ray stops once that much is filled.
+        if (rowLo == null || rowLo.length < srcW) {
+            rowLo = new int[srcW];
+            rowHi = new int[srcW];
+            rowNext = new int[srcW + 1];
+        }
+        warp.columnRows(rowLo, rowHi, rowNext, srcW);
+        c.rowLo = ROWS ? rowLo : null;                          // -Dwarp.rows=false: every row, to compare
+        c.rowHi = ROWS ? rowHi : null;
         // Both dimensions: the overscan grows with pitch, and there is no rule that says the
         // width has to grow with the height. A height that changed on its own used to leave the
         // card drawing at the old size and GpuSpans' skip mask too short for the new one.
@@ -660,7 +710,7 @@ public final class Host {
                 || spans.columns() != srcW || spans.rows() != srcH)) {
             try {
                 if (gpu != null) gpu.close();
-                gpu = new GpuWalls(srcW, srcH, srcW);
+                gpu = new GpuWalls(srcW, srcH, srcW, RH);
                 if (lighting != null) {
                     if (gpuLights == null) gpuLights = new GpuLights(lighting);
                     gpu.setLights(gpuLights);

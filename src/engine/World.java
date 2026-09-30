@@ -40,8 +40,13 @@ public final class World {
      * between maps - a tilted frame of school is 9 ms on the card where Haven is 139 - but that is
      * the renderer's problem to solve and dynamic resolution's to absorb, not the camera's to hide
      * by being shorter on the map that is slow.
+     *
+     * 55 since 2026-09-30, from 45: the warp's upright image is 76 level frames there against 9.5,
+     * but only the pixels it reads are shaded and each column only fills the rows it can be read in,
+     * so what the extra overscan costs is rays, not the whole image. Past about 55 the overscan
+     * goes as one over the distance to 60.6 degrees, where the top of the screen points straight up.
      */
-    public static final double MAX_PITCH = Math.toRadians(45);
+    public static final double MAX_PITCH = Math.toRadians(55);
     private static final int MAX_SHAPES = 20_000_000;
     private static final int MAX_FILES = 65_536;          // chunks, images: one map's worth
     private static final int MAX_POLY_POINTS = 100_000;

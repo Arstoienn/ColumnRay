@@ -45,10 +45,15 @@ final class GpuWalls implements AutoCloseable {
             """;
 
     private int program;                       // built on the first draw: its text depends on the images
+    private int warped;                        // the same, shading straight into the tilted view
     private int vao;
-    private final int target, frame, spanTex, maskTex, w, h, columns;
+    private final int target, frame, spanTex, maskTex, w, h, columns, tableRows;
     private MemorySegment spanBuf, maskBuf;
-    private final MemorySegment back;
+    /** The upright frame's storage on the card and here, made the first time an upright frame is
+     *  drawn. A window warps on the card and draws straight into the tilted view, so it never needs
+     *  either - and tilted 55 degrees each would be a third of a gigabyte. */
+    private MemorySegment back;
+    private boolean targetMade;
     private final Arena buffers;
     /** How wide the span and mask textures are, in texels: a high-water mark, not a worst case.
      *  School fills eight span slots a column out of five hundred it may have, and holding the
@@ -56,9 +61,11 @@ final class GpuWalls implements AutoCloseable {
     private int spanCap, maskCap;
     private final Arena own;
 
-    /** For a window, which needs the buffers to outlive the call that made them. */
-    GpuWalls(int w, int h, int columns) {
-        this(Arena.ofShared(), w, h, columns, true);
+    /** For a window, which needs the buffers to outlive the call that made them. tableRows is the
+     *  most rows a tilted view drawn by shadeWarped will have, whose table rides in the span
+     *  texture under the columns' rows. */
+    GpuWalls(int w, int h, int columns, int tableRows) {
+        this(Arena.ofShared(), w, h, columns, tableRows, true);
     }
 
     private GpuLights lights;
@@ -76,27 +83,22 @@ final class GpuWalls implements AutoCloseable {
     }
 
     GpuWalls(Arena arena, int w, int h, int columns) {
-        this(arena, w, h, columns, false);
+        this(arena, w, h, columns, 0, false);
     }
 
-    private GpuWalls(Arena arena, int w, int h, int columns, boolean owns) {
+    private GpuWalls(Arena arena, int w, int h, int columns, int tableRows, boolean owns) {
         this.own = owns ? arena : null;
         this.buffers = arena;
         this.w = w;
         this.h = h;
         this.columns = columns;
+        this.tableRows = tableRows;
         Gl.context();
 
         target = Gl.texture();
-        Gl.bindTexture(target);
-        Gl.texImage(Gl.RGBA8, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE, MemorySegment.NULL);
-        Gl.texUnfiltered();
         frame = Gl.framebuffer();
-        Gl.bindFramebuffer(frame);
-        Gl.attach(target);
         vao = Gl.vertexArray();
         Gl.bindVertexArray(vao);
-        Gl.viewport(w, h);
 
         spanTex = Gl.texture();
         Gl.activeTexture(0);
@@ -106,9 +108,18 @@ final class GpuWalls implements AutoCloseable {
         Gl.activeTexture(MASK_UNIT);
         Gl.bindTexture(maskTex);
         Gl.texUnfiltered();
+    }
 
-
-        back = arena.allocate((long) w * h * 4);
+    /** Give the upright frame its storage, the first time one is drawn. */
+    private void makeTarget() {
+        if (targetMade) return;
+        Gl.bindTexture(target);
+        Gl.texImage(Gl.RGBA8, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE, MemorySegment.NULL);
+        Gl.texUnfiltered();
+        Gl.bindFramebuffer(frame);
+        Gl.attach(target);
+        back = buffers.allocate((long) w * h * 4);
+        targetMade = true;
     }
 
     /**
@@ -129,8 +140,9 @@ final class GpuWalls implements AutoCloseable {
                 drawNs / 1e6 / frames, readNs / 1e6 / frames);
     }
 
-    private void link() {
-        program = Gl.program(VERT, fragment());
+    /** The shading program, upright or already warped: the same text, one define apart. */
+    private int link(boolean warped) {
+        int program = Gl.program(VERT, fragment(warped));
         Gl.useProgram(program);
         Gl.uniform(program, "spans", 0);
         Gl.uniform(program, "blends", EXTRA_UNIT);
@@ -143,6 +155,7 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "height", (float) h);
         Gl.uniform(program, "satBoost", (float) Renderer.satBoost);
         Gl.uniform(program, "lift", (float) Renderer.lift);
+        return program;
     }
 
     /** Main builds a new one of these whenever the overscan grows, so everything this made has
@@ -154,6 +167,7 @@ final class GpuWalls implements AutoCloseable {
         Gl.deleteFramebuffer(frame);
         Gl.deleteVertexArray(vao);
         if (program != 0) Gl.deleteProgram(program);
+        if (warped != 0) Gl.deleteProgram(warped);
         if (own != null) own.close();
     }
 
@@ -168,26 +182,58 @@ final class GpuWalls implements AutoCloseable {
         if (STATS) readNs += System.nanoTime() - t3;
     }
 
-    /** The shaded upright frame, where {@link #shade} left it: for {@link GpuWarp} to read on the
-     *  card instead of it coming back here. */
-    int target() { return target; }
-
     /** Draw one frame's worth of spans and the masked surfaces over them into {@link #target},
      *  and leave it there. */
     void shade(GpuSpans spans, GpuMasks masks, Renderer.Camera cam, double horizon,
                double focal, int viewH) {
+        shade(spans, masks, cam, horizon, focal, viewH, null, null);
+    }
+
+    /**
+     * The same, already tilted: every pixel of {@code out} is shaded as the pixel of the upright
+     * frame that {@link Warp#apply} would have taken for it, and nothing else is shaded at all.
+     *
+     * Shading the whole upright frame and then warping it paid for pixels nobody reads. The warp
+     * takes one row of the upright frame for each row it makes, and a strip of it narrowed or
+     * widened by the stretch; looking up 45 degrees the upright frame is 9.5 times the picture and
+     * a tenth of it is ever read. Here the pixel asks which upright pixel it is first, from the
+     * table Warp.rows writes for the purpose, and then is shaded as that one - the same span,
+     * the same ray, the same arithmetic - so the picture is what shading everything and then
+     * sampling it gave, pixel for pixel, at a tenth of the shading.
+     *
+     * The table rides in the span texture, in rows below the columns': every one of the sixteen
+     * texture units a fragment shader is promised is already spoken for (see EXTRA_UNIT).
+     */
+    void shadeWarped(GpuSpans spans, GpuMasks masks, Renderer.Camera cam, double horizon,
+                     double focal, int viewH, Warp warp, GpuWarp out) {
+        shade(spans, masks, cam, horizon, focal, viewH, warp, out);
+    }
+
+    private void shade(GpuSpans spans, GpuMasks masks, Renderer.Camera cam, double horizon,
+                       double focal, int viewH, Warp warp, GpuWarp out) {
         long t0 = STATS ? System.nanoTime() : 0;
+        int table = warp == null ? 0 : out.height();     // the table's rows, under the columns'
+        if (table > tableRows)
+            throw new IllegalStateException("a tilted view of " + table + " rows, with room for " + tableRows);
+        if (table == 0) {
+            Gl.activeTexture(0);                         // spanTex takes this unit back below
+            makeTarget();
+        }
         int[] count = spans.count(), maskCount = masks.count();
         int wantSpan = Math.max(1, spans.most()) * GpuSpans.TEXELS + HEADER;
         int wantMask = Math.max(1, masks.most()) * GpuMasks.TEXELS;
-        if (wantSpan > spanCap) spanCap = grow(spanTex, 0, wantSpan);
-        if (wantMask > maskCap) maskCap = grow(maskTex, MASK_UNIT, wantMask);
-        if (spanBuf == null || spanCap * 4L * columns * Float.BYTES > spanBuf.byteSize())
-            spanBuf = buffers.allocate((long) spanCap * 4 * columns * Float.BYTES);
+        if (wantSpan > spanCap) spanCap = grow(spanTex, 0, wantSpan, columns + tableRows);
+        if (wantMask > maskCap) maskCap = grow(maskTex, MASK_UNIT, wantMask, columns);
+        if (spanBuf == null || spanCap * 4L * (columns + tableRows) * Float.BYTES > spanBuf.byteSize())
+            spanBuf = buffers.allocate((long) spanCap * 4 * (columns + tableRows) * Float.BYTES);
         if (maskBuf == null || maskCap * 4L * columns * Float.BYTES > maskBuf.byteSize())
             maskBuf = buffers.allocate((long) maskCap * 4 * columns * Float.BYTES);
         int spanW = pack(spans.data(), count, spans.perColumn(), GpuSpans.TEXELS,
                 spans.most(), spanBuf, HEADER) + HEADER;
+        // A table row is two texels. A frame with no spans at all packs nothing and is one texel
+        // wide; nothing was written at any other width, so widening it changes no row but the
+        // header's, which is written below at whatever width this settles on.
+        if (table > 0) spanW = Math.max(spanW, 2);
         int maskW = pack(masks.data(), maskCount, masks.perColumn(), GpuMasks.TEXELS,
                 masks.most(), maskBuf, 0);
         for (int x = 0; x < columns; x++) {          // the header: how many of each this column has
@@ -195,19 +241,27 @@ final class GpuWalls implements AutoCloseable {
             spanBuf.setAtIndex(ValueLayout.JAVA_FLOAT, at, count[x]);
             spanBuf.setAtIndex(ValueLayout.JAVA_FLOAT, at + 1, maskCount[x]);
         }
+        if (table > 0) warp.rows(spanBuf, (long) columns * spanW * 4, spanW * 4);
         long t1 = STATS ? System.nanoTime() : 0;
         Gl.activeTexture(0);
         Gl.bindTexture(spanTex);
-        if (spanW > 0) Gl.texSubImage(spanW, columns, Gl.RGBA, Gl.FLOAT, spanBuf);
+        if (spanW > 0) Gl.texSubImage(spanW, columns + table, Gl.RGBA, Gl.FLOAT, spanBuf);
         Gl.activeTexture(MASK_UNIT);
         Gl.bindTexture(maskTex);
         if (maskW > 0) Gl.texSubImage(maskW, columns, Gl.RGBA, Gl.FLOAT, maskBuf);
-        if (program == 0) link();
+        if (program == 0) program = link(false);
+        if (table > 0 && warped == 0) warped = link(true);
         if (lights != null) lights.bind();
         if (mats != null) { mats.bind(); images.bind(FIRST_IMAGE_UNIT); }
-        Gl.bindFramebuffer(frame);
-        Gl.viewport(w, h);
+        int program = table > 0 ? warped : this.program;
+        if (table > 0) {
+            out.bind();
+        } else {
+            Gl.bindFramebuffer(frame);
+            Gl.viewport(w, h);
+        }
         Gl.useProgram(program);
+        if (table > 0) Gl.uniform(program, "tableAt", columns);
         Gl.uniform(program, "eye", (float) cam.eye);
         Gl.uniform(program, "hz", (float) horizon);
         Gl.uniform(program, "viewH", (float) viewH);
@@ -237,14 +291,14 @@ final class GpuWalls implements AutoCloseable {
 
     /** Make a per-column texture at least this many texels wide, and say how wide it now is.
      *  Doubling rather than fitting exactly, so a frame that grows by one does not reallocate. */
-    private int grow(int texture, int unit, int want) {
+    private int grow(int texture, int unit, int want, int rows) {
         int cap = 8;
         while (cap < want) cap *= 2;
         Gl.activeTexture(unit);
         Gl.bindTexture(texture);
-        Gl.texImage(Gl.RGBA32F, cap, columns, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
+        Gl.texImage(Gl.RGBA32F, cap, rows, Gl.RGBA, Gl.FLOAT, MemorySegment.NULL);
         Gl.texUnfiltered();
-        Gl.check("a per-column texture, %dx%d".formatted(cap, columns));
+        Gl.check("a per-column texture, %dx%d".formatted(cap, rows));
         return cap;
     }
 
@@ -302,9 +356,10 @@ final class GpuWalls implements AutoCloseable {
         return Float.toString((float) hi);                 // faded when 2w/f >= 2, so f = w at the edge
     }
 
-    private String fragment() {
+    private String fragment(boolean warped) {
         return """
                 #version 330 core
+                %s
                 %s
                 uniform sampler2D spans;
                 uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
@@ -504,8 +559,30 @@ final class GpuWalls implements AutoCloseable {
                 }
 
                 %s
+                #ifdef WARPED
+                /** Warp.apply's choice of upright pixel for this output pixel, from the table
+                 *  Warp.rows wrote under the columns' rows of the span texture: the source row,
+                 *  the integer part of the row's first x, its fraction, and the stretch in a high
+                 *  part i times which is exact in a float and a low part. See Warp.rows. */
+                uniform int tableAt;
+                ivec2 source() {
+                    int i = int(gl_FragCoord.x), j = int(gl_FragCoord.y);
+                    vec4 a = texelFetch(spans, ivec2(0, tableAt + j), 0);
+                    vec4 b = texelFetch(spans, ivec2(1, tableAt + j), 0);
+                    float fi = float(i);
+                    float whole = fi * a.w;
+                    float lo = floor(whole);
+                    float frac = (whole - lo) + a.z + fi * b.x;
+                    int x = clamp(int(a.y) + int(lo) + int(floor(frac)), int(b.y), int(b.z));
+                    return ivec2(x, int(a.x));
+                }
+                #else
+                ivec2 source() { return ivec2(gl_FragCoord.xy); }
+                #endif
+
                 void main() {
-                    int col = int(gl_FragCoord.x);
+                    ivec2 at = source();
+                    int col = at.x;
                     // The column's ray, worked out the way Column.render does, so the floor lands
                     // on the same square of tile on both sides.
                     float off = (float(col) + 0.5 - halfW) / foc;
@@ -515,7 +592,7 @@ final class GpuWalls implements AutoCloseable {
                     // glReadPixels hands back the bottom row first, and the renderer's row 0 is
                     // the top one, so the two flips cancel: shade framebuffer row j as row j and
                     // the array that comes back is already the right way up.
-                    int row = int(gl_FragCoord.y);
+                    int row = at.y;
                     vec2 have = texelFetch(spans, ivec2(0, col), 0).rg;   // the row's header
                     int n = int(have.x);
                     vec3 colour = vec3(-1.0);          // nothing has claimed this row yet
@@ -542,7 +619,8 @@ final class GpuWalls implements AutoCloseable {
                     colour = blendMasks(col, row, int(have.y), colour);
                     frag = vec4(colour / 255.0, 1.0);
                 }
-                """.formatted(images == null ? "" : "#define HAS_IMAGES 1", GlMaterials.SIDE, GlMaterials.FLAT,
+                """.formatted(images == null ? "" : "#define HAS_IMAGES 1", warped ? "#define WARPED 1" : "",
+                        GlMaterials.SIDE, GlMaterials.FLAT,
                         tables() + (lights == null ? GpuLights.absent() : lights.glsl())
                                 + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + mats.glsl()),
                         GlMaterials.MASK + GpuMasks.GLSL);

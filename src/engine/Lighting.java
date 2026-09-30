@@ -488,17 +488,23 @@ final class Lighting {
         long t = System.nanoTime();
         System.out.printf("baking light: %,d surfaces, %,d texel rows, %d lights, %d bounces%n",
                 jobs.size(), rows, lights.size(), bounces);
-        IntStream.range(0, rows).parallel().forEach(row -> {
-            int k = owner(start, row);
-            directRow(jobs.get(k), row - start[k], occ.get());
-        });
+        try (Progress p = new Progress("  sun, sky and lamps", rows)) {
+            IntStream.range(0, rows).parallel().forEach(row -> {
+                int k = owner(start, row);
+                directRow(jobs.get(k), row - start[k], occ.get());
+                p.one();
+            });
+        }
         jobs.parallelStream().forEach(Lighting::total);
         t = step("  sun, sky and lamps", t);
         for (int pass = 0; pass < bounces; pass++) {
-            IntStream.range(0, rows).parallel().forEach(row -> {
-                int k = owner(start, row);
-                gatherRow(jobs.get(k), row - start[k], occ.get());
-            });
+            try (Progress p = new Progress("  bounce " + (pass + 1) + " of " + bounces, rows)) {
+                IntStream.range(0, rows).parallel().forEach(row -> {
+                    int k = owner(start, row);
+                    gatherRow(jobs.get(k), row - start[k], occ.get());
+                    p.one();
+                });
+            }
             jobs.parallelStream().forEach(j -> {
                 for (int b = 0; b < blurs; b++) smooth(j);
                 total(j);
@@ -508,6 +514,82 @@ final class Lighting {
         jobs.parallelStream().forEach(j -> dilate(j.map, j.ok));
         for (Occluder o : all) rays += o.rays;
         if (cacheFile != null) LightCache.save(cacheFile, key, maps, rays);
+    }
+
+    /**
+     * How far one pass of the bake has got, redrawn in place once a second on a terminal and
+     * written as a plain line every thirty seconds anywhere else, so a log is not a wall of
+     * carriage returns. Nothing is shown for a pass that ends within two seconds, which is every
+     * pass of school's bake: its output, and every test that reads it, stay as they were.
+     *
+     * Only ever prints. It counts rows, never looks at a texel, and the texel rows are the same
+     * work however far along the count is, so it cannot move what the bake computes.
+     */
+    private static final class Progress implements AutoCloseable {
+        private static final long QUIET_NS = 2_000_000_000L;
+        private final String what;
+        private final long total, since = System.nanoTime();
+        private final java.util.concurrent.atomic.LongAdder done = new java.util.concurrent.atomic.LongAdder();
+        private final boolean live = System.console() != null && System.console().isTerminal();
+        private final Thread ticker;
+        private boolean drawn;
+
+        Progress(String what, long total) {
+            this.what = what;
+            this.total = Math.max(1, total);
+            ticker = new Thread(this::tick, "bake progress");
+            ticker.setDaemon(true);
+            ticker.start();
+        }
+
+        void one() { done.increment(); }
+
+        private void tick() {
+            long every = live ? 1_000_000_000L : 30_000_000_000L, next = since + QUIET_NS;
+            try {
+                while (true) {
+                    Thread.sleep(Math.max(1, (next - System.nanoTime()) / 1_000_000));
+                    draw();
+                    next += every;
+                }
+            } catch (InterruptedException e) {
+                // the pass is over
+            }
+        }
+
+        private void draw() {
+            long n = done.sum();
+            double f = Math.min(1, (double) n / total), s = (System.nanoTime() - since) / 1e9;
+            int bar = (int) (f * 30);
+            String left = f > 0.01 ? String.format("~%s left", clock(s / f - s)) : "";
+            String line = String.format("%-22s [%s%s] %3.0f%%  %s  %s", what, "#".repeat(bar),
+                    "-".repeat(30 - bar), f * 100, clock(s), left);
+            if (live) System.out.print("\r" + line + "\u001b[K");
+            else System.out.println(line);
+            System.out.flush();
+            drawn = true;
+        }
+
+        private static String clock(double s) {
+            long t = Math.round(s);
+            return t >= 3600 ? String.format("%dh%02dm", t / 3600, t / 60 % 60)
+                    : String.format("%dm%02ds", t / 60, t % 60);
+        }
+
+        /** Stop drawing, and on a terminal wipe the line so the pass's own timing takes its place. */
+        @Override
+        public void close() {
+            ticker.interrupt();
+            try {
+                ticker.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (drawn && live) {
+                System.out.print("\r\u001b[K");
+                System.out.flush();
+            }
+        }
     }
 
     /** Print how long a pass took, and hand back the clock for the next one. */
