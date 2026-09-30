@@ -307,9 +307,18 @@ final class Materials {
      *
      * The coordinates are across the quad, 0 to 1 both ways, so one mask fits any size of tree.
      */
-    static final int CANOPY = 0, FERN = 1, TUFT = 2;
+    static final int CANOPY = 0, FERN = 1, TUFT = 2, GLASS = 3;
 
-    private static final String[] MASK_NAMES = {"canopy", "fern", "tuft"};
+    private static final String[] MASK_NAMES = {"canopy", "fern", "tuft", "glass"};
+
+    /**
+     * How much of a pane of glass is there when it is looked at straight on: the rest of the pixel
+     * is whatever is behind it. Under a half, so the bake's shadow rays pass through it as through
+     * the gaps in a tree (Occluder: a mask stops light only where it is more than half there), and
+     * a room behind a window is lit by the sun. Looked at from the side, glass turns into a mirror
+     * for the sky; that is the renderer's (Renderer.glass), since it depends on the view.
+     */
+    static final double GLASS_ALPHA = 0.3;
 
     static int maskId(String name) {
         for (int i = 0; i < MASK_NAMES.length; i++) if (MASK_NAMES[i].equals(name)) return i;
@@ -321,6 +330,18 @@ final class Materials {
      * wide one pixel is in those same units, so that a distant crown loses its gaps before it loses
      * its outline - fading the silhouette too would turn a far-off tree back into a rectangle.
      */
+    /**
+     * How wet the ground is at (x, y), 0 to 1, where a region is given "puddles": the share of it
+     * that is standing water. Two octaves of the smooth noise, a metre or three across and a finer
+     * ragged edge, cut at the level that leaves about that share above it, with a few centimetres
+     * of soft shore. In world coordinates, so a puddle stays where it is as you walk past it.
+     */
+    static double puddle(double x, double y, double cover) {
+        double n = 0.7 * noise(x * 0.35, y * 0.35) + 0.3 * noise(x * 1.3 + 17, y * 1.3 + 5);
+        double th = 0.5 + (0.5 - cover) * 0.5;
+        return step(th - 0.02, th + 0.02, n);
+    }
+
     static double mask(int kind, double s, double t, double w) {
         switch (kind) {
             case CANOPY -> {
@@ -345,6 +366,7 @@ final class Materials {
                 double blades = noise(s + 19, t * 0.25 + 41, 26.0, w);
                 return step(0.34, 0.5, blades + 0.55 * (1 - t) - 0.22);
             }
+            case GLASS -> { return GLASS_ALPHA; }
             default -> { return 1; }
         }
     }

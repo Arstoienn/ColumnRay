@@ -14,12 +14,13 @@ package engine;
  * wall intervals drops the rest and says so through {@link #dropped()}, rather than growing an
  * array under a parallel stream.
  *
- * The layout is three RGBA32F texels a span, because that is what a shader can fetch in three
+ * The layout is four RGBA32F texels a span, because that is what a shader can fetch in four
  * reads:
  *
  *     x   y0   y1   mat
  *     u   z0   dz   light
- *     w   sq   rgb  -
+ *     w   sq   rgb  kind
+ *     tex puddles -  -
  *
  * where z0 + dz * row is the height in metres of the pixel in row {@code row}, w is how wide one
  * pixel is on this surface, and sq is how square-on the ray meets it - the two numbers the
@@ -139,19 +140,21 @@ final class GpuSpans {
         data[at + 8] = (float) w;
         data[at + 9] = (float) sq;
         data[at + 12] = tex;
+        data[at + 13] = 0;
         head(at, x, y0, y1, mat, light, rgb, 0);
         return true;
     }
 
     /** One stretch of a floor, a ceiling or a shape's top or bottom. */
     boolean addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb,
-                     int lm, int tex) {
+                     int lm, int tex, double puddles) {
         int at = slot(x, y0, y1);
         if (at < 0) return false;
         data[at + 4] = (float) z;
         data[at + 5] = (float) slope;
         data[at + 6] = lm;
         data[at + 12] = tex;
+        data[at + 13] = (float) puddles;          // a floor's standing water, for its reflection
         head(at, x, y0, y1, mat, light, rgb, 1);
         return true;
     }
@@ -166,7 +169,7 @@ final class GpuSpans {
         if (data[prev + 11] != kind || data[prev + 3] != mat || data[prev + 10] != rgb
                 || data[prev + 7] != (float) light) return false;
         for (int i = 4; i <= 9; i++) if (data[prev + i] != data[at + i]) return false;
-        if (data[prev + 12] != data[at + 12]) return false;
+        if (data[prev + 12] != data[at + 12] || data[prev + 13] != data[at + 13]) return false;
         if (data[prev + 2] == y0) { data[prev + 2] = y1; return true; }
         if (data[prev + 1] == y1) { data[prev + 1] = y0; return true; }
         return false;
