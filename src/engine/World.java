@@ -45,8 +45,11 @@ public final class World {
      * but only the pixels it reads are shaded and each column only fills the rows it can be read in,
      * so what the extra overscan costs is rays, not the whole image. Past about 55 the overscan
      * goes as one over the distance to 60.6 degrees, where the top of the screen points straight up.
+     *
+     * 50 since later the same day: looking down at water the buffer also grows upwards for what
+     * the water reflects (Warp.reachUp), and 55 was heavier than it was worth.
      */
-    public static final double MAX_PITCH = Math.toRadians(55);
+    public static final double MAX_PITCH = Math.toRadians(50);
     private static final int MAX_SHAPES = 20_000_000;
     private static final int MAX_FILES = 65_536;          // chunks, images: one map's worth
     private static final int MAX_POLY_POINTS = 100_000;

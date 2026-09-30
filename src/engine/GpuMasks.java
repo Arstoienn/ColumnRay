@@ -55,8 +55,13 @@ final class GpuMasks {
     private volatile int dropped;
 
     GpuMasks(int columns) {
+        this(columns, 16);
+    }
+
+    /** As {@link GpuSpans#GpuSpans(int, int, int)}: the room the list it replaces had grown to. */
+    GpuMasks(int columns, int start) {
         this.columns = columns;
-        this.perColumn = Math.min(16, MAX_PER_COLUMN);
+        this.perColumn = Math.max(1, Math.min(start, MAX_PER_COLUMN));
         this.data = new float[columns * perColumn * FLOATS];
         this.count = new int[columns];
     }

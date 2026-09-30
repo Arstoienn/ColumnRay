@@ -661,6 +661,10 @@ public final class Host {
      *  has, and tell the camera which part of that buffer to draw. See {@link Warp}. */
     private void preparePitch(Renderer.Camera c, double pitch) {
         warp.plan(pitch, shear, RW, RH, renderer.focal());
+        if (world.puddles) {
+            long budget = OVERSCAN_LIMIT * (long) RW * RH / warp.needW();
+            warp.reachUp((int) Math.min(useGpu ? cardHeight() : Integer.MAX_VALUE, budget));
+        }
         if (warp.needW() > srcW || warp.needH() > srcH) {        // grow only: an unused margin costs nothing
             // A tenth to spare, so a camera tilting a degree at a time does not reallocate every
             // frame - but never past what the card can hold, which pitchLimit already kept the
@@ -727,8 +731,13 @@ public final class Host {
                     gpu.setImages(gpuImages, gpuMaterials);
                     renderer.setMaterials(gpuMaterials);
                 }
-                spans = new GpuSpans(srcW, srcH);
-                masks = new GpuMasks(srcW);
+                // As much room a column as the lists being replaced had grown to: every time the
+                // overscan grows, which looking down at water it does every few degrees, lists
+                // starting small would drop on the first frame, and a frame that drops is merged
+                // on the CPU - where a puddle's walk up the column cannot see the rows the card
+                // was not given, so the reflection came out combed and flickered with each growth.
+                spans = new GpuSpans(srcW, srcH, spans == null ? 32 : spans.perColumn());
+                masks = new GpuMasks(srcW, masks == null ? 16 : masks.perColumn());
                 gpuPixels = null;
                 renderer.captureSpans(spans);
                 renderer.captureMasks(masks);

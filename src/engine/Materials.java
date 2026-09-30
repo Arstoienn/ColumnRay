@@ -331,16 +331,25 @@ final class Materials {
      * its outline - fading the silhouette too would turn a far-off tree back into a rectangle.
      */
     /**
-     * How wet the ground is at (x, y), 0 to 1, where a region is given "puddles": the share of it
-     * that is standing water. Two octaves of the smooth noise, a metre or three across and a finer
-     * ragged edge, cut at the level that leaves about that share above it, with a few centimetres
-     * of soft shore. In world coordinates, so a puddle stays where it is as you walk past it.
+     * How far into a puddle (x, y) is, where a region is given "puddles": the share of it that is
+     * standing water. Two octaves of the smooth noise, a metre or three across and a finer ragged
+     * edge, less the level that leaves about that share above it - so above 0 is water and a
+     * little below it is the damp ground around it. In world coordinates, so a puddle stays where
+     * it is as you walk past it.
      */
     static double puddle(double x, double y, double cover) {
         double n = 0.7 * noise(x * 0.35, y * 0.35) + 0.3 * noise(x * 1.3 + 17, y * 1.3 + 5);
         double th = 0.5 + (0.5 - cover) * 0.5;
-        return step(th - 0.02, th + 0.02, n);
+        return n - th;
     }
+
+    /** Standing water, 0 to 1, from puddle(): a short shore, since water has an edge. */
+    static double water(double d) { return step(-0.005, 0.015, d); }
+
+    /** Damp, 0 to 1: reaching well outside the water and fading, so a puddle sits in a darker
+     *  patch that has no edge of its own. A dark rim that stopped as sharply as the water read as a
+     *  shadow, which is what the first puddles looked like. */
+    static double damp(double d) { return step(-0.14, 0, d); }
 
     static double mask(int kind, double s, double t, double w) {
         switch (kind) {
