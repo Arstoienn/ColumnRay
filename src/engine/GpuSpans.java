@@ -20,7 +20,10 @@ package engine;
  *     x   y0   y1   mat
  *     u   z0   dz   light
  *     w   sq   rgb  kind
- *     tex puddles -  -
+ *     tex puddles tag -
+ *
+ * where tag is 0 for what the eye sees and k for what the column's k-th pane of glass reflects
+ * (Renderer's mirror columns), so a column's list holds both and the shader picks by tag.
  *
  * where z0 + dz * row is the height in metres of the pixel in row {@code row}, w is how wide one
  * pixel is on this surface, and sq is how square-on the ray meets it - the two numbers the
@@ -131,7 +134,7 @@ final class GpuSpans {
      * thing it touches is the drop counter, and that is only ever a count of something going wrong.
      */
     boolean add(int x, int y0, int y1, double u, double light, double w, double sq, int mat, int rgb,
-                double fog, int lm, int tex) {
+                double fog, int lm, int tex, int tag) {
         int at = slot(x, y0, y1);
         if (at < 0) return false;
         data[at + 4] = (float) u;
@@ -141,13 +144,14 @@ final class GpuSpans {
         data[at + 9] = (float) sq;
         data[at + 12] = tex;
         data[at + 13] = 0;
+        data[at + 14] = tag;
         head(at, x, y0, y1, mat, light, rgb, 0);
         return true;
     }
 
     /** One stretch of a floor, a ceiling or a shape's top or bottom. */
     boolean addPlane(int x, int y0, int y1, double z, double slope, double light, int mat, int rgb,
-                     int lm, int tex, double puddles) {
+                     int lm, int tex, double puddles, int tag) {
         int at = slot(x, y0, y1);
         if (at < 0) return false;
         data[at + 4] = (float) z;
@@ -155,6 +159,7 @@ final class GpuSpans {
         data[at + 6] = lm;
         data[at + 12] = tex;
         data[at + 13] = (float) puddles;          // a floor's standing water, for its reflection
+        data[at + 14] = tag;
         head(at, x, y0, y1, mat, light, rgb, 1);
         return true;
     }
@@ -169,7 +174,8 @@ final class GpuSpans {
         if (data[prev + 11] != kind || data[prev + 3] != mat || data[prev + 10] != rgb
                 || data[prev + 7] != (float) light) return false;
         for (int i = 4; i <= 9; i++) if (data[prev + i] != data[at + i]) return false;
-        if (data[prev + 12] != data[at + 12] || data[prev + 13] != data[at + 13]) return false;
+        if (data[prev + 12] != data[at + 12] || data[prev + 13] != data[at + 13]
+                || data[prev + 14] != data[at + 14]) return false;
         if (data[prev + 2] == y0) { data[prev + 2] = y1; return true; }
         if (data[prev + 1] == y1) { data[prev + 1] = y0; return true; }
         return false;
