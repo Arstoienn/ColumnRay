@@ -580,22 +580,15 @@ final class GpuWalls implements AutoCloseable {
                 ivec2 source() { return ivec2(gl_FragCoord.xy); }
                 #endif
 
-                void main() {
-                    ivec2 at = source();
-                    int col = at.x;
-                    // The column's ray, worked out the way Column.render does, so the floor lands
-                    // on the same square of tile on both sides.
-                    float off = (float(col) + 0.5 - halfW) / foc;
-                    rayX = dirX - dirY * off;
-                    rayY = dirY + dirX * off;
-                    dk = 1.0;
-                    // glReadPixels hands back the bottom row first, and the renderer's row 0 is
-                    // the top one, so the two flips cancel: shade framebuffer row j as row j and
-                    // the array that comes back is already the right way up.
-                    int row = at.y;
+                /** One pixel of the column as the renderer painted it, masks and all: what a
+                 *  puddle is made of, and what it reflects. wet and wetZ say whether the row is
+                 *  a floor with standing water, and at what height. */
+                vec3 pixelAt(int col, int row, out float wet, out float wetZ) {
                     vec2 have = texelFetch(spans, ivec2(0, col), 0).rg;   // the row's header
                     int n = int(have.x);
                     vec3 colour = vec3(-1.0);          // nothing has claimed this row yet
+                    wet = 0.0;
+                    wetZ = 0.0;
                     for (int s = 0; s < n; s++) {
                         int at = 1 + s * 4;                  // past the header texel
                         vec4 a = texelFetch(spans, ivec2(at, col), 0);
@@ -611,18 +604,92 @@ final class GpuWalls implements AutoCloseable {
                         } else {
                             colour = planeColour(mat, lm, rec, c.z, b.w,
                                     (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc), row);
+                            wet = e.y;
+                            wetZ = b.x;
                         }
                         break;
                     }
                     if (colour.r < 0.0) colour = sky(row);   // Renderer.fillRest
                     // Renderer.blendMasked, in the same place: over the finished column.
-                    colour = blendMasks(col, row, int(have.y), colour);
+                    return blendMasks(col, row, int(have.y), colour);
+                }
+
+                /** Renderer.depthOf: how far away the surface in this row is, infinite for sky. */
+                float depthAt(int col, int row) {
+                    int n = int(texelFetch(spans, ivec2(0, col), 0).x);
+                    for (int s = 0; s < n; s++) {
+                        int at = 1 + s * 4;
+                        vec4 a = texelFetch(spans, ivec2(at, col), 0);
+                        if (row < int(a.y) || row >= int(a.z)) continue;
+                        vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
+                        if (c.w == 0.0) return c.x * foc / dk;
+                        vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
+                        float d = (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc);
+                        return d > 0.0 ? d : 1e30;
+                    }
+                    return 1e30;
+                }
+
+                /** Materials.puddle. */
+                float puddleAt(float x, float y, float cover) {
+                    float n = 0.7 * valueNoise(x * 0.35, y * 0.35) + 0.3 * valueNoise(x * 1.3 + 17.0, y * 1.3 + 5.0);
+                    float th = 0.5 + (0.5 - cover) * 0.5;
+                    return smoothstep(th - 0.02, th + 0.02, n);
+                }
+
+                /** Renderer.mirrored: walk up the column to what the puddle's ray meets. */
+                vec3 mirroredAt(int col, int row, float t, float z) {
+                    float K = foc * (eye - z) / (t * dk);
+                    int top = int(floor(hz - K));
+                    for (int yy = row - 1; yy >= 0 && yy >= top; yy--) {
+                        float c = (float(yy) + 0.5 - hz) / K + 1.0;
+                        if (c <= 0.0) break;
+                        float tr = 2.0 * t / c, d = depthAt(col, yy);
+                        if (tr >= d && tr - d <= REFLECT_THICK + 0.1 * d) {
+                            float w, wz;
+                            return pixelAt(col, yy, w, wz);
+                        }
+                    }
+                    return sky(max(0, top));
+                }
+
+                void main() {
+                    ivec2 at = source();
+                    int col = at.x;
+                    // The column's ray, worked out the way Column.render does, so the floor lands
+                    // on the same square of tile on both sides.
+                    float off = (float(col) + 0.5 - halfW) / foc;
+                    rayX = dirX - dirY * off;
+                    rayY = dirY + dirX * off;
+                    dk = 1.0;
+                    // glReadPixels hands back the bottom row first, and the renderer's row 0 is
+                    // the top one, so the two flips cancel: shade framebuffer row j as row j and
+                    // the array that comes back is already the right way up.
+                    int row = at.y;
+                    float cover, z;
+                    vec3 colour = pixelAt(col, row, cover, z);
+                    if (cover > 0.0) {                       // Renderer.reflect
+                        float t = (eye - z) * foc / ((float(row) + 0.5 - hz) * dk);
+                        if (t > 0.0 && t <= maxDist) {
+                            float wet = cover >= 2.0 ? 1.0 : puddleAt(camX + rayX * t, camY + rayY * t, cover);
+                            if (wet > 0.004) {
+                                float v = eye - z, h = t * length(vec2(rayX, rayY));
+                                float k = 1.0 - v / sqrt(h * h + v * v);
+                                float f = wet * (WATER_F0 + (1.0 - WATER_F0) * k * k * k * k * k);
+                                if (cover < 2.0) colour = mixPixel(colour, vec3(0.0), wet * WET_DARK);
+                                if (f > 0.004) colour = mixPixel(colour, mirroredAt(col, row, t, z), f);
+                            }
+                        }
+                    }
                     frag = vec4(colour / 255.0, 1.0);
                 }
                 """.formatted(images == null ? "" : "#define HAS_IMAGES 1", warped ? "#define WARPED 1" : "",
                         GlMaterials.SIDE, GlMaterials.FLAT,
                         tables() + (lights == null ? GpuLights.absent() : lights.glsl())
                                 + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + mats.glsl()),
-                        GlMaterials.MASK + GpuMasks.GLSL);
+                        GlMaterials.MASK + GpuMasks.GLSL)
+                .replace("REFLECT_THICK", Float.toString((float) Renderer.REFLECT_THICK))
+                .replace("WATER_F0", Float.toString((float) Renderer.WATER_F0))
+                .replace("WET_DARK", Float.toString((float) Renderer.WET_DARK));
     }
 }
