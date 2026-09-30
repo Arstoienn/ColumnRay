@@ -48,9 +48,15 @@ final class GpuSpans {
     private volatile boolean anySkip;
 
     GpuSpans(int columns, int rows) {
+        this(columns, rows, 32);
+    }
+
+    /** Starting with room for {@code start} a column: what the list this one replaces had grown
+     *  to, so a buffer made bigger does not spend its first frame dropping (Host.preparePitch). */
+    GpuSpans(int columns, int rows, int start) {
         this.columns = columns;
         this.rows = rows;
-        this.perColumn = Math.min(32, MAX_PER_COLUMN);
+        this.perColumn = Math.max(1, Math.min(start, MAX_PER_COLUMN));
         this.data = new float[columns * perColumn * FLOATS];
         this.count = new int[columns];
         this.blended = new boolean[columns * rows];

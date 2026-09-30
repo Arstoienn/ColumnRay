@@ -529,7 +529,7 @@ size, read a percentile with the series beside it.
 
 ### How far the camera looks up, and what stops it
 
-`World.MAX_PITCH` is 55 degrees (45 until 2026-09-30), and it is the engine's number rather than a budget for any one
+`World.MAX_PITCH` is 50 degrees (45 until 2026-09-30, then 55 for a day), and it is the engine's number rather than a budget for any one
 map. What a tilted frame costs differs enormously - school renders 45 degrees in 9.2 ms on the
 card where Haven takes 139 - but that is the renderer's problem to solve and dynamic resolution's
 to absorb. Shortening the camera on the map that happens to be slow would hide the problem in the

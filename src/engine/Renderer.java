@@ -35,10 +35,13 @@ final class Renderer {
      *  it, rather than to have passed behind it: half a metre, and a tenth of the distance more,
      *  since a far row stands for a longer stretch of ray. */
     static final double REFLECT_THICK = 0.5;
-    /** Water on the ground: how much of a puddle is mirror looked at straight down - ten per cent,
-     *  where a physicist would say two, because a puddle is seen against dry ground and reads by
-     *  contrast - and how much darker wet ground is than dry, which is the other half of seeing it. */
-    static final double WATER_F0 = 0.10, WET_DARK = 0.5;
+    /** Water on the ground: how much of a puddle is mirror looked at straight down - thirty per
+     *  cent, where a physicist would say two, because a puddle is seen against dry ground and reads
+     *  by contrast (at ten it read as a stain) - how much darker the water is than dry ground, and
+     *  how much of that the damp ground around it takes (Materials.damp). */
+    static final double WATER_F0 = 0.3, WET_DARK = 0.6, RIM = 0.3;
+    /** A pool's: its own colour is water's already, and at thirty it lost its blue to the mirror. */
+    static final double POOL_F0 = 0.10;
     /** What a floor of water - a pool, a pond - stands for where a puddle's share would go: water
      *  everywhere, and nothing to darken, since its own colour is already water's. */
     static final double POOL = 2;
@@ -2033,6 +2036,9 @@ final class Renderer {
         /** The column as it was before any reflection went in: a puddle reflects the picture, not
          *  another puddle's reflection of it, and the card, which cannot write back, does the same. */
         private int[] before;
+        /** depthOf for every row of this column, NaN where it is sky, and the highest row painted. */
+        private double[] rowDepth;
+        private int painted;
 
         private void keep(int y0, int y1, double t, double z, double slope) {
             if (segN == segY0.length) {
@@ -2081,17 +2087,38 @@ final class Renderer {
         private void reflect() {
             if (before == null || before.length < H) before = new int[H];
             for (int y = 0; y < H; y++) before[y] = pixels[y * W + x];
+            // Every row's distance, once: mirrored() asked depthOf, which searches the runs, of
+            // each row it passed, and a walk up a buffer made tall for this (Warp.reachUp) passes
+            // thousands. Filled as depthOf answers - the first run holding a row - and the rows no
+            // run holds, the sky, above all of them are where no walk can meet anything.
+            if (rowDepth == null || rowDepth.length < H) rowDepth = new double[H];
+            Arrays.fill(rowDepth, 0, H, Double.NaN);
+            painted = H;
+            for (int k = 0; k < segN; k++) {
+                painted = Math.min(painted, segY0[k]);
+                for (int y = Math.max(0, segY0[k]); y < Math.min(H, segY1[k]); y++) {
+                    if (!Double.isNaN(rowDepth[y])) continue;
+                    double d;
+                    if (segT[k] > 0) d = segT[k];
+                    else {
+                        d = (eye - segZ[k]) * F / ((y + 0.5 - hz) * dk + segSlope[k] * F);
+                        if (!(d > 0 && Double.isFinite(d))) d = Double.POSITIVE_INFINITY;
+                    }
+                    rowDepth[y] = d;
+                }
+            }
             double len = Math.hypot(rx, ry);
             for (int w = 0; w < wetN; w++) {
                 double z = wetZ[w], cover = wetCover[w];
                 for (int y = wetY0[w]; y < wetY1[w]; y++) {
                     double t = (eye - z) * F / ((y + 0.5 - hz) * dk);
                     if (!(t > 0) || t > MAX_DIST) continue;
-                    double wet = cover >= POOL ? 1 : Materials.puddle(px + rx * t, py + ry * t, cover);
-                    if (wet <= 0.004) continue;
+                    double lvl = cover >= POOL ? 1 : Materials.puddle(px + rx * t, py + ry * t, cover);
+                    double wet = cover >= POOL ? 1 : Materials.water(lvl), damp = cover >= POOL ? 1 : Materials.damp(lvl);
+                    if (damp <= 0.004) continue;
                     double v = eye - z, h = t * len, cos = v / Math.sqrt(h * h + v * v), k = 1 - cos;
-                    double f = wet * (WATER_F0 + (1 - WATER_F0) * k * k * k * k * k);
-                    int ground = cover >= POOL ? before[y] : mix(before[y], 0, wet * WET_DARK);
+                    double f0 = cover >= POOL ? POOL_F0 : WATER_F0, f = wet * (f0 + (1 - f0) * k * k * k * k * k);
+                    int ground = cover >= POOL ? before[y] : mix(before[y], 0, (RIM * damp + (1 - RIM) * wet) * WET_DARK);
                     pixels[y * W + x] = f <= 0.004 ? ground : mix(ground, mirrored(y, t, z), f);
                 }
             }
@@ -2109,14 +2136,16 @@ final class Renderer {
          */
         private int mirrored(int y, double t, double z) {
             double K = F * (eye - z) / (t * dk);
-            int top = (int) Math.floor(hz - K);
-            for (int yy = y - 1; yy >= 0 && yy >= top; yy--) {
+            int top = (int) Math.floor(Math.max(hz - K, -1e6));    // past the buffer: the sky that high
+            for (int yy = y - 1; yy >= Math.max(0, painted) && yy >= top; yy--) {
                 double c = (yy + 0.5 - hz) / K + 1;
                 if (c <= 0) break;
-                double tr = 2 * t / c, d = depthOf(yy);
+                double d = rowDepth[yy];
+                if (Double.isNaN(d)) continue;                    // sky: nothing to meet
+                double tr = 2 * t / c;
                 if (tr >= d && tr - d <= REFLECT_THICK + 0.1 * d) return before[yy];
             }
-            return sky(Math.max(0, top));
+            return sky(top);
         }
 
         private int clampRow(double v) {
