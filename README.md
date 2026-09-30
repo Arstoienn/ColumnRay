@@ -19,6 +19,11 @@ and textured geometry while keeping the column-based renderer.
   fills just the rows it is read in, and the card shades just the pixels it takes, straight into
   the tilted view
 - Procedural and image textures with mip mapping and anisotropic filtering
+- Reflections that keep to one ray per column. Standing water - a pool, or puddles on any floor a
+  map marks as wet - reflects by walking up the column it lies in, since the ray it sends back up
+  is in that column's own vertical plane. Glass shows what is behind it and reflects what is in
+  front, drawn by running the same column renderer again from the eye mirrored in the pane. Both
+  are in `maps/school.json`: glazing along the courtyard, and the courtyard after rain
 - Baked lightmaps: sun, sky, point and panel lights, soft shadows and two bounces of indirect light,
   cached on disk and reused until the map, the settings or the bake code change
 - Dynamic resolution driven by measured frame time
