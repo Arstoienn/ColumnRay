@@ -529,7 +529,7 @@ size, read a percentile with the series beside it.
 
 ### How far the camera looks up, and what stops it
 
-`World.MAX_PITCH` is 55 degrees (45 until 2026-09-30), and it is the engine's number rather than a budget for any one
+`World.MAX_PITCH` is 50 degrees (45 until 2026-09-30, then 55 for a day), and it is the engine's number rather than a budget for any one
 map. What a tilted frame costs differs enormously - school renders 45 degrees in 9.2 ms on the
 card where Haven takes 139 - but that is the renderer's problem to solve and dynamic resolution's
 to absorb. Shortening the camera on the map that happens to be slow would hide the problem in the
@@ -1140,6 +1140,26 @@ See the comments at the top of `maps/school.json`. In short:
   is made of shapes, as in an imported map; the minimap does not count it as somewhere to stand.
 - `"minimap": {"rotate": -90}` at the top level turns the minimap by quarter turns (degrees,
   clockwise), so a map can be shown the way round its players know it.
+- **Glass**: `"mask": "glass"` on a wall or a box makes its sides panes. Not a lit surface: what is
+  behind shows through darkened towards a shadow of the shape's `color` (`Materials.GLASS_ALPHA`,
+  `Renderer.GLASS_TINT`), and Fresnel (Schlick, four per cent straight on) turns it into a mirror at a
+  grazing angle. What it mirrors is what is really there: a pane is a vertical mirror, so the ray
+  it sends back is level, and what it shows is what the eye mirrored in the pane sees along the
+  mirrored ray - the same column renderer run a second time for the pane's rows, from that eye, with
+  nothing nearer than the pane (`Renderer.mirrors`, `mirror`). A point met t away projects to the
+  row it would in the view t away, so the projection carries over whole. On the card the second
+  run's spans go in tagged with the pane and are shaded from the mirrored eye (`GpuWalls.reflectAt`).
+  A reflection leaves out masked surfaces - leaves and other panes. The bake lets light through
+  glass as through the gaps in a tree, so a room behind a window is sunlit. Give a window its frame
+  as thin boxes.
+- **Puddles**: a floor of `water` is standing water everywhere and reflects on its own; `"puddles": 0.3` on any other region covers about that share of its floor with standing water
+  (`Materials.puddle`: two octaves of noise in world coordinates, so a puddle stays put). Wet ground
+  is darkened, and the water reflects what the column itself drew: a level mirror sends a ray back
+  up in the same vertical plane, which is the column's own, so the reflection is a walk up its rows
+  to the first surface nearer than the reflected ray (`Renderer.reflect`, `mirrored`), and the same
+  walk on the card (`GpuWalls.mirroredAt`). No second ray, and the column constraint untouched.
+  What the column did not draw - a wall hidden behind a nearer post - the reflection does not have.
+  On a map with puddles each column also renders the rows its puddles reflect (`Warp.mirrorRows`).
 
 ## Storeys
 

@@ -45,8 +45,11 @@ public final class World {
      * but only the pixels it reads are shaded and each column only fills the rows it can be read in,
      * so what the extra overscan costs is rays, not the whole image. Past about 55 the overscan
      * goes as one over the distance to 60.6 degrees, where the top of the screen points straight up.
+     *
+     * 50 since later the same day: looking down at water the buffer also grows upwards for what
+     * the water reflects (Warp.reachUp), and 55 was heavier than it was worth.
      */
-    public static final double MAX_PITCH = Math.toRadians(55);
+    public static final double MAX_PITCH = Math.toRadians(50);
     private static final int MAX_SHAPES = 20_000_000;
     private static final int MAX_FILES = 65_536;          // chunks, images: one map's worth
     private static final int MAX_POLY_POINTS = 100_000;
@@ -68,6 +71,7 @@ public final class World {
         int floorMat, ceilMat, wallMat;
         int floorColor, ceilColor, wallColor;
         double light;        // ambient brightness (indoor regions are dimmer)
+        double puddles;      // the share of the floor that is standing water, 0 to 1 (Materials.puddle)
         int id;              // index into World.regions
         double minX, minY, maxX, maxY;
     }
@@ -267,6 +271,10 @@ public final class World {
      */
     public double maxPitch = MAX_PITCH;
 
+    /** Has any region standing water? Then the renderer keeps what it needs to find reflections,
+     *  and each column renders the rows a puddle's reflection reads as well as its own. */
+    final boolean puddles;
+
     private World(String name, Region[] regions, Shape[] shapes, double cell,
                   double sunX, double sunY, double spawnX, double spawnY, double spawnAngle,
                   Map<String, Object> lighting) {
@@ -278,6 +286,9 @@ public final class World {
         if (!Double.isFinite(cell) || cell <= 0)
             throw new IllegalArgumentException("cell must be a finite positive size in metres");
         for (int i = 0; i < regions.length; i++) regions[i].id = i;
+        boolean wet = false;
+        for (Region r : regions) wet |= r.puddles > 0 || r.floorMat == Materials.WATER;
+        this.puddles = wet;
         for (int i = 0; i < shapes.length; i++) shapes[i].id = i;
         // -Ddebug.shapes=12,34: what those ids are, for reading back an id a debug buffer caught.
         String want = System.getProperty("debug.shapes", "");
@@ -607,6 +618,7 @@ public final class World {
         r.ceilColor = color(m, "ceilColor", "#d0d0d0");
         r.wallColor = color(m, "wallColor", "#d8d0c0");
         r.light = num(m, "light", r.sky ? 1.0 : 0.8);
+        r.puddles = Math.max(0, Math.min(1, num(m, "puddles", 0)));
         bounds(r.xs, r.ys, b -> { r.minX = b[0]; r.minY = b[1]; r.maxX = b[2]; r.maxY = b[3]; });
         return r;
     }

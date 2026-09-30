@@ -32,7 +32,7 @@ import java.util.stream.IntStream;
  */
 final class Warp {
     private boolean shear;
-    private double sin, cos, tan, hz, cx, f, vHi;
+    private double sin, cos, tan, hz, cx, f, vHi, vLo;
     private int x0, x1, y1, rw, rh, needW, needH;
 
     /** This frame's warp, and how much overscan drawing it will need. */
@@ -47,12 +47,32 @@ final class Warp {
         tan = Math.tan(pitch);
         double sMax = Math.max(rowScale(h2), rowScale(-h2));   // the widest row is the top or the bottom one
         vHi = rowSource(h2);
-        double vLo = rowSource(-h2);                            // rowSource is monotonic in v
+        vLo = rowSource(-h2);                                   // rowSource is monotonic in v
         needW = 2 * (int) Math.ceil(w2 * sMax) + 4;
         needH = (int) Math.ceil(vHi - vLo) + 4;
     }
 
     int needW() { return needW; }
+
+    /**
+     * Room above the view for what its puddles reflect, at most maxH rows in all.
+     *
+     * A puddle reflects by walking up its own column (Renderer.reflect), and the ray it walks
+     * climbs as steeply as the eye's ray fell: the bottom row of the view, v' = vLo, reflects
+     * rows up to -vLo. Looking down, those are above anything the warp reads - the buffer used
+     * to start at the top of the view, so a reflection was cut off in a straight line where the
+     * buffer ended, and looking far enough down the horizon itself was above it. So the image
+     * is made as tall above the horizon as the view reaches below it, which is only rows, not
+     * columns: the columns are the view's own. Past maxH the reflection runs out as before.
+     */
+    void reachUp(int maxH) {
+        // Whole rows, so every row the view had lands where it did, only lower in the buffer:
+        // half a row would move the horizon against the pixel grid and resample all of it.
+        int more = (int) Math.min(Math.ceil(-vLo - vHi), Math.floor(maxH - 4 - (vHi - vLo) - 1));
+        if (more <= 0) return;
+        vHi += more;
+        needH = (int) Math.ceil(vHi - vLo) + 4;
+    }
 
     int needH() { return needH; }
 
@@ -224,6 +244,17 @@ final class Warp {
     }
 
     private int[] spanA, spanB, spanY;
+
+    /**
+     * Grow each column's rows to take in the rows a puddle in it reflects: a floor at row y shows
+     * what the column has between y and its mirror about the horizon, 2 hz - y, so the column has to
+     * have drawn those too. Only on a map with standing water; everywhere else the rows the warp
+     * reads are all a column needs.
+     */
+    void mirrorRows(int[] lo, int[] hi, int srcW) {
+        for (int x = 0; x < srcW; x++)
+            if (hi[x] > lo[x]) lo[x] = Math.max(0, Math.min(lo[x], (int) Math.floor(2 * hz - hi[x])));
+    }
 
     /** The first column from x on that no row has claimed yet, shortening the path as it goes. */
     private static int unclaimed(int[] next, int x) {

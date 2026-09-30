@@ -183,7 +183,8 @@ final class GlMaterials {
                     float blades = noiseAt(s + 19.0, t * 0.25 + 41.0, 26.0, w);
                     return smoothstep(0.34, 0.5, blades + 0.55 * (1.0 - t) - 0.22);
                 }
+                if (kind == 3) return GLASS_ALPHA;                 // Materials.GLASS
                 return 1.0;
             }
-            """;
+            """.replace("GLASS_ALPHA", Float.toString((float) Materials.GLASS_ALPHA));
 }

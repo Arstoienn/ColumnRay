@@ -47,13 +47,13 @@
       "floorMat": "tile", "floorColor": "#c9c2b4", "ceilMat": "panel", "ceilColor": "#dedbd4", "wallColor": "#e4dccb" },
 
     { "name": "courtyard", "poly": [[10,11.3],[22,11.3],[22,14],[10,14]], "floor": 0,
-      "floorMat": "stone", "floorColor": "#bdb5a6" },
+      "floorMat": "stone", "floorColor": "#bdb5a6", "puddles": 0.45 },
     { "name": "courtyard", "poly": [[10,20],[22,20],[22,23],[10,23]], "floor": 0,
-      "floorMat": "stone", "floorColor": "#bdb5a6" },
+      "floorMat": "stone", "floorColor": "#bdb5a6", "puddles": 0.45 },
     { "name": "courtyard lawn", "poly": [[10,14],[13,14],[13,20],[10,20]], "floor": 0,
-      "floorMat": "grass", "floorColor": "#6f9a4a" },
+      "floorMat": "grass", "floorColor": "#6f9a4a", "puddles": 0.45 },
     { "name": "courtyard lawn", "poly": [[19,14],[22,14],[22,20],[19,20]], "floor": 0,
-      "floorMat": "grass", "floorColor": "#6f9a4a" },
+      "floorMat": "grass", "floorColor": "#6f9a4a", "puddles": 0.45 },
     { "name": "pool", "poly": [[13,14],[19,14],[19,20],[13,20]], "floor": -0.5,
       "floorMat": "water", "floorColor": "#4f93b8", "wallMat": "stone", "wallColor": "#9aa3a8" },
 
@@ -179,6 +179,20 @@
       { "type": "box", "x": 0, "y": 0, "w": 0.95, "d": 0.45, "z0": 3.6, "h": 5.5, "mat": "metal", "color": "#6d86a0" } ] },
     { "type": "array", "origin": [8.5,9.8], "count": [2,2], "step": [15,14.7], "items": [
       { "type": "circle", "c": [0,0], "r": 0.28, "z0": 3.6, "h": 4.1, "mat": "terracotta", "color": "#b0603c" },
-      { "type": "ngon", "c": [0,0], "r": 0.45, "n": 7, "z0": 4.1, "h": 5.1, "mat": "leaf", "color": "#4f7f3a", "maxDist": 25 } ] }
+      { "type": "ngon", "c": [0,0], "r": 0.45, "n": 7, "z0": 4.1, "h": 5.1, "mat": "leaf", "color": "#4f7f3a", "maxDist": 25 } ] },
+
+    // ---- Glass and water, last so every shape above keeps its id (and its lightmap's noise) ----
+    // The courtyard's north side is glazed between its columns, which stand in for mullions, with
+    // a sill and a head rail - a pane with no frame reads as nothing at all. It rained: the
+    // courtyard and both lawns hold the same share of standing water, so puddles cross the lawn's
+    // edge instead of stopping on it. In the south arcade, a glass case with a plant in it.
+    { "type": "wall", "a": [10,11.35], "b": [22,11.35], "z0": 0.12, "h": 3.05, "mask": "glass", "mat": "metal", "color": "#9fb8c8" },
+    { "type": "box", "x": 10, "y": 11.3, "w": 12, "d": 0.1, "h": 0.12, "mat": "metal", "color": "#3b3f44" },
+    { "type": "box", "x": 10, "y": 11.3, "w": 12, "d": 0.1, "z0": 3.05, "h": 3.2, "mat": "metal", "color": "#3b3f44" },
+    { "type": "box", "x": 11, "y": 21, "w": 1.6, "d": 1.1, "z0": 0.1, "h": 2.2, "mask": "glass", "mat": "metal", "color": "#a8c4b8" },
+    { "type": "box", "x": 10.95, "y": 20.95, "w": 1.7, "d": 1.2, "h": 0.1, "mat": "metal", "color": "#3b3f44" },
+    { "type": "box", "x": 10.95, "y": 20.95, "w": 1.7, "d": 1.2, "z0": 2.2, "h": 2.3, "mat": "metal", "color": "#3b3f44" },
+    { "type": "circle", "c": [11.8,21.55], "r": 0.28, "z0": 0.1, "h": 0.6, "mat": "terracotta", "color": "#b0603c" },
+    { "type": "ngon", "c": [11.8,21.55], "r": 0.42, "n": 7, "z0": 0.6, "h": 1.7, "mat": "leaf", "color": "#4f7f3a" }
   ]
 }

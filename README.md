@@ -14,8 +14,16 @@ and textured geometry while keeping the column-based renderer.
 - Column renderer with a DDA walk over a uniform acceleration grid and a bounding volume
   hierarchy per grid cell
 - Multiple storeys through stacked regions, including open-air regions and floor openings
-- True camera pitch, implemented as an exact projective warp of the column renderer's output
+- True camera pitch up to 50 degrees, implemented as an exact projective warp of the column
+  renderer's output. Only the part of the upright image the warp reads is computed: each column
+  fills just the rows it is read in, and the card shades just the pixels it takes, straight into
+  the tilted view
 - Procedural and image textures with mip mapping and anisotropic filtering
+- Reflections that keep to one ray per column. Standing water - a pool, or puddles on any floor a
+  map marks as wet - reflects by walking up the column it lies in, since the ray it sends back up
+  is in that column's own vertical plane. Glass shows what is behind it and reflects what is in
+  front, drawn by running the same column renderer again from the eye mirrored in the pane. Both
+  are in `maps/school.json`: glazing along the courtyard, and the courtyard after rain
 - Baked lightmaps: sun, sky, point and panel lights, soft shadows and two bounces of indirect light,
   cached on disk and reused until the map, the settings or the bake code change
 - Dynamic resolution driven by measured frame time
@@ -26,15 +34,15 @@ and textured geometry while keeping the column-based renderer.
 
 ## Requirements
 
-- JDK 22 or newer. The card is reached through the foreign function API, which is a preview
-  feature before 22
+- JDK 22 or newer. The buffers handed to the card are allocated through the foreign function and
+  memory API, which is a preview feature before 22
 - LWJGL 3.4.3, fetched by `build.sh` through `lib/fetch.sh` against checksums tracked in that
   script. The jars are not committed, and a jar that does not hash as the script says it should
   is deleted rather than used, so a clone needs nothing but a JDK
 - Shading on the card is the default and needs an OpenGL 3.3 core context, which GLFW asks for on
   every platform. Where the machine cannot give one - a software renderer, a virtual machine, a
   CI runner - it prints a sentence and the CPU renderer carries on, which is the whole engine.
-  `--cpu` asks for that path on purpose. On a machine with two graphics cards, which one draws is
+  `--shade cpu` asks for that path on purpose. On a machine with two graphics cards, which one draws is
   Windows' per-application preference for `java.exe` (Settings > System > Display > Graphics),
   and the card it ended up on is named on the first line of the run
 
@@ -256,7 +264,8 @@ More pictures of the map are in [ColumnRay-Haven](https://github.com/Arstoienn/C
 | `src/engine/View.java` | Where to look from, in metres and radians |
 | `src/engine/Input.java` | Keys and mouse, with no bindings in them |
 | `src/engine/Options.java` | Command line |
-| `src/engine/Warp.java` | The pitch warp |
+| `src/engine/Warp.java` | The pitch warp, and which part of the upright image it reads |
+| `src/engine/GpuWarp.java` | The tilted view on the card, which the window draws without reading it back |
 | `src/engine/Capture.java` | Headless modes: `--bench`, `--shot`, `--shots`, `--verify` |
 | `src/engine/DynamicResolution.java` | Frame-time-driven render scaling |
 | `src/engine/Minimap.java` | Minimap |

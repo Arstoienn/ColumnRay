@@ -31,6 +31,20 @@ final class Renderer {
      */
     static final double DEFAULT_FOV = 90;
     static final double NEAR = 1e-3;
+    /** How far a reflected ray may be behind the surface a row shows and still be taken to have hit
+     *  it, rather than to have passed behind it: half a metre, and a tenth of the distance more,
+     *  since a far row stands for a longer stretch of ray. */
+    static final double REFLECT_THICK = 0.5;
+    /** Water on the ground: how much of a puddle is mirror looked at straight down - thirty per
+     *  cent, where a physicist would say two, because a puddle is seen against dry ground and reads
+     *  by contrast (at ten it read as a stain) - how much darker the water is than dry ground, and
+     *  how much of that the damp ground around it takes (Materials.damp). */
+    static final double WATER_F0 = 0.3, WET_DARK = 0.6, RIM = 0.3;
+    /** A pool's: its own colour is water's already, and at thirty it lost its blue to the mirror. */
+    static final double POOL_F0 = 0.10;
+    /** What a floor of water - a pool, a pond - stands for where a puddle's share would go: water
+     *  everywhere, and nothing to darken, since its own colour is already water's. */
+    static final double POOL = 2;
     static final double MAX_DIST = 80;
     static final int MAX_STOREYS = 8;      // how many storeys can stack at one (x, y)
     /** Two faces on one plane never tie exactly: a ray meets each through its own endpoints, so
@@ -380,6 +394,13 @@ final class Renderer {
             /** Given to the card, so the CPU's own blend of it is not counted as a pixel the
              *  card was never shown. */
             boolean gpu;
+            /** A pane of glass: which of the column's reflections is its (the card's span tag), the
+             *  eye mirrored in the pane and the mirrored ray, and on the CPU the reflection itself,
+             *  a colour a row from y0 (mirrors()). */
+            int tag;
+            double ex, ey, qx, qy;
+            int[] refl;
+            boolean reflected;                 // refl holds this frame's reflection
         }
 
         private final double[] A = new double[6];          // an alpha sample; T is the colour's
@@ -556,6 +577,11 @@ final class Renderer {
             maskedN = 0;
             if (sink != null) Arrays.fill(cpuUnder, false);
             planeN = 0;
+            segN = wetN = 0;
+            near = NEAR;
+            mirror = false;
+            spanTag = 0;
+            glassN = 0;
             crossings = 0;
             cells = tests = hits = 0;
             endT = -1;
@@ -576,7 +602,9 @@ final class Renderer {
                         : "left the map, remaining rows are sky";
             }
             fillRest();
+            if (glassN > 0) mirrors();
             blendMasked();
+            if (wetN > 0 && (sink == null || under)) reflect();
 
             rayEnd[x] = endT;
             cellsVisited[x] = cells;
@@ -593,13 +621,17 @@ final class Renderer {
 
         private void walkGrid() {
             Grid g = world.grid;
-            double fx = (px - g.x0) / g.cell, fy = (py - g.y0) / g.cell;
+            // A reflection's ray starts at the mirrored eye, on the far side of the pane, and the
+            // walk starts where it comes out of the pane. For the view t0 is 0 and every term below
+            // is what it always was, to the bit.
+            double t0 = mirror ? near : 0;
+            double fx = (px + rx * t0 - g.x0) / g.cell, fy = (py + ry * t0 - g.y0) / g.cell;
             int cx = (int) Math.floor(fx), cy = (int) Math.floor(fy);
             int sx = rx > 0 ? 1 : -1, sy = ry > 0 ? 1 : -1;
             double dx = rx == 0 ? Double.POSITIVE_INFINITY : g.cell / Math.abs(rx);
             double dy = ry == 0 ? Double.POSITIVE_INFINITY : g.cell / Math.abs(ry);
-            double tx = rx == 0 ? Double.POSITIVE_INFINITY : (rx > 0 ? cx + 1 - fx : fx - cx) * dx;
-            double ty = ry == 0 ? Double.POSITIVE_INFINITY : (ry > 0 ? cy + 1 - fy : fy - cy) * dy;
+            double tx = rx == 0 ? Double.POSITIVE_INFINITY : t0 + (rx > 0 ? cx + 1 - fx : fx - cx) * dx;
+            double ty = ry == 0 ? Double.POSITIVE_INFINITY : t0 + (ry > 0 ? cy + 1 - fy : fy - cy) * dy;
 
             while (open > 0 && cx >= 0 && cy >= 0 && cx < g.nx && cy < g.ny) {
                 cells++;
@@ -730,7 +762,7 @@ final class Renderer {
 
         /** The same test for any box in x, y, z: a shape's bounds, or a whole group's. */
         private boolean hidden(double minX, double minY, double maxX, double maxY, double z0, double h, double maxDist) {
-            double t0 = NEAR, t1 = MAX_DIST;
+            double t0 = near, t1 = MAX_DIST;
             if (rx != 0) {
                 double a = (minX - px) / rx, b = (maxX - px) / rx;
                 if (a > b) { double q = a; a = b; b = q; }
@@ -785,7 +817,7 @@ final class Renderer {
                 case SEG -> {
                     if (!(s.len > 1e-9)) return false;            // a wall with no length has no normal to draw by
                     SegHit h = Geometry.raySeg(px, py, rx, ry, s.ax, s.ay, s.bx, s.by);
-                    if (h == null || h.t() <= NEAR || h.t() > s.maxDist) return false;
+                    if (h == null || h.t() <= near || h.t() > s.maxDist) return false;
                     double nx = -h.ey() / s.len, ny = h.ex() / s.len;    // edge vector rotated 90 degrees
                     boolean back = nx * rx + ny * ry > 0;
                     if (back) { nx = -nx; ny = -ny; }                      // make it face the camera
@@ -793,20 +825,20 @@ final class Renderer {
                 }
                 case CIRCLE -> {
                     Span sp = Geometry.rayCircle(px, py, rx, ry, s.cx, s.cy, s.r);
-                    if (sp == null || sp.t2() <= NEAR || sp.t1() > s.maxDist) return false;
+                    if (sp == null || sp.t2() <= near || sp.t1() > s.maxDist) return false;
                     double nx = (px + rx * sp.t1() - s.cx) / s.r;       // hit point minus centre
                     double ny = (py + ry * sp.t1() - s.cy) / s.r;
-                    return set(into, s, sp.t1(), sp.t2(), sp.t1() <= NEAR, nx, ny,
+                    return set(into, s, sp.t1(), sp.t2(), sp.t1() <= near, nx, ny,
                             (Math.atan2(ny, nx) + Math.PI) * s.r, 0);
                 }
                 case POLY -> {
                     if (!Geometry.rayPoly(px, py, rx, ry, s.xs, s.ys, poly)) return false;
-                    if (poly.t2 <= NEAR || poly.t1 > s.maxDist) return false;
+                    if (poly.t2 <= near || poly.t1 > s.maxDist) return false;
                     int i = poly.enterEdge, j = (i + 1) % s.xs.length;
                     double ex = s.xs[j] - s.xs[i], ey = s.ys[j] - s.ys[i], len = Math.hypot(ex, ey);
                     double nx = -ey / len, ny = ex / len;
                     if (nx * rx + ny * ry > 0) { nx = -nx; ny = -ny; }
-                    return set(into, s, poly.t1, poly.t2, poly.t1 <= NEAR, nx, ny, poly.enterU * len, i);
+                    return set(into, s, poly.t1, poly.t2, poly.t1 <= near, nx, ny, poly.enterU * len, i);
                 }
                 default -> {
                     return false;
@@ -977,7 +1009,7 @@ final class Renderer {
             p.owner = s;
             p.z = z;
             p.slope = slope;
-            p.t1 = Math.max(h.t1, NEAR);
+            p.t1 = Math.max(h.t1, near);
             p.t2 = Math.min(h.t2, MAX_DIST);
             p.base = s.albedoColor;
             p.surf.set(mat, s.color, k0, lm, tex, ts, s, gpu, gtex);
@@ -1310,8 +1342,15 @@ final class Renderer {
 
         /** Note the rows a masked surface could cover, clipped to the ones still open. */
         private void record(Shape s, Hit h, double t, double yTop, double yBot, Region in) {
+            if (mirror) return;                           // a reflection leaves out leaves and panes
             int ia = clampRow(yTop), ib = clampRow(yBot);
             if (ib <= ia) return;
+            boolean glass = s.mask == Materials.GLASS;
+            // A pane is a vertical mirror: the ray comes off it turned about its normal and stays
+            // level, so what it shows is what the eye mirrored in the pane sees along the mirrored
+            // ray - which passes through the same point of the pane at the same t.
+            double d = rx * h.nx + ry * h.ny, qx = rx - 2 * d * h.nx, qy = ry - 2 * d * h.ny;
+            double ex = px + rx * t - qx * t, ey = py + ry * t - qy * t;
             double span = Math.max(s.len, s.h - s.z0);
             int rows = 0;
             for (int k = 0; k < open; k++) {
@@ -1329,7 +1368,17 @@ final class Renderer {
                 m.y0 = y0;
                 m.y1 = y1;
                 m.plane = false;
+                m.tag = glass ? ++glassN : 0;
+                m.reflected = false;
+                m.ex = ex; m.ey = ey; m.qx = qx; m.qy = qy;
                 boolean cut = s.amap != null;             // a slab sawn out of a mesh, not a tree
+                if (glass) {
+                    m.gpu = maskOut != null && maskOut.addGlass(x, y0, y1, m.sq, s.color, m.tag, ex, ey, qx, qy);
+                    if (sink != null && !m.gpu)
+                        for (int y = y0; y < y1; y++) cpuUnder[y] = true;
+                    rows += y1 - y0;
+                    continue;
+                }
                 m.gpu = maskOut != null
                         && (cut ? recAlpha(s) >= 0 : s.mask >= 0)
                         && ((s.img == null && s.tex == null) || recSide(s) >= 0)
@@ -1370,7 +1419,15 @@ final class Renderer {
                     double a = Materials.mask(s.mask, m.u * invU, (z - s.z0) * invV, m.w);
                     if (a <= 0.004) continue;
                     int c;
-                    if (m.lm != null) {
+                    if (s.mask == Materials.GLASS) {
+                        // Not a lit surface: what is behind, darkened towards the tint, and the sky
+                        // in the proportion Fresnel says. a is the part of the pixel that is not
+                        // what is behind; of that, f / a is the mirror and the rest the tint.
+                        double f = glass(m.sq);
+                        a = f + (1 - f) * a;
+                        c = mix(shade(s.color, GLASS_TINT),
+                                m.reflected ? m.refl[y - m.y0] : y < hz ? sky(y) : 0x3a3c40, f / a);
+                    } else if (m.lm != null) {
                         m.lm.sample(m.u, z, L);
                         c = sideColor(s, m.u, z, m.t, m.sq, m.f, L);
                     } else {
@@ -1597,6 +1654,8 @@ final class Renderer {
                     if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked)) alone = false;
                 }
                 int rows = 0;
+                puddle = c.plane == null && c.kind == EventKind.FLOOR && c.region != null
+                        ? (c.region.floorMat == Materials.WATER ? POOL : c.region.puddles) : 0;
                 shKind = 2;
                 shSurf = c.surf;
                 shZ = c.z;
@@ -1639,6 +1698,7 @@ final class Renderer {
                     }
                 }
                 spanKind = 0;
+                puddle = 0;
                 if (tr != null && rows > 0) {
                     if (c.plane != null) notePlane(c.plane, rows);
                     else noteSurface(c.kind, c.region, ta, tb, rows);
@@ -1791,7 +1851,7 @@ final class Renderer {
                 for (int k = 0; k < open; k++)
                     for (int y = o0[k]; y < o1[k]; y++)
                         if (cpuUnder[y]) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
-            if (albedo != null)
+            if (albedo != null && !mirror)
                 for (int k = 0; k < open; k++)
                     for (int y = o0[k]; y < o1[k]; y++) albedo[y * W + x] = pixels[y * W + x];
             open = 0;
@@ -1831,15 +1891,15 @@ final class Renderer {
                 boolean onCard = false;
                 if (note) {
                     if (spanKind == 1) onCard = sink.add(x, s0, s1, spanU, spanLight, spanW, spanSq,
-                            spanMat, spanRgb, spanFog, spanLm, spanTex);
+                            spanMat, spanRgb, spanFog, spanLm, spanTex, spanTag);
                     else if (spanKind == 2) onCard = sink.addPlane(x, s0, s1, spanZ, spanSlope,
-                            spanLight, spanMat, spanRgb, spanLm, spanTex);
+                            spanLight, spanMat, spanRgb, spanLm, spanTex, puddle, spanTag);
                     else for (int y = s0; y < s1; y++) sink.skip(x, y);
                     // Rows the card has not got are the CPU's, and so is anything blended on top
                     // of them: the blend needs something underneath, and this is where it says so.
                     if (!onCard) for (int y = s0; y < s1; y++) cpuUnder[y] = true;
                 }
-                if (depth == null) {
+                if (depth == null || mirror) {                  // a reflection has no depth of its own
                     for (int y = s0; y < s1; y++)
                         if (under || !onCard || cpuUnder[y]) pixels[y * W + x] = shadeRow(y);
                 } else {
@@ -1858,6 +1918,7 @@ final class Renderer {
                     }
                 }
                 filled += s1 - s0;
+                if (world.puddles) keep(s0, s1, t, z, slope);
                 if (s0 > o0[k]) { n0[m] = o0[k]; n1[m++] = s0; }   // leftover above
                 if (o1[k] > s1) { n0[m] = s1; n1[m++] = o1[k]; }   // leftover below
             }
@@ -1865,6 +1926,226 @@ final class Renderer {
             o0 = n0; o1 = n1; n0 = t0; n1 = t1;
             open = m;
             return filled;
+        }
+
+        // ---- Glass: a second level ray, from the eye mirrored in the pane ----
+
+        /**
+         * What each pane in this column reflects, drawn by a second column into the pane's own
+         * rows. On the card that column's spans go in tagged with the pane, and the card shades
+         * them from the mirrored eye (GpuWalls.reflectAt); on the CPU it paints the rows here,
+         * they are kept in the pane's entry, and what was behind the pane is put back.
+         */
+        private void mirrors() {
+            if (child == null) child = new Column();
+            if (saved == null || saved.length < H) saved = new int[H];
+            for (int i = 0; i < maskedN; i++) {
+                Masked m = masked.get(i);
+                if (m.plane || m.tag == 0) continue;
+                boolean cpu = sink == null || under || !m.gpu;
+                int n = m.y1 - m.y0;
+                if (cpu) for (int y = m.y0; y < m.y1; y++) saved[y] = pixels[y * W + x];
+                child.mirror(this, m, cpu);
+                if (cpu) {
+                    if (m.refl == null || m.refl.length < n) m.refl = new int[Math.max(n, 16)];
+                    for (int y = m.y0; y < m.y1; y++) {
+                        m.refl[y - m.y0] = pixels[y * W + x];
+                        pixels[y * W + x] = saved[y];
+                    }
+                    m.reflected = true;
+                }
+            }
+        }
+
+        /**
+         * Draw into {@code m}'s rows what its pane reflects: the same column renderer, looking from
+         * the eye mirrored in the pane along the mirrored ray, with nothing nearer than the pane.
+         * The pane is a vertical mirror, so the mirrored ray is level and the mirrored eye at the
+         * same height, and a point it meets t away projects to the same row it would in the view
+         * t away - the whole of the projection carries over, and the column constraint with it.
+         */
+        void mirror(Column parent, Masked m, boolean cpu) {
+            x = parent.x;
+            // The card is told whenever it has the pane, and the CPU colours the rows whenever it
+            // needs them - both at once when the renderer is asked to shade under the card too.
+            sink = parent.sink != null && m.gpu ? parent.sink : null;
+            maskOut = null;
+            mats = parent.mats;
+            under = cpu || parent.under;
+            px = m.ex;
+            py = m.ey;
+            rx = m.qx;
+            ry = m.qy;
+            eye = parent.eye;
+            hz = parent.hz;
+            dk = parent.dk;
+            lit = parent.lit;
+            baked = parent.baked;
+            mirror = true;
+            spanTag = m.tag;
+            near = m.t * (1 + 1e-9) + 1e-4;              // just past the pane, and never the pane itself
+            open = 1;
+            o0[0] = m.y0;
+            o1[0] = m.y1;
+            if (++ray == Integer.MAX_VALUE) { Arrays.fill(stamp, 0); ray = 1; }
+            stamp[m.s.id] = ray;
+            pendN = sortedN = 0;
+            maskedN = 0;
+            if (sink != null) Arrays.fill(cpuUnder, false);
+            planeN = 0;
+            segN = wetN = 0;
+            glassN = 0;
+            crossings = 0;
+            cells = tests = hits = 0;
+            endT = -1;
+            lastT = 0;
+            tr = null;
+            stackN = world.regionsAt(px + rx * m.t, py + ry * m.t, stack);   // the pane's side of it
+            tPrev = near;
+            nextCross(near);
+            walkGrid();
+            flush(Double.POSITIVE_INFINITY);
+            surfaces(tPrev, MAX_DIST);
+            fillRest();
+        }
+
+        // ---- Puddles: a reflection found in the column itself ----
+
+        /** How near a surface may be and still be drawn: NEAR for the view, and just past the pane
+         *  for a column drawing what a pane reflects, since that ray starts at the mirrored eye. */
+        private double near = NEAR;
+        /** This column is drawing what a pane of glass reflects, for another column (mirror()). */
+        private boolean mirror;
+        /** Which reflection the card's spans belong to: 0 for the view itself (GpuSpans). */
+        private int spanTag;
+        /** Panes met so far, and the column that draws their reflections, made when first needed. */
+        private int glassN;
+        private Column child;
+        private int[] saved;
+
+        /** The share of standing water on the floor paint() is filling now, or 0 (World.Region). */
+        private double puddle;
+        /** What each painted run of this column is, so a reflection can ask how far away a row is:
+         *  t for a wall, and z and slope for a plane. Kept only on a map with puddles. */
+        private int segN, wetN;
+        private int[] segY0 = new int[64], segY1 = new int[64];
+        private double[] segT = new double[64], segZ = new double[64], segSlope = new double[64];
+        /** The runs of wet floor, which reflect() goes back over. */
+        private int[] wetY0 = new int[16], wetY1 = new int[16];
+        private double[] wetZ = new double[16], wetCover = new double[16];
+        /** The column as it was before any reflection went in: a puddle reflects the picture, not
+         *  another puddle's reflection of it, and the card, which cannot write back, does the same. */
+        private int[] before;
+        /** depthOf for every row of this column, NaN where it is sky, and the highest row painted. */
+        private double[] rowDepth;
+        private int painted;
+
+        private void keep(int y0, int y1, double t, double z, double slope) {
+            if (segN == segY0.length) {
+                int n = segN * 2;
+                segY0 = Arrays.copyOf(segY0, n); segY1 = Arrays.copyOf(segY1, n);
+                segT = Arrays.copyOf(segT, n); segZ = Arrays.copyOf(segZ, n); segSlope = Arrays.copyOf(segSlope, n);
+            }
+            segY0[segN] = y0; segY1[segN] = y1; segT[segN] = t; segZ[segN] = z; segSlope[segN] = slope;
+            segN++;
+            if (puddle > 0) {
+                if (wetN == wetY0.length) {
+                    int n = wetN * 2;
+                    wetY0 = Arrays.copyOf(wetY0, n); wetY1 = Arrays.copyOf(wetY1, n);
+                    wetZ = Arrays.copyOf(wetZ, n); wetCover = Arrays.copyOf(wetCover, n);
+                }
+                wetY0[wetN] = y0; wetY1[wetN] = y1; wetZ[wetN] = z; wetCover[wetN] = puddle;
+                wetN++;
+            }
+        }
+
+        /** How far away the surface this column shows in row y is: infinite for the sky. */
+        private double depthOf(int y) {
+            for (int k = 0; k < segN; k++) {
+                if (y < segY0[k] || y >= segY1[k]) continue;
+                if (segT[k] > 0) return segT[k];
+                double d = (eye - segZ[k]) * F / ((y + 0.5 - hz) * dk + segSlope[k] * F);
+                return d > 0 && Double.isFinite(d) ? d : Double.POSITIVE_INFINITY;
+            }
+            return Double.POSITIVE_INFINITY;
+        }
+
+        /**
+         * Water on the floor, reflecting.
+         *
+         * A level puddle turns a ray back up at the angle it came down, and the ray it sends up is in
+         * the same vertical plane as the one that came in - the plane this column already drew, top
+         * to bottom. So the reflection is not another ray: it is a walk up this column's own rows,
+         * which is the column constraint answering a question that usually needs a second render.
+         * What the column did not draw - a wall hidden behind a nearer post - the reflection does not
+         * have, which is the screen-space reflection's one weakness, and here it is only a column's.
+         *
+         * How much of the puddle is mirror is Fresnel (WATER_F0 straight down, nearly all of it at a
+         * grazing angle), times how wet the ground is there (Materials.puddle); the ground under it
+         * is darkened by the same wetness first.
+         */
+        private void reflect() {
+            if (before == null || before.length < H) before = new int[H];
+            for (int y = 0; y < H; y++) before[y] = pixels[y * W + x];
+            // Every row's distance, once: mirrored() asked depthOf, which searches the runs, of
+            // each row it passed, and a walk up a buffer made tall for this (Warp.reachUp) passes
+            // thousands. Filled as depthOf answers - the first run holding a row - and the rows no
+            // run holds, the sky, above all of them are where no walk can meet anything.
+            if (rowDepth == null || rowDepth.length < H) rowDepth = new double[H];
+            Arrays.fill(rowDepth, 0, H, Double.NaN);
+            painted = H;
+            for (int k = 0; k < segN; k++) {
+                painted = Math.min(painted, segY0[k]);
+                for (int y = Math.max(0, segY0[k]); y < Math.min(H, segY1[k]); y++) {
+                    if (!Double.isNaN(rowDepth[y])) continue;
+                    double d;
+                    if (segT[k] > 0) d = segT[k];
+                    else {
+                        d = (eye - segZ[k]) * F / ((y + 0.5 - hz) * dk + segSlope[k] * F);
+                        if (!(d > 0 && Double.isFinite(d))) d = Double.POSITIVE_INFINITY;
+                    }
+                    rowDepth[y] = d;
+                }
+            }
+            double len = Math.hypot(rx, ry);
+            for (int w = 0; w < wetN; w++) {
+                double z = wetZ[w], cover = wetCover[w];
+                for (int y = wetY0[w]; y < wetY1[w]; y++) {
+                    double t = (eye - z) * F / ((y + 0.5 - hz) * dk);
+                    if (!(t > 0) || t > MAX_DIST) continue;
+                    double lvl = cover >= POOL ? 1 : Materials.puddle(px + rx * t, py + ry * t, cover);
+                    double wet = cover >= POOL ? 1 : Materials.water(lvl), damp = cover >= POOL ? 1 : Materials.damp(lvl);
+                    if (damp <= 0.004) continue;
+                    double v = eye - z, h = t * len, cos = v / Math.sqrt(h * h + v * v), k = 1 - cos;
+                    double f0 = cover >= POOL ? POOL_F0 : WATER_F0, f = wet * (f0 + (1 - f0) * k * k * k * k * k);
+                    int ground = cover >= POOL ? before[y] : mix(before[y], 0, (RIM * damp + (1 - RIM) * wet) * WET_DARK);
+                    pixels[y * W + x] = f <= 0.004 ? ground : mix(ground, mirrored(y, t, z), f);
+                }
+            }
+        }
+
+        /**
+         * What the ray reflected at row y's puddle, t away at height z, meets.
+         *
+         * Seen from the eye, that ray runs up the screen from the puddle's row hz + K to hz - K, the
+         * row it would reach at infinity, where K = F (eye - z) / (t dk); at row y' it is
+         * 2t / ((y' - hz) / K + 1) away. So walk up the rows: the first whose surface is nearer than
+         * the ray is there, and not by so much that the ray must have passed behind it, is what the
+         * puddle shows. The floor between the puddle and the horizon can never be it - the ray is
+         * above the floor all the way - so that needs no special case.
+         */
+        private int mirrored(int y, double t, double z) {
+            double K = F * (eye - z) / (t * dk);
+            int top = (int) Math.floor(Math.max(hz - K, -1e6));    // past the buffer: the sky that high
+            for (int yy = y - 1; yy >= Math.max(0, painted) && yy >= top; yy--) {
+                double c = (yy + 0.5 - hz) / K + 1;
+                if (c <= 0) break;
+                double d = rowDepth[yy];
+                if (Double.isNaN(d)) continue;                    // sky: nothing to meet
+                double tr = 2 * t / c;
+                if (tr >= d && tr - d <= REFLECT_THICK + 0.1 * d) return before[yy];
+            }
+            return sky(top);
         }
 
         private int clampRow(double v) {
@@ -1889,6 +2170,23 @@ final class Renderer {
     private static double fog(double t) {
         return fogOn ? Math.max(0.3, 1 - t / 45) : 1;
     }
+
+    /**
+     * How much of what a pane of glass shows is the sky it reflects rather than the glass and what
+     * is behind it, for a pane met at cos between the ray and its normal: Schlick's approximation of
+     * Fresnel, with the four per cent a pane reflects straight on. Straight on, a window is mostly
+     * window; at a grazing angle down a street it is a mirror. What it mirrors is the sky at the
+     * same height in the view, or the haze below the horizon - a vertical pane sends a ray back up at
+     * the angle it came in, and what is really there would take another ray, into another column.
+     */
+    static double glass(double cos) {
+        double k = 1 - cos;
+        return 0.04 + 0.96 * k * k * k * k * k;
+    }
+
+    /** How bright a pane's own colour is where it tints what is behind it: a shadow of it, not the
+     *  colour a wall of it would be lit to - glass scatters next to nothing. */
+    static final double GLASS_TINT = 0.35;
 
     /** src over dst, by a. */
     private static int mix(int dst, int src, double a) {

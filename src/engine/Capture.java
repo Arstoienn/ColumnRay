@@ -230,7 +230,9 @@ public final class Capture {
         // The file's own pitch column is replaced by this sweep, so a views file that names the
         // same camera at several tilts checks it several times over. That is a little wasted work
         // and no wrong answer.
-        double[] pitches = {0, 8, 17, 25, Math.toDegrees(h.pitchLimit())};
+        // Looking down as well: a puddle's reflection climbs above the view, so the buffer grows
+        // upwards there (Warp.reachUp), and until that was checked here nothing below level was.
+        double[] pitches = {0, 8, 17, 25, Math.toDegrees(h.pitchLimit()), -25, -Math.toDegrees(h.pitchLimit())};
         // The frame a window gets, warped on the card, read back here so it can be held to the
         // CPU's. -Dwarp.cpu=true checks the older path instead, which is still what a frame falls
         // back to when the card was not given all of it.
@@ -252,8 +254,12 @@ public final class Capture {
                 // size and the resize happens between comparisons rather than inside one. It wraps
                 // rather than climbing, because a step down tears the card's resources out and
                 // builds them smaller, which a ladder that only ever went up would never ask for.
-                rung = (rung + 1) % Host.scaleRungs();
-                h.stepScale(rung - h.scaleIndex());
+                // The downward tilts stay at the size before them, so the upward ones land on the
+                // sizes they always did and keep answering for the same pixels.
+                if (pitch >= 0) {
+                    rung = (rung + 1) % Host.scaleRungs();
+                    h.stepScale(rung - h.scaleIndex());
+                }
                 // Frames thrown away until the lists stop growing: they start small and double
                 // when a column runs out, so the first frames at a new tilt legitimately hand rows
                 // back to the CPU. What is being checked is the steady state, not the climb to it,

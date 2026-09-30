@@ -267,8 +267,8 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "viewH", (float) viewH);
         Gl.uniform(program, "foc", (float) focal);
         Gl.uniform(program, "halfW", w / 2.0f);
-        Gl.uniform(program, "camX", (float) cam.x);
-        Gl.uniform(program, "camY", (float) cam.y);
+        Gl.uniform(program, "viewX", (float) cam.x);
+        Gl.uniform(program, "viewY", (float) cam.y);
         Gl.uniform(program, "dirX", (float) cam.dirX);
         Gl.uniform(program, "dirY", (float) cam.dirY);
         Gl.uniform(program, "fogOn", Renderer.fogOn ? 1f : 0f);
@@ -362,7 +362,10 @@ final class GpuWalls implements AutoCloseable {
                 %s
                 %s
                 uniform sampler2D spans;
-                uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, camX, camY, dirX, dirY;
+                uniform float height, viewH, satBoost, lift, eye, hz, foc, halfW, viewX, viewY, dirX, dirY;
+                // Where the ray this pixel is shaded along starts: the eye, or the eye mirrored in a
+                // pane while its reflection is shaded (reflectAt). Not uniforms, for that reason.
+                float camX, camY;
                 uniform float fogOn, maxDist, hdr, exposure;
                 float rayX, rayY, dk;
                 out vec4 frag;
@@ -580,7 +583,126 @@ final class GpuWalls implements AutoCloseable {
                 ivec2 source() { return ivec2(gl_FragCoord.xy); }
                 #endif
 
+                /** One pixel of the column as the renderer painted it, masks and all: what a
+                 *  puddle is made of, and what it reflects. wet and wetZ say whether the row is
+                 *  a floor with standing water, and at what height. */
+                /** The surface the spans tagged tag put in this row, or -1 where none do. */
+                vec3 surfaceAt(int col, int row, int tag, out float wet, out float wetZ) {
+                    int n = int(texelFetch(spans, ivec2(0, col), 0).x);
+                    vec3 colour = vec3(-1.0);          // nothing has claimed this row yet
+                    wet = 0.0;
+                    wetZ = 0.0;
+                    for (int s = 0; s < n; s++) {
+                        int at = 1 + s * 4;                  // past the header texel
+                        vec4 a = texelFetch(spans, ivec2(at, col), 0);
+                        if (row < int(a.y) || row >= int(a.z)) continue;
+                        vec4 e = texelFetch(spans, ivec2(at + 3, col), 0);
+                        if (int(e.z) != tag) continue;       // another pane's reflection, or the view's
+                        vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
+                        vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
+                        int mat = int(a.w), lm = int(b.z), rec = int(e.x);
+                        if (c.w == 0.0) {
+                            float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
+                            colour = wallColour(mat, lm, rec, c.z, b.x, z, c.x, c.y,
+                                    lm < 0 ? b.w : b.y);
+                        } else {
+                            colour = planeColour(mat, lm, rec, c.z, b.w,
+                                    (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc), row);
+                            wet = e.y;
+                            wetZ = b.x;
+                        }
+                        break;
+                    }
+                    return colour;
+                }
+
+                vec3 pixelAt(int col, int row, out float wet, out float wetZ) {
+                    vec3 colour = surfaceAt(col, row, 0, wet, wetZ);
+                    if (colour.r < 0.0) colour = sky(row);   // Renderer.fillRest
+                    // Renderer.blendMasked, in the same place: over the finished column.
+                    return blendMasks(col, row, int(texelFetch(spans, ivec2(0, col), 0).y), colour);
+                }
+
+                /** Renderer.mirror, shaded: what the tag-th pane in this column reflects in this
+                 *  row, seen from the eye mirrored in it, e, along the mirrored ray, q. */
+                vec3 reflectAt(int col, int row, int tag, vec2 e, vec2 q) {
+                    float sx = camX, sy = camY, qx = rayX, qy = rayY;
+                    camX = e.x; camY = e.y; rayX = q.x; rayY = q.y;
+                    float w, wz;
+                    vec3 c = surfaceAt(col, row, tag, w, wz);
+                    camX = sx; camY = sy; rayX = qx; rayY = qy;
+                    return c.r < 0.0 ? sky(row) : c;
+                }
+
+                /** Renderer.depthOf: how far away the surface in this row is, infinite for sky. */
+                float depthAt(int col, int row) {
+                    int n = int(texelFetch(spans, ivec2(0, col), 0).x);
+                    for (int s = 0; s < n; s++) {
+                        int at = 1 + s * 4;
+                        vec4 a = texelFetch(spans, ivec2(at, col), 0);
+                        if (row < int(a.y) || row >= int(a.z)) continue;
+                        if (int(texelFetch(spans, ivec2(at + 3, col), 0).z) != 0) continue;
+                        vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
+                        if (c.w == 0.0) return c.x * foc / dk;
+                        vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
+                        float d = (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc);
+                        return d > 0.0 ? d : 1e30;
+                    }
+                    return 1e30;
+                }
+
+                /** Materials.puddle: how far into a puddle, water above 0. */
+                float puddleAt(float x, float y, float cover) {
+                    float n = 0.7 * valueNoise(x * 0.35, y * 0.35) + 0.3 * valueNoise(x * 1.3 + 17.0, y * 1.3 + 5.0);
+                    float th = 0.5 + (0.5 - cover) * 0.5;
+                    return n - th;
+                }
+
+                /**
+                 * Renderer.mirrored: walk up the column to what the puddle's ray meets - the
+                 * lowest row above the puddle that it meets, found span by span rather than row by
+                 * row. Asking depthAt of every row went through every span of the column for each,
+                 * and a walk up a buffer made tall for the water to reflect (Warp.reachUp) is
+                 * thousands of rows: enough to hang the card. A row no span covers is sky and is
+                 * never met, and each span is walked from its bottom up with depthAt's own
+                 * arithmetic, so what is found is exactly what the row walk found.
+                 */
+                vec3 mirroredAt(int col, int row, float t, float z) {
+                    float K = foc * (eye - z) / (t * dk);
+                    int top = int(floor(max(hz - K, -1e6)));
+                    int lo = max(top, 0), best = -1;
+                    int n = int(texelFetch(spans, ivec2(0, col), 0).x);
+                    for (int s = 0; s < n; s++) {
+                        int at = 1 + s * 4;
+                        vec4 a = texelFetch(spans, ivec2(at, col), 0);
+                        int y0 = max(max(int(a.y), lo), best + 1), y1 = min(int(a.z), row);
+                        if (y1 <= y0) continue;
+                        if (int(texelFetch(spans, ivec2(at + 3, col), 0).z) != 0) continue;
+                        vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
+                        vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
+                        for (int yy = y1 - 1; yy >= y0; yy--) {
+                            float cc = (float(yy) + 0.5 - hz) / K + 1.0;
+                            if (cc <= 0.0) break;
+                            float d;
+                            if (c.w == 0.0) d = c.x * foc / dk;
+                            else {
+                                d = (eye - b.x) * foc / ((float(yy) + 0.5 - hz) * dk + b.y * foc);
+                                if (!(d > 0.0)) d = 1e30;
+                            }
+                            float tr = 2.0 * t / cc;
+                            if (tr >= d && tr - d <= REFLECT_THICK + 0.1 * d) { best = yy; break; }
+                        }
+                    }
+                    if (best >= 0) {
+                        float w, wz;
+                        return pixelAt(col, best, w, wz);
+                    }
+                    return sky(top);
+                }
+
                 void main() {
+                    camX = viewX;
+                    camY = viewY;
                     ivec2 at = source();
                     int col = at.x;
                     // The column's ray, worked out the way Column.render does, so the floor lands
@@ -593,36 +715,34 @@ final class GpuWalls implements AutoCloseable {
                     // the top one, so the two flips cancel: shade framebuffer row j as row j and
                     // the array that comes back is already the right way up.
                     int row = at.y;
-                    vec2 have = texelFetch(spans, ivec2(0, col), 0).rg;   // the row's header
-                    int n = int(have.x);
-                    vec3 colour = vec3(-1.0);          // nothing has claimed this row yet
-                    for (int s = 0; s < n; s++) {
-                        int at = 1 + s * 4;                  // past the header texel
-                        vec4 a = texelFetch(spans, ivec2(at, col), 0);
-                        if (row < int(a.y) || row >= int(a.z)) continue;
-                        vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
-                        vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
-                        vec4 e = texelFetch(spans, ivec2(at + 3, col), 0);
-                        int mat = int(a.w), lm = int(b.z), rec = int(e.x);
-                        if (c.w == 0.0) {
-                            float z = eye - (float(row) + 0.5 - hz) * c.x;   // Renderer's own formula
-                            colour = wallColour(mat, lm, rec, c.z, b.x, z, c.x, c.y,
-                                    lm < 0 ? b.w : b.y);
-                        } else {
-                            colour = planeColour(mat, lm, rec, c.z, b.w,
-                                    (eye - b.x) * foc / ((float(row) + 0.5 - hz) * dk + b.y * foc), row);
+                    float cover, z;
+                    vec3 colour = pixelAt(col, row, cover, z);
+                    if (cover > 0.0) {                       // Renderer.reflect
+                        float t = (eye - z) * foc / ((float(row) + 0.5 - hz) * dk);
+                        if (t > 0.0 && t <= maxDist) {
+                            float lvl = cover >= 2.0 ? 1.0 : puddleAt(camX + rayX * t, camY + rayY * t, cover);
+                            float wet = cover >= 2.0 ? 1.0 : smoothstep(-0.005, 0.015, lvl);     // Materials.water
+                            float damp = cover >= 2.0 ? 1.0 : smoothstep(-0.14, 0.0, lvl);       // Materials.damp
+                            if (damp > 0.004) {
+                                float v = eye - z, h = t * length(vec2(rayX, rayY));
+                                float k = 1.0 - v / sqrt(h * h + v * v);
+                                float f0 = cover >= 2.0 ? POOL_F0 : WATER_F0, f = wet * (f0 + (1.0 - f0) * k * k * k * k * k);
+                                if (cover < 2.0) colour = mixPixel(colour, vec3(0.0), (WET_RIM * damp + (1.0 - WET_RIM) * wet) * WET_DARK);
+                                if (f > 0.004) colour = mixPixel(colour, mirroredAt(col, row, t, z), f);
+                            }
                         }
-                        break;
                     }
-                    if (colour.r < 0.0) colour = sky(row);   // Renderer.fillRest
-                    // Renderer.blendMasked, in the same place: over the finished column.
-                    colour = blendMasks(col, row, int(have.y), colour);
                     frag = vec4(colour / 255.0, 1.0);
                 }
                 """.formatted(images == null ? "" : "#define HAS_IMAGES 1", warped ? "#define WARPED 1" : "",
                         GlMaterials.SIDE, GlMaterials.FLAT,
                         tables() + (lights == null ? GpuLights.absent() : lights.glsl())
                                 + (images == null ? "" : images.glsl(FIRST_IMAGE_UNIT) + mats.glsl()),
-                        GlMaterials.MASK + GpuMasks.GLSL);
+                        GlMaterials.MASK + GpuMasks.GLSL)
+                .replace("REFLECT_THICK", Float.toString((float) Renderer.REFLECT_THICK))
+                .replace("WATER_F0", Float.toString((float) Renderer.WATER_F0))
+                .replace("POOL_F0", Float.toString((float) Renderer.POOL_F0))
+                .replace("WET_DARK", Float.toString((float) Renderer.WET_DARK))
+                .replace("WET_RIM", Float.toString((float) Renderer.RIM));
     }
 }
