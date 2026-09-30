@@ -14,7 +14,7 @@ and textured geometry while keeping the column-based renderer.
 - Column renderer with a DDA walk over a uniform acceleration grid and a bounding volume
   hierarchy per grid cell
 - Multiple storeys through stacked regions, including open-air regions and floor openings
-- True camera pitch up to 55 degrees, implemented as an exact projective warp of the column
+- True camera pitch up to 50 degrees, implemented as an exact projective warp of the column
   renderer's output. Only the part of the upright image the warp reads is computed: each column
   fills just the rows it is read in, and the card shades just the pixels it takes, straight into
   the tilted view

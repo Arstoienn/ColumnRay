@@ -651,27 +651,53 @@ final class GpuWalls implements AutoCloseable {
                     return 1e30;
                 }
 
-                /** Materials.puddle. */
+                /** Materials.puddle: how far into a puddle, water above 0. */
                 float puddleAt(float x, float y, float cover) {
                     float n = 0.7 * valueNoise(x * 0.35, y * 0.35) + 0.3 * valueNoise(x * 1.3 + 17.0, y * 1.3 + 5.0);
                     float th = 0.5 + (0.5 - cover) * 0.5;
-                    return smoothstep(th - 0.02, th + 0.02, n);
+                    return n - th;
                 }
 
-                /** Renderer.mirrored: walk up the column to what the puddle's ray meets. */
+                /**
+                 * Renderer.mirrored: walk up the column to what the puddle's ray meets - the
+                 * lowest row above the puddle that it meets, found span by span rather than row by
+                 * row. Asking depthAt of every row went through every span of the column for each,
+                 * and a walk up a buffer made tall for the water to reflect (Warp.reachUp) is
+                 * thousands of rows: enough to hang the card. A row no span covers is sky and is
+                 * never met, and each span is walked from its bottom up with depthAt's own
+                 * arithmetic, so what is found is exactly what the row walk found.
+                 */
                 vec3 mirroredAt(int col, int row, float t, float z) {
                     float K = foc * (eye - z) / (t * dk);
-                    int top = int(floor(hz - K));
-                    for (int yy = row - 1; yy >= 0 && yy >= top; yy--) {
-                        float c = (float(yy) + 0.5 - hz) / K + 1.0;
-                        if (c <= 0.0) break;
-                        float tr = 2.0 * t / c, d = depthAt(col, yy);
-                        if (tr >= d && tr - d <= REFLECT_THICK + 0.1 * d) {
-                            float w, wz;
-                            return pixelAt(col, yy, w, wz);
+                    int top = int(floor(max(hz - K, -1e6)));
+                    int lo = max(top, 0), best = -1;
+                    int n = int(texelFetch(spans, ivec2(0, col), 0).x);
+                    for (int s = 0; s < n; s++) {
+                        int at = 1 + s * 4;
+                        vec4 a = texelFetch(spans, ivec2(at, col), 0);
+                        int y0 = max(max(int(a.y), lo), best + 1), y1 = min(int(a.z), row);
+                        if (y1 <= y0) continue;
+                        if (int(texelFetch(spans, ivec2(at + 3, col), 0).z) != 0) continue;
+                        vec4 c = texelFetch(spans, ivec2(at + 2, col), 0);
+                        vec4 b = texelFetch(spans, ivec2(at + 1, col), 0);
+                        for (int yy = y1 - 1; yy >= y0; yy--) {
+                            float cc = (float(yy) + 0.5 - hz) / K + 1.0;
+                            if (cc <= 0.0) break;
+                            float d;
+                            if (c.w == 0.0) d = c.x * foc / dk;
+                            else {
+                                d = (eye - b.x) * foc / ((float(yy) + 0.5 - hz) * dk + b.y * foc);
+                                if (!(d > 0.0)) d = 1e30;
+                            }
+                            float tr = 2.0 * t / cc;
+                            if (tr >= d && tr - d <= REFLECT_THICK + 0.1 * d) { best = yy; break; }
                         }
                     }
-                    return sky(max(0, top));
+                    if (best >= 0) {
+                        float w, wz;
+                        return pixelAt(col, best, w, wz);
+                    }
+                    return sky(top);
                 }
 
                 void main() {
@@ -694,12 +720,14 @@ final class GpuWalls implements AutoCloseable {
                     if (cover > 0.0) {                       // Renderer.reflect
                         float t = (eye - z) * foc / ((float(row) + 0.5 - hz) * dk);
                         if (t > 0.0 && t <= maxDist) {
-                            float wet = cover >= 2.0 ? 1.0 : puddleAt(camX + rayX * t, camY + rayY * t, cover);
-                            if (wet > 0.004) {
+                            float lvl = cover >= 2.0 ? 1.0 : puddleAt(camX + rayX * t, camY + rayY * t, cover);
+                            float wet = cover >= 2.0 ? 1.0 : smoothstep(-0.005, 0.015, lvl);     // Materials.water
+                            float damp = cover >= 2.0 ? 1.0 : smoothstep(-0.14, 0.0, lvl);       // Materials.damp
+                            if (damp > 0.004) {
                                 float v = eye - z, h = t * length(vec2(rayX, rayY));
                                 float k = 1.0 - v / sqrt(h * h + v * v);
-                                float f = wet * (WATER_F0 + (1.0 - WATER_F0) * k * k * k * k * k);
-                                if (cover < 2.0) colour = mixPixel(colour, vec3(0.0), wet * WET_DARK);
+                                float f0 = cover >= 2.0 ? POOL_F0 : WATER_F0, f = wet * (f0 + (1.0 - f0) * k * k * k * k * k);
+                                if (cover < 2.0) colour = mixPixel(colour, vec3(0.0), (WET_RIM * damp + (1.0 - WET_RIM) * wet) * WET_DARK);
                                 if (f > 0.004) colour = mixPixel(colour, mirroredAt(col, row, t, z), f);
                             }
                         }
@@ -713,6 +741,8 @@ final class GpuWalls implements AutoCloseable {
                         GlMaterials.MASK + GpuMasks.GLSL)
                 .replace("REFLECT_THICK", Float.toString((float) Renderer.REFLECT_THICK))
                 .replace("WATER_F0", Float.toString((float) Renderer.WATER_F0))
-                .replace("WET_DARK", Float.toString((float) Renderer.WET_DARK));
+                .replace("POOL_F0", Float.toString((float) Renderer.POOL_F0))
+                .replace("WET_DARK", Float.toString((float) Renderer.WET_DARK))
+                .replace("WET_RIM", Float.toString((float) Renderer.RIM));
     }
 }
