@@ -77,6 +77,11 @@ public final class Capture {
         // the card is only handed to the driver by the time h.frame returns, so each timed one is
         // waited for (settle) - otherwise this would time the handing over and not the drawing.
         h.warpOnCard(true, false);
+        // -Dbench.settle=false leaves the card to run behind, as a window does: the CPU starts the
+        // next frame's rays while the card is still shading this one. Then the mean over the turn is
+        // the throughput, and a single frame's time means little - it is when the driver chose to
+        // make the CPU wait, not what that frame cost.
+        boolean settle = !"false".equals(System.getProperty("bench.settle"));
         for (double p : new double[] {0, h.pitchLimit()}) {   // level, and fully tilted (the most overscan)
             v.pitch = p;
             // The warmup frames are the same turn as the timed ones and nobody is holding a stop
@@ -105,7 +110,7 @@ public final class Capture {
                 long t0 = System.nanoTime();
                 v.heading += 2 * Math.PI / frames;
                 h.frame(v);
-                h.settle();
+                if (settle) h.settle();
                 ns[i] = System.nanoTime() - t0;
             }
             long[] sorted = ns.clone();
