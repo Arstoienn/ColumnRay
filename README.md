@@ -147,7 +147,7 @@ and then two checks on whole frames:
   What is hashed is the engine's own pixel, depth, albedo and lightmap arrays rather than the PNGs
   written from them, so a change to an image encoder cannot turn the test red on its own.
   `./test.sh --haven` does the same against the `maps/haven` submodule, where the map is large
-  enough to exercise the acceleration structures properly.
+  enough to exercise the acceleration structures properly; that map is private (see [Haven](#haven)).
 
 The rule the engine is built on is that an optimisation is proved not to change the output rather
 than assumed not to; the golden files are where that proof lives. A deliberate change to the
@@ -207,23 +207,17 @@ Maps are JSON files; `maps/school.json` documents the format in comments at the 
 
 ## Haven
 
-A section of VALORANT's Haven converted for this engine. The map is a submodule at `maps/haven`,
-kept in its own repository, [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven),
-because it is about 290 MB:
-
-```bash
-git clone --recursive https://github.com/Arstoienn/ColumnRay.git   # or, in an existing clone:
-git submodule update --init maps/haven
-JAVA_OPTS=-Xmx8g ./run.sh maps/haven/haven.json --feet 3
-```
+A section of VALORANT's Haven converted for this engine, shown here because it is the map that
+works the engine hardest: 930,000 shapes, several storeys and a bake of a quarter of an hour.
+**The map itself is not published.** It is derived from a work licensed CC BY-NC-ND, which allows
+no derivatives to be shared, and from assets that belong to Riot Games; see [Copyright](#copyright).
+It sits in a private repository, pulled in at `maps/haven` as a submodule, so a clone of this
+repository has an empty `maps/haven` and does not need it - `maps/school.json` exercises every
+subsystem.
 
 **Mid Doors**
 
 ![Mid Doors](docs/images/mid-doors.jpg)
-
-**C Long**
-
-![C Long](docs/images/c-long.jpg)
 
 **Heaven and Hell**
 
@@ -236,7 +230,17 @@ it. Beneath each view is its ray view, the engine's top-down debug window (`R`),
 column's ray over the plan of the map and lists, for the centre column, each shape the ray met and
 how many rows it filled.
 
-More pictures of the map are in [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven#pictures).
+## Street
+
+A night street after rain, converted from a free model: old apartment blocks with shopfronts and
+graffiti against a backdrop of panel towers, thirteen street lamps, and a wet road whose puddles
+reflect the street by walking up the column they lie in. 44,786 shapes; the bake takes about
+fifteen seconds. The map is not published, because the model's licence does not allow its files to
+be shared; see [Copyright](#copyright).
+
+![A street corner at night, lamps lit, puddles on the road](docs/images/street-corner.jpg)
+
+![Down the wet street to a brick garage at its end](docs/images/street-garage.jpg)
 
 ## Benchmarking and verification
 
@@ -287,22 +291,34 @@ More pictures of the map are in [ColumnRay-Haven](https://github.com/Arstoienn/C
 | `src/game/Player.java` | Movement, gravity, crouch, jump, and what the camera does about them |
 | `src/game/Hud.java` | Overlay text and minimap drawing |
 | `maps/school.json` | Demo map |
-| `maps/haven/` | Submodule: the Haven map, in [ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven) |
+| `maps/haven/` | Submodule: the Haven map, in a private repository (see [Haven](#haven)) |
 | `docs/images/` | README screenshots |
 | `docs/ENGINEERING.md` | Design notes, measurements and the reasoning behind each subsystem |
 
 ## License
 
-The source code is released under the MIT License; see [LICENSE](LICENSE). The license does not
-cover the Haven screenshots; see the disclaimer.
+The source code is released under the MIT License; see [LICENSE](LICENSE). The license covers the
+code and `maps/school.json`, and nothing else: not the screenshots of other maps in `docs/images/`,
+and not those maps. See [Copyright](#copyright).
 
-## Disclaimer
+## Copyright
 
-The screenshots in `docs/images/` are rendered from a map derived from
+Only the engine and the school map are this project's own work. The other maps shown here are
+conversions of other people's work, and their files are deliberately kept out of every public
+repository.
+
+**Haven.** The Haven screenshots are rendered from a map derived from
 ["Valorant - Heaven Map"](https://open3dlab.com/project/4a0d5de0-05ac-4db3-a53b-6555879bc29d/) by
-AC_NONE on Open3DLab (CC BY-NC-ND 4.0), which contains assets from VALORANT. The map itself is not
-part of this repository; it is published separately in
-[ColumnRay-Haven](https://github.com/Arstoienn/ColumnRay-Haven). VALORANT and Haven are trademarks
-and copyrighted works of Riot Games, Inc. This project is not affiliated with or endorsed by Riot
-Games. The screenshots are included for non-commercial demonstration only, remain the property of
-their respective owners, and are not covered by this repository's MIT License.
+AC_NONE on Open3DLab, licensed CC BY-NC-ND 4.0, which contains assets from VALORANT. That licence
+does not permit sharing a derivative, so the converted map is not distributed: it is in a private
+repository and is not available on request. VALORANT and Haven are trademarks and copyrighted works
+of Riot Games, Inc. This project is not affiliated with or endorsed by Riot Games. The screenshots
+are shown for non-commercial demonstration only, remain the property of their respective owners,
+and are not covered by this repository's MIT License.
+
+**Street.** The street screenshots are rendered from a map converted from
+["street city (7) for games FREE"](https://sketchfab.com/3d-models/street-city-7-for-games-free-493a69b451284ff88346c7b3e4e1b5a7)
+by dasy444 on Sketchfab, used under the Sketchfab Free Standard license. That license allows
+renders to be published but not the model, or a conversion of it, to be distributed as files, so
+the map is not part of any public repository. The screenshots are not covered by this repository's
+MIT License.
