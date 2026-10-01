@@ -1393,7 +1393,12 @@ final class Lighting {
                 for (int i = i0; i <= i1; i++)
                     if (p.has(m.u(i), m.v(j))) m.own[j * m.w + i] = c;
         }
-        jobs.add(new Job(m, ground(first) ? onItsOwn(run, m, u0, v0, texel) : first.place(u0, u1 - u0),
+        // The map's u is measured along the line from the line's own zero (m.u(i) runs from u0), so
+        // a wall's samples are placed from that zero too. Placing them from u0 counted u0 twice and
+        // baked a wall far from the origin with the light of a point as far again down its line -
+        // outside the building, on a converted map, which is how it showed: walls lit by ambient
+        // alone. A wall alone is untouched: its map starts at 0 and its place at its own end.
+        jobs.add(new Job(m, ground(first) ? onItsOwn(run, m, u0, v0, texel) : first.place(0, u1 - u0),
                 new boolean[m.w * m.h], new float[m.w * m.h * 3], new float[m.w * m.h * 3], null, ground(first)));
         for (Piece p : run) {
             if (p.origin() == 0) { p.take(m); continue; }
