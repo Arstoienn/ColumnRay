@@ -257,8 +257,8 @@ how many rows it filled.
 
 A night street after rain, converted from a free model: old apartment blocks with shopfronts and
 graffiti against a backdrop of panel towers, thirteen street lamps, and a wet road whose puddles
-reflect the street by walking up the column they lie in. 44,786 shapes; the bake takes about
-fifteen seconds. The map is not published, because the model's licence does not allow its files to
+reflect the street by walking up the column they lie in. 47,311 shapes; the bake takes about
+twenty seconds. The map is not published, because the model's licence does not allow its files to
 be shared; see [Copyright](#copyright).
 
 ![A street corner at night, lamps lit, puddles on the road](docs/images/street-corner.jpg)
