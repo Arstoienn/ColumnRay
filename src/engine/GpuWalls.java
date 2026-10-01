@@ -273,10 +273,13 @@ final class GpuWalls implements AutoCloseable {
         Gl.uniform(program, "dirX", (float) cam.dirX);
         Gl.uniform(program, "dirY", (float) cam.dirY);
         Gl.uniform(program, "fogOn", Renderer.fogOn ? 1f : 0f);
+        Gl.uniform(program, "skyHorizon", (float) Renderer.skyHorizon[0], (float) Renderer.skyHorizon[1], (float) Renderer.skyHorizon[2]);
+        Gl.uniform(program, "skyRise", (float) Renderer.skyRise[0], (float) Renderer.skyRise[1], (float) Renderer.skyRise[2]);
+        Gl.uniform(program, "skyBelow", Renderer.skyBelow >> 16 & 255, Renderer.skyBelow >> 8 & 255, Renderer.skyBelow & 255);
         // Per frame, not once with satBoost and lift: the H key throws this one while the game runs.
         Gl.uniform(program, "hdr", Renderer.hdr ? 1f : 0f);
         Gl.uniform(program, "exposure", (float) Renderer.exposure);
-        Gl.uniform(program, "maxDist", (float) Renderer.MAX_DIST);
+        Gl.uniform(program, "maxDist", (float) Renderer.maxDist);
         long t2 = STATS ? System.nanoTime() : 0;
         Gl.clear();
         Gl.drawFullScreen();
@@ -333,7 +336,8 @@ final class GpuWalls implements AutoCloseable {
 
     private static String table(String name, boolean side) {
         StringBuilder detail = new StringBuilder(), mean = new StringBuilder();
-        for (int m = 0; m < 13; m++) {
+        int n = Materials.count();
+        for (int m = 0; m < n; m++) {
             // A material with no detail at all reads 0 and is always faded; one whose detail has no
             // single size - plaster's skirting board, which cells of a ceiling are lit - reads -1
             // and never is. Materials says both with a 0 and a NaN, which GLSL has no use for.
@@ -342,8 +346,8 @@ final class GpuWalls implements AutoCloseable {
             detail.append(m == 0 ? "" : ", ").append(faded0 ? "0.0" : Double.isNaN(mn) ? "-1.0" : featureOf(m, side));
             mean.append(m == 0 ? "" : ", ").append(Double.isNaN(mn) ? "1.0" : (float) mn);
         }
-        return "const float " + name + "_DETAIL[13] = float[13](" + detail + ");\n"
-                + "const float " + name + "_MEAN[13] = float[13](" + mean + ");\n";
+        return "const float " + name + "_DETAIL[" + n + "] = float[" + n + "](" + detail + ");\n"
+                + "const float " + name + "_MEAN[" + n + "] = float[" + n + "](" + mean + ");\n";
     }
 
     /** The feature size Materials fades this material's detail over, read back out of it by
@@ -368,6 +372,7 @@ final class GpuWalls implements AutoCloseable {
                 // pane while its reflection is shaded (reflectAt). Not uniforms, for that reason.
                 float camX, camY;
                 uniform float fogOn, maxDist, hdr, exposure;
+                uniform vec3 skyHorizon, skyRise, skyBelow;
                 float rayX, rayY, dk;
                 out vec4 frag;
                 %s
@@ -530,9 +535,9 @@ final class GpuWalls implements AutoCloseable {
                  *  finished pixel with Renderer.mix's byte arithmetic, so the whole of a frame is
                  *  carried at that scale and divided once at the end. */
                 vec3 sky(int row) {
-                    if (float(row) >= hz) return vec3(58.0, 60.0, 64.0);
+                    if (float(row) >= hz) return skyBelow;
                     float s = clamp((hz - float(row)) / (viewH * 0.9), 0.0, 1.0);
-                    vec3 c = vec3(205.0 - 125.0 * s, 222.0 - 87.0 * s, 238.0 - 28.0 * s);
+                    vec3 c = skyHorizon + skyRise * s;
                     return hdr != 0.0 ? hdrGraded(linOf3(c)) : graded(c);
                 }
 
@@ -542,8 +547,13 @@ final class GpuWalls implements AutoCloseable {
                                 float u, float z, float narrow, float sq, float k) {
                     vec3 L = lm < 0 ? vec3(1.0) : lightAt(lm, u, z);
                     #ifdef HAS_IMAGES
-                    if (rec >= 0)
-                        return shadeT(rgb, sideImage(rec, u, z, narrow, sq, narrow * foc / dk), k, L);
+                    if (rec >= 0) {
+                        vec3 tex = sideImage(rec, u, z, narrow, sq, narrow * foc / dk);
+                        float d = imageDetail(rec);                  // Renderer.detail
+                        if (d > 0.0 && SIDE_DETAIL[mat] >= 0.0)
+                            tex *= 1.0 + d * (sideTex(mat, u, z, narrow, sq) / SIDE_MEAN[mat] - 1.0);
+                        return shadeT(rgb, tex, k, L);
+                    }
                     #endif
                     return shadeT(rgb, vec3(sideTex(mat, u, z, narrow, sq)), k, L);
                 }
@@ -557,7 +567,13 @@ final class GpuWalls implements AutoCloseable {
                     vec3 L = lm < 0 ? vec3(1.0) : lightAt(lm, wx, wy);
                     float k = lm < 0 ? k0 * f : f;
                     #ifdef HAS_IMAGES
-                    if (rec >= 0) return shadeT(rgb, flatImage(rec, t, row), k, L);
+                    if (rec >= 0) {
+                        vec3 tex = flatImage(rec, t, row);
+                        float d = imageDetail(rec);                  // Renderer.detail
+                        if (d > 0.0 && FLAT_DETAIL[mat] >= 0.0)
+                            tex *= 1.0 + d * (flatTex(mat, t, row) / FLAT_MEAN[mat] - 1.0);
+                        return shadeT(rgb, tex, k, L);
+                    }
                     #endif
                     return shadeT(rgb, vec3(flatTex(mat, t, row)), k, L);
                 }

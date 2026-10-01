@@ -244,6 +244,10 @@ public final class Host {
                 Double.parseDouble(System.getProperty("grade.lift",
                         String.valueOf(World.num(g, "lift", 0.0)))));
         Renderer.fogOn = !Boolean.FALSE.equals(lg.get("fog"));
+        Renderer.maxDist = world.maxDist;
+        Map<String, Object> sk = lg.get("sky") instanceof Map ? World.obj(lg.get("sky")) : Map.of();
+        Renderer.sky(World.color(sk, "horizon", "#cddeee"), World.color(sk, "zenith", "#5087d2"),
+                World.color(sk, "below", "#3a3c40"));
         Renderer.hdr = o.hdr;
         // The bounce comes with the shading now, because a surface returns the light its colour
         // says it returns and not the sRGB number the colour is written as. It was a switch of its

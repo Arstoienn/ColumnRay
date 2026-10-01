@@ -21,12 +21,15 @@ final class Materials {
     private Materials() {}
 
     static final int CONCRETE = 0, PLASTER = 1, BRICK = 2, WOOD = 3, STONE = 4, METAL = 5, TILE = 6,
-            WATER = 7, GRASS = 8, LEAF = 9, BOARD = 10, PANEL = 11, TERRACOTTA = 12;
+            WATER = 7, GRASS = 8, LEAF = 9, BOARD = 10, PANEL = 11, TERRACOTTA = 12, ASPHALT = 13;
 
     private static final String[] NAMES = {
         "concrete", "plaster", "brick", "wood", "stone", "metal", "tile",
-        "water", "grass", "leaf", "board", "panel", "terracotta"
+        "water", "grass", "leaf", "board", "panel", "terracotta", "asphalt"
     };
+
+    /** How many materials there are: the shader's tables are this long. */
+    static int count() { return NAMES.length; }
 
     /** Load once per world. Each tile owns its mipmaps, so filtering cannot read a neighbour. */
     static Texture[] loadAtlas(Path file, int size, int cols, int count, int[] means) throws IOException {
@@ -461,6 +464,13 @@ final class Materials {
             case WATER -> { return 0.85 + 0.15 * fade(Math.sin(x * 3.1 + Math.sin(y * 2.3) * 2), 0, w, 1.0); }
             case LEAF -> { return 0.5 + 0.34 * noise(x, y, 5, w) + 0.16 * noise(x, y, 17, w); }
             case CONCRETE -> { return 0.85 + 0.07 * noise(x, y, 2, w) + 0.04 * noise(x, y, 7, w); }
+            // Grit a centimetre across, the patches it lies in, and the mottling of a road. Finer
+            // than anything else here on purpose: it is what a photographed ground has run out of
+            // by the time it is underfoot (see Renderer.detail).
+            case ASPHALT -> {
+                return 0.76 + 0.12 * cell(hash(fl(x * 90), fl(y * 90)), 1 / 90.0, w)
+                        + 0.08 * noise(x, y, 28, w) + 0.06 * noise(x, y, 6, w);
+            }
             default -> { return side(m, x, y, w); }
         }
     }
@@ -500,6 +510,7 @@ final class Materials {
         FLAT_DETAIL[WATER] = 1.0;               // fade(.., 0, w, 1.0)
         FLAT_DETAIL[LEAF] = 1 / 5.0;            // noise(.., 5, w)
         FLAT_DETAIL[CONCRETE] = 1 / 2.0;        // noise(.., 2, w)
+        FLAT_DETAIL[ASPHALT] = 1 / 6.0;         // noise(.., 6, w)
         for (int m : new int[] {PLASTER, BRICK, METAL, BOARD, TERRACOTTA}) FLAT_DETAIL[m] = SIDE_DETAIL[m];  // flat() falls back to side()
 
         for (int m = 0; m < NAMES.length; m++) {

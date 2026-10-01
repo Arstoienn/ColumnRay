@@ -45,7 +45,10 @@ final class Renderer {
     /** What a floor of water - a pool, a pond - stands for where a puddle's share would go: water
      *  everywhere, and nothing to darken, since its own colour is already water's. */
     static final double POOL = 2;
-    static final double MAX_DIST = 80;
+    /** How far a ray goes before it is the sky's. A map says "maxDist" when it is bigger than this:
+     *  a street 130 m long lost the towers at its far end. Not a constant for that reason, and not
+     *  raised for every map either - a ray down an open sightline walks every cell this far. */
+    static double maxDist = 80;
     static final int MAX_STOREYS = 8;      // how many storeys can stack at one (x, y)
     /** Two faces on one plane never tie exactly: a ray meets each through its own endpoints, so
      *  the two distances differ in the last bits and which is nearer flips as the camera moves.
@@ -594,11 +597,11 @@ final class Renderer {
             nextCross(NEAR);
             walkGrid();
             flush(Double.POSITIVE_INFINITY);
-            surfaces(tPrev, MAX_DIST);
+            surfaces(tPrev, maxDist);
             if (endT < 0) {
-                endT = Math.min(lastT, MAX_DIST);
+                endT = Math.min(lastT, maxDist);
                 endReason = open == 0 ? "column full"
-                        : lastT >= MAX_DIST ? "reached max distance"
+                        : lastT >= maxDist ? "reached max distance"
                         : "left the map, remaining rows are sky";
             }
             fillRest();
@@ -679,7 +682,7 @@ final class Renderer {
                 flush(tout);
                 lastT = tout;
                 paintAhead(tout);
-                if (tout > MAX_DIST) return;
+                if (tout > maxDist) return;
                 if (tx < ty) { tx += dx; cx += sx; } else { ty += dy; cy += sy; }
             }
         }
@@ -762,7 +765,7 @@ final class Renderer {
 
         /** The same test for any box in x, y, z: a shape's bounds, or a whole group's. */
         private boolean hidden(double minX, double minY, double maxX, double maxY, double z0, double h, double maxDist) {
-            double t0 = near, t1 = MAX_DIST;
+            double t0 = near, t1 = maxDist;
             if (rx != 0) {
                 double a = (minX - px) / rx, b = (maxX - px) / rx;
                 if (a > b) { double q = a; a = b; b = q; }
@@ -800,7 +803,7 @@ final class Renderer {
          */
         private void paintAhead(double tout) {
             if (open == 0) return;
-            double upTo = Math.min(Math.min(tout, crossT), MAX_DIST);
+            double upTo = Math.min(Math.min(tout, crossT), maxDist);
             if (pendN > 0) upTo = Math.min(upTo, pend[0].t1);
             if (upTo <= tPrev) return;
             surfaces(tPrev, upTo);
@@ -1010,7 +1013,7 @@ final class Renderer {
             p.z = z;
             p.slope = slope;
             p.t1 = Math.max(h.t1, near);
-            p.t2 = Math.min(h.t2, MAX_DIST);
+            p.t2 = Math.min(h.t2, maxDist);
             p.base = s.albedoColor;
             p.surf.set(mat, s.color, k0, lm, tex, ts, s, gpu, gtex);
             p.ev = ev;
@@ -1150,6 +1153,7 @@ final class Renderer {
                               double k, float[] light) {
             if (s != null && s.img != null) {
                 sideImg(s, u, z, t, square);
+                if (s.detail > 0) detail(s.detail, sideTex(mat, u, z, t, square), Materials.sideMean(mat));
                 if (albedo != null) textured(rgb);
                 return shade(rgb, T, k, light);
             }
@@ -1159,6 +1163,23 @@ final class Renderer {
             sideTex(s.tex, s.ts, u, z, t, square);
             if (albedo != null) textured(rgb);
             return shade(rgb, T, k, light);
+        }
+
+        /**
+         * An image-mapped surface wearing its material as well.
+         *
+         * A photograph of a road is a few centimetres a texel at best and smeared before that; the
+         * procedural materials are functions, as sharp underfoot as anywhere and already faded by
+         * the width of a pixel. So the image says what colour the surface is here and the
+         * material what it is made of: the image times the material's pattern about its own mean,
+         * which leaves the image's colour where it was. Past the distance the pattern fades at,
+         * the factor is exactly one. A material with no mean - one whose pattern is a place and
+         * not a texture, the lit ceiling panels - is not a detail.
+         */
+        private void detail(double amount, double pattern, double mean) {
+            if (Double.isNaN(mean)) return;
+            double k = 1 + amount * (pattern / mean - 1);
+            T[0] *= k; T[1] *= k; T[2] *= k;
         }
 
         // The albedo pass wants what a surface is - its texture included - with no light on it.
@@ -1426,7 +1447,7 @@ final class Renderer {
                         double f = glass(m.sq);
                         a = f + (1 - f) * a;
                         c = mix(shade(s.color, GLASS_TINT),
-                                m.reflected ? m.refl[y - m.y0] : y < hz ? sky(y) : 0x3a3c40, f / a);
+                                m.reflected ? m.refl[y - m.y0] : y < hz ? sky(y) : skyBelow, f / a);
                     } else if (m.lm != null) {
                         m.lm.sample(m.u, z, L);
                         c = sideColor(s, m.u, z, m.t, m.sq, m.f, L);
@@ -1508,7 +1529,7 @@ final class Renderer {
             for (int y = m.y0; y < m.y1; y++) {
                 if (!cpuWants(m, y)) continue;
                 double t = (eye - m.z) * F / ((y + 0.5 - hz) * dk + shSF);
-                if (!(t > 0) || t > MAX_DIST) continue;
+                if (!(t > 0) || t > maxDist) continue;
                 double a = alphaAt(s, px + rx * t, py + ry * t, pixelSize(t));
                 if (a <= 0.004) continue;
                 texAlbedoSet = false;
@@ -1654,7 +1675,9 @@ final class Renderer {
                     if (j != i && d.ia < c.ib && d.ib > c.ia && !(d.plane != null && d.plane.masked)) alone = false;
                 }
                 int rows = 0;
-                puddle = c.plane == null && c.kind == EventKind.FLOOR && c.region != null
+                // A region's floor, or a shape's level top: either is a level mirror at c.z.
+                puddle = c.plane != null ? (c.plane.top ? c.plane.owner.puddles : 0)
+                        : c.kind == EventKind.FLOOR && c.region != null
                         ? (c.region.floorMat == Materials.WATER ? POOL : c.region.puddles) : 0;
                 shKind = 2;
                 shSurf = c.surf;
@@ -1756,11 +1779,11 @@ final class Renderer {
                 if (e.kind().numbered()) break;                   // a shape or portal in between: start a new line
                 if (e.kind() == kind && e.label().startsWith(prefix)) {
                     tr.events.set(k, new TraceEvent(kind, e.t(),
-                            String.format("%s%.2f-%.2f", prefix, e.t(), Math.min(tb, MAX_DIST)), e.rows() + rows, e.x(), e.y()));
+                            String.format("%s%.2f-%.2f", prefix, e.t(), Math.min(tb, maxDist)), e.rows() + rows, e.x(), e.y()));
                     return;
                 }
             }
-            note(kind, ta, String.format("%s%.2f-%.2f", prefix, ta, Math.min(tb, MAX_DIST)), rows);
+            note(kind, ta, String.format("%s%.2f-%.2f", prefix, ta, Math.min(tb, maxDist)), rows);
         }
 
         /** The colour of one row of whatever paint() is filling. */
@@ -1808,11 +1831,12 @@ final class Renderer {
         private int planeRow(int y) {
             Surf p = shSurf;
             double t = (eye - shZ) * F / ((y + 0.5 - hz) * dk + shSF);
-            if (!(t > 0) || t > MAX_DIST) return shade(p.rgb, 0.3 * p.k0);
+            if (!(t > 0) || t > maxDist) return shade(p.rgb, 0.3 * p.k0);
             boolean mapped = p.owner != null && p.owner.img != null;    // the mesh's own texture wins
             if (p.lm == null) {
                 if (mapped) {
                     flatImg(p.owner, t, y);
+                    if (p.owner.detail > 0) detail(p.owner.detail, flatTex(p.mat, t, y), Materials.flatMean(p.mat));
                     if (albedo != null) textured(p.rgb);
                     return shade(p.rgb, T, p.k0 * fog(t), null);
                 }
@@ -1829,6 +1853,7 @@ final class Renderer {
             p.lm.sample(wx, wy, L);
             if (mapped) {
                 flatImg(p.owner, t, y);
+                if (p.owner.detail > 0) detail(p.owner.detail, flatTex(p.mat, t, y), Materials.flatMean(p.mat));
                 if (albedo != null) textured(p.rgb);
                 return shade(p.rgb, T, f, L);
             }
@@ -1846,11 +1871,11 @@ final class Renderer {
         private void fillRest() {
             if (sink == null || under || albedo != null)
                 for (int k = 0; k < open; k++)
-                    for (int y = o0[k]; y < o1[k]; y++) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
+                    for (int y = o0[k]; y < o1[k]; y++) pixels[y * W + x] = y < hz ? sky(y) : skyBelow;
             else
                 for (int k = 0; k < open; k++)
                     for (int y = o0[k]; y < o1[k]; y++)
-                        if (cpuUnder[y]) pixels[y * W + x] = y < hz ? sky(y) : 0x3a3c40;
+                        if (cpuUnder[y]) pixels[y * W + x] = y < hz ? sky(y) : skyBelow;
             if (albedo != null && !mirror)
                 for (int k = 0; k < open; k++)
                     for (int y = o0[k]; y < o1[k]; y++) albedo[y * W + x] = pixels[y * W + x];
@@ -1859,8 +1884,8 @@ final class Renderer {
 
         private int sky(int y) {
             double s = Math.max(0, Math.min(1, (hz - y) / (viewH * 0.9)));
-            if (hdr) return hdrRgb(Srgb.linOf(205 - 125 * s), Srgb.linOf(222 - 87 * s), Srgb.linOf(238 - 28 * s));
-            return rgb(205 - 125 * s, 222 - 87 * s, 238 - 28 * s);
+            double r = skyHorizon[0] + skyRise[0] * s, g = skyHorizon[1] + skyRise[1] * s, b = skyHorizon[2] + skyRise[2] * s;
+            return hdr ? hdrRgb(Srgb.linOf(r), Srgb.linOf(g), Srgb.linOf(b)) : rgb(r, g, b);
         }
 
         private void note(EventKind kind, double t, String label, int rows) {
@@ -2005,7 +2030,7 @@ final class Renderer {
             nextCross(near);
             walkGrid();
             flush(Double.POSITIVE_INFINITY);
-            surfaces(tPrev, MAX_DIST);
+            surfaces(tPrev, maxDist);
             fillRest();
         }
 
@@ -2112,7 +2137,7 @@ final class Renderer {
                 double z = wetZ[w], cover = wetCover[w];
                 for (int y = wetY0[w]; y < wetY1[w]; y++) {
                     double t = (eye - z) * F / ((y + 0.5 - hz) * dk);
-                    if (!(t > 0) || t > MAX_DIST) continue;
+                    if (!(t > 0) || t > maxDist) continue;
                     double lvl = cover >= POOL ? 1 : Materials.puddle(px + rx * t, py + ry * t, cover);
                     double wet = cover >= POOL ? 1 : Materials.water(lvl), damp = cover >= POOL ? 1 : Materials.damp(lvl);
                     if (damp <= 0.004) continue;
@@ -2160,6 +2185,25 @@ final class Renderer {
         private double lambert(double nx, double ny) {
             return 0.3 + 0.7 * Math.max(0, nx * world.sunX + ny * world.sunY);
         }
+    }
+
+    /**
+     * The sky as it is drawn, which is not the sky as it lights: the bake's is one colour and a
+     * strength, this is the gradient a pixel no surface covers is given. Levels, 0 to 255: the
+     * colour at the horizon, what is added to it by the top of the view, and the flat haze below
+     * the horizon. A map says "horizon", "zenith" and "below" in its lighting's "sky"; one that says
+     * nothing has the afternoon these always were, to the bit - 205 + -125 s is 205 - 125 s.
+     */
+    static double[] skyHorizon = {205, 222, 238}, skyRise = {-125, -87, -28};
+    static int skyBelow = 0x3a3c40;
+
+    static void sky(int horizon, int zenith, int below) {
+        for (int c = 0; c < 3; c++) {
+            int h = horizon >> (16 - 8 * c) & 255, z = zenith >> (16 - 8 * c) & 255;
+            skyHorizon[c] = h;
+            skyRise[c] = z - h;
+        }
+        skyBelow = below;
     }
 
     /** Off when the map's lighting says "fog": false. The fade to 30% at 45 m stood in for light
