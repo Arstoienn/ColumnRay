@@ -26,6 +26,8 @@ and textured geometry while keeping the column-based renderer.
   are in `maps/school.json`: glazing along the courtyard, and the courtyard after rain
 - Baked lightmaps: sun, sky, point and panel lights, soft shadows and two bounces of indirect light,
   cached on disk and reused until the map, the settings or the bake code change
+- Lights that flicker or fail: a group of lamps is baked on its own and added back at its level
+  every frame, bounced light and glowing panels included, for the cost of one number
 - Dynamic resolution driven by measured frame time
 - Supersampled anti-aliasing
 - Minimap computed from walkable space, and a top-down debug view of the rays
@@ -205,6 +207,27 @@ Maps are JSON files; `maps/school.json` documents the format in comments at the 
 - **Chunks** let large maps store shapes in separate files.
 - **Lighting**, **textures**, **images** and the spawn point are configured per map.
 
+## Backrooms
+
+The Backrooms, Level 0: 86 by 25 metres of yellow wallpaper, carpet and ceiling tiles under
+fifty-four fluorescent panels, converted from a CC BY model. It is the converted map anybody can
+run, and the one that shows the engine's flickering lights - three of its lamps stutter every so
+often and one has gone out, each taking its share of the bounced light and its own panel's glow
+with it. It lives in its own repository,
+[ColumnRay-Backrooms](https://github.com/Arstoienn/ColumnRay-Backrooms), as the submodule
+`maps/backrooms`:
+
+```bash
+git submodule update --init maps/backrooms
+./run.sh maps/backrooms/backrooms.json --hdr --play
+```
+
+The first run bakes the light in about a minute.
+
+![An empty room under a row of ceiling panels](docs/images/backrooms-room.jpg)
+
+![Arches between two rooms](docs/images/backrooms-arches.jpg)
+
 ## Haven
 
 A section of VALORANT's Haven converted for this engine, shown here because it is the map that
@@ -234,8 +257,8 @@ how many rows it filled.
 
 A night street after rain, converted from a free model: old apartment blocks with shopfronts and
 graffiti against a backdrop of panel towers, thirteen street lamps, and a wet road whose puddles
-reflect the street by walking up the column they lie in. 44,786 shapes; the bake takes about
-fifteen seconds. The map is not published, because the model's licence does not allow its files to
+reflect the street by walking up the column they lie in. 47,311 shapes; the bake takes about
+twenty seconds. The map is not published, because the model's licence does not allow its files to
 be shared; see [Copyright](#copyright).
 
 ![A street corner at night, lamps lit, puddles on the road](docs/images/street-corner.jpg)
@@ -291,6 +314,7 @@ be shared; see [Copyright](#copyright).
 | `src/game/Player.java` | Movement, gravity, crouch, jump, and what the camera does about them |
 | `src/game/Hud.java` | Overlay text and minimap drawing |
 | `maps/school.json` | Demo map |
+| `maps/backrooms/` | Submodule: the Backrooms map, in [ColumnRay-Backrooms](https://github.com/Arstoienn/ColumnRay-Backrooms) (CC BY 4.0) |
 | `maps/haven/` | Submodule: the Haven map, in a private repository (see [Haven](#haven)) |
 | `docs/images/` | README screenshots |
 | `docs/ENGINEERING.md` | Design notes, measurements and the reasoning behind each subsystem |
@@ -299,13 +323,21 @@ be shared; see [Copyright](#copyright).
 
 The source code is released under the MIT License; see [LICENSE](LICENSE). The license covers the
 code and `maps/school.json`, and nothing else: not the screenshots of other maps in `docs/images/`,
-and not those maps. See [Copyright](#copyright).
+and not those maps. The Backrooms map and its pictures are CC BY 4.0. See [Copyright](#copyright).
 
 ## Copyright
 
 Only the engine and the school map are this project's own work. The other maps shown here are
-conversions of other people's work, and their files are deliberately kept out of every public
-repository.
+conversions of other people's work. The Backrooms model's licence allows its conversion to be
+shared, and it is; the other two do not, and their files are kept out of every public repository.
+
+**Backrooms.** The Backrooms map and its screenshots are based on
+["Backrooms VR"](https://sketchfab.com/3d-models/backrooms-vr-d9b98eca8d064d0eafcd7f5484bb61ed)
+by [carlcapu9](https://sketchfab.com/carlcapu9), licensed under
+[CC BY 4.0](http://creativecommons.org/licenses/by/4.0/), and have been changed: converted to this
+engine's map format, the baked light taken out of the images and replaced by the engine's own, and
+lamps added. They are licensed CC BY 4.0 in turn; see
+[ColumnRay-Backrooms](https://github.com/Arstoienn/ColumnRay-Backrooms) for what changed.
 
 **Haven.** The Haven screenshots are rendered from a map derived from
 ["Valorant - Heaven Map"](https://open3dlab.com/project/4a0d5de0-05ac-4db3-a53b-6555879bc29d/) by

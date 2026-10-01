@@ -1140,6 +1140,16 @@ See the comments at the top of `maps/school.json`. In short:
   is made of shapes, as in an imported map; the minimap does not count it as somewhere to stand.
 - `"minimap": {"rotate": -90}` at the top level turns the minimap by quarter turns (degrees,
   clockwise), so a map can be shown the way round its players know it.
+- `"maxDist": 290` at the top level is how far a ray goes before it is the sky's, in metres. The
+  engine's own is 80, which is more than school or Haven's crop is across; a street 130 m long lost
+  the towers behind its far end to it, and nothing said so - it took a render of the same camera in
+  Blender to see they were gone. A ray down an open sightline walks every cell that far, so it is
+  the map's to ask for and not a number to raise for everyone.
+- **The sky as drawn**: `"horizon"`, `"zenith"` and `"below"` in the lighting's `"sky"`, three colours
+  beside the `color` and `intensity` the bake lights with. A pixel no surface covers is the gradient
+  from the first to the second over nine tenths of the view's height, and the third under the
+  horizon; glass and water mirror the same. A map that says nothing keeps the afternoon the engine
+  always drew (`#cddeee`, `#5087d2`, `#3a3c40`) to the bit; a night map says otherwise.
 - **Glass**: `"mask": "glass"` on a wall or a box makes its sides panes. Not a lit surface: what is
   behind shows through darkened towards a shadow of the shape's `color` (`Materials.GLASS_ALPHA`,
   `Renderer.GLASS_TINT`), and Fresnel (Schlick, four per cent straight on) turns it into a mirror at a
@@ -1160,6 +1170,25 @@ See the comments at the top of `maps/school.json`. In short:
   walk on the card (`GpuWalls.mirroredAt`). No second ray, and the column constraint untouched.
   What the column did not draw - a wall hidden behind a nearer post - the reflection does not have.
   On a map with puddles each column also renders the rows its puddles reflect (`Warp.mirrorRows`).
+  **A shape takes `"puddles"` too, for its top**: an imported map's ground is the tops of its
+  shapes and its one region's floor is only the bottom of the world, so that is where its rain has
+  to lie. Level tops only - `hx` or `hy` with `puddles` is refused on load - because the reflection
+  is worked out for a level mirror at one height. Nothing else changed to allow it: a plane's span
+  already carried the share of water and its height to the card, and a region's floor was simply
+  the only thing that ever filled them in. The noise is in world coordinates, so neighbouring
+  slabs with the same share meet without a seam.
+- **Detail**: `"detail": 1` on a shape with an `img` lays its material's own pattern over the image
+  (`mat` on its sides, `topMat` on its top). Until this a mapped surface ignored its material for
+  everything but the bake: the image was the whole of its colour, and a photograph of a road is a
+  few centimetres a texel at best, so the ground a player stands on was a blur. The procedural
+  materials are functions - as sharp underfoot as anywhere, and already faded by the width of a
+  pixel, so there is no moire to pay for it - and the image is multiplied by the pattern *about its
+  own mean*, `1 + detail (pattern / mean - 1)`, which leaves the image's colour where it was and is
+  exactly one past the distance the pattern fades at (`Renderer.detail`; `wallColour` and
+  `planeColour` on the card). A whole number of 255ths, because it reaches the card in the parity
+  slot of the image's record: a record had no float to spare, and the flag that shares the slot is
+  its parity. `asphalt` is the material written for it - grit a centimetre across, finer than any
+  of the others, which were all made to be a surface's whole texture rather than its grain.
 
 ## Storeys
 

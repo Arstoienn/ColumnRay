@@ -65,7 +65,7 @@ final class GlMaterials {
             }
 
             // Materials.CONCRETE 0, PLASTER 1, BRICK 2, WOOD 3, STONE 4, METAL 5, TILE 6,
-            // WATER 7, GRASS 8, LEAF 9, BOARD 10, PANEL 11, TERRACOTTA 12. The three left out
+            // WATER 7, GRASS 8, LEAF 9, BOARD 10, PANEL 11, TERRACOTTA 12, ASPHALT 13. The four left out
             // have no vertical detail and come back as a plain 1, exactly as on the CPU.
             float side(int m, float u, float v, float w) {
                 if (m == 0) {
@@ -148,6 +148,10 @@ final class GlMaterials {
                 if (m == 7) { return 0.85 + 0.15 * fadeTo(sin(x * 3.1 + sin(y * 2.3) * 2.0), 0.0, w, 1.0); }
                 if (m == 9) { return 0.5 + 0.34 * noiseAt(x, y, 5.0, w) + 0.16 * noiseAt(x, y, 17.0, w); }
                 if (m == 0) { return 0.85 + 0.07 * noiseAt(x, y, 2.0, w) + 0.04 * noiseAt(x, y, 7.0, w); }
+                if (m == 13) {
+                    return 0.76 + 0.12 * cellShade(hash(fl(x * 90.0), fl(y * 90.0)), 1.0 / 90.0, w)
+                            + 0.08 * noiseAt(x, y, 28.0, w) + 0.06 * noiseAt(x, y, 6.0, w);
+                }
                 return side(m, x, y, w);
             }
             """;

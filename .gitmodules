@@ -1,3 +1,7 @@
 [submodule "maps/haven"]
 	path = maps/haven
 	url = https://github.com/Arstoienn/ColumnRay-Haven.git
+	update = none
+[submodule "maps/backrooms"]
+	path = maps/backrooms
+	url = https://github.com/Arstoienn/ColumnRay-Backrooms.git
