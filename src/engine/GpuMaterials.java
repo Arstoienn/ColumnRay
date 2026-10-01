@@ -105,8 +105,10 @@ final class GpuMaterials {
         return extras.size() - 1;
     }
 
+    /** A record has no slot to spare, so the detail a shape asks for (World.Shape.detail, already
+     *  a whole number of 255ths) rides in the worldUv flag's: the flag is the slot's parity. */
     private int record(GpuTextures images, Materials.Texture tex, double[] uv, double ts,
-                       boolean worldUv, int extra) {
+                       boolean worldUv, int extra, double detail) {
         if (tex == null) return -1;
         int[] at = images.at(tex);
         if (at == null) return -1;
@@ -118,7 +120,7 @@ final class GpuMaterials {
             at[0], at[1], tex.levelCount(), Math.max(tex.levelW(0), tex.levelH(0)),
             (float) tex.mean(0), (float) tex.mean(1), (float) tex.mean(2), (float) lodScale,
             (float) m[0], (float) m[1], (float) m[2], (float) m[3],
-            (float) m[4], (float) m[5], worldUv ? 1 : 0, extra,
+            (float) m[4], (float) m[5], (worldUv ? 1 : 0) + 2 * Math.round(detail * 255), extra,
         });
         return records.size() - 1;
     }
@@ -153,16 +155,16 @@ final class GpuMaterials {
             Integer ext = extra(images, s);
             if (ext == null) continue;
             // A cut-out's alpha is an image like any other, read for its first channel alone.
-            alphaRec[s.id] = record(images, s.amap, s.uv, 0, false, -1);
+            alphaRec[s.id] = record(images, s.amap, s.uv, 0, false, -1, 0);
             if (s.img != null) {
                 sideRec[s.id] = topRec[s.id] = bottomRec[s.id] =
-                        record(images, s.img, s.uv, 0, s.kind != World.Kind.SEG, ext);
+                        record(images, s.img, s.uv, 0, s.kind != World.Kind.SEG, ext, s.detail);
             } else {
-                int rec = record(images, s.tex, null, s.ts, false, ext);
+                int rec = record(images, s.tex, null, s.ts, false, ext, 0);
                 sideRec[s.id] = rec;
                 bottomRec[s.id] = rec;
                 topRec[s.id] = s.topTex == s.tex && s.topTs == s.ts
-                        ? rec : record(images, s.topTex, null, s.topTs, false, ext);
+                        ? rec : record(images, s.topTex, null, s.topTs, false, ext, 0);
             }
         }
         table = new GpuTable(TEXELS, records.size());
@@ -311,7 +313,12 @@ final class GpuMaterials {
             }
 
             bool imageWorldUv(int rec) {
-                return texelFetch(materials, materialAt(rec) + ivec2(3, 0), 0).z != 0.0;
+                return mod(texelFetch(materials, materialAt(rec) + ivec2(3, 0), 0).z, 2.0) != 0.0;
+            }
+
+            /** How much of its material's own pattern an image-mapped surface wears, 0 to 1. */
+            float imageDetail(int rec) {
+                return floor(texelFetch(materials, materialAt(rec) + ivec2(3, 0), 0).z / 2.0) / 255.0;
             }
             """;
     }

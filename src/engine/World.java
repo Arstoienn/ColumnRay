@@ -87,6 +87,12 @@ public final class World {
         // and rocky ground are not flat, and read as flat they come out as staircases of steps.
         double hx, hy;
         double hTop;                  // the highest corner: what the grid and the culling must use
+        // A surface that gives off light of its own - a lamp's diffuser - as a level the bake adds
+        // to its lightmap after the light has bounced, so it glows without lighting the room twice
+        // (the lamp under it does that). "flicker" puts it in a flicker group with its lamp.
+        double glow;
+        int glowColor = 0xffffff;
+        String flicker;
         // The bottom can tilt the same way: bottom(x, y) = z0 + zx * (x - midX) + zy * (y - midY).
         // With both planes free a shape is a slab of any slope - a diagonal brace, the underside of
         // an arch, one triangle of a mesh - and it is still a column of solid between two heights
@@ -118,6 +124,8 @@ public final class World {
         double maxDist;               // not drawn beyond this distance
         String label;                 // shown in the ray view, e.g. "box/wood"
         String site;                  // a bomb site's floor ("A", "B", ...): green on the minimap
+        double puddles;               // a level top's share of standing water, as a region's floor has
+        double detail;                // how much of its material's pattern goes over its image, 0 to 1
         int id;                       // index into World.shapes
         double minX, minY, maxX, maxY;
 
@@ -271,7 +279,11 @@ public final class World {
      */
     public double maxPitch = MAX_PITCH;
 
-    /** Has any region standing water? Then the renderer keeps what it needs to find reflections,
+    /** How far the renderer looks, in metres: "maxDist" at the top of a map, for one whose far end
+     *  is further off than the engine's eighty. */
+    public double maxDist = 80;
+
+    /** Has any region, or any shape's top, standing water? Then the renderer keeps what it needs to find reflections,
      *  and each column renders the rows a puddle's reflection reads as well as its own. */
     final boolean puddles;
 
@@ -288,6 +300,7 @@ public final class World {
         for (int i = 0; i < regions.length; i++) regions[i].id = i;
         boolean wet = false;
         for (Region r : regions) wet |= r.puddles > 0 || r.floorMat == Materials.WATER;
+        for (Shape s : shapes) wet |= s.puddles > 0;
         this.puddles = wet;
         for (int i = 0; i < shapes.length; i++) shapes[i].id = i;
         // -Ddebug.shapes=12,34: what those ids are, for reading back an id a debug buffer caught.
@@ -514,6 +527,11 @@ public final class World {
         // map asking for that has a typo in it, not an intention.
         if (root.containsKey("maxPitch"))
             world.maxPitch = Math.toRadians(Math.max(0, Math.min(MAX_PITCH_DEG, num(root, "maxPitch", 0))));
+        if (root.containsKey("maxDist")) {
+            world.maxDist = num(root, "maxDist", 80);
+            if (!Double.isFinite(world.maxDist) || world.maxDist < 1)
+                throw new IllegalArgumentException("maxDist must be a distance in metres, at least 1");
+        }
         world.sources.addAll(sources);
         return world;
     }
@@ -714,6 +732,11 @@ public final class World {
         room(out, 1, "shapes");
 
         Shape s = new Shape();
+        s.glow = num(m, "glow", 0);
+        if (s.glow > 0) {
+            s.glowColor = color(m, "glowColor", "#ffffff");
+            s.flicker = m.get("flicker") == null ? null : String.valueOf(m.get("flicker"));
+        }
         s.z0 = num(m, "z0", 0);
         s.h = num(m, "h", 1);
         s.hx = num(m, "hx", 0);
@@ -760,6 +783,15 @@ public final class World {
         s.maxDist = num(m, "maxDist", Double.POSITIVE_INFINITY);
         if (m.get("mask") != null) s.mask = Materials.maskId(str(m, "mask", ""));
         s.site = str(m, "site", null);
+        // A whole number of 255ths, so that the card, which is handed it as one, has the CPU's.
+        s.detail = Math.round(Math.max(0, Math.min(1, num(m, "detail", 0))) * 255) / 255.0;
+        if (s.detail > 0 && s.img == null)
+            throw new IllegalArgumentException("detail goes over an img; a shape without one already wears its material");
+        // An imported map's ground is the tops of its shapes, so that is where its rain has to
+        // lie. Level tops only: a puddle is a level mirror, and the reflection is worked out as one.
+        s.puddles = Math.max(0, Math.min(1, num(m, "puddles", 0)));
+        if (s.puddles > 0 && (s.hx != 0 || s.hy != 0))
+            throw new IllegalArgumentException("puddles lie on a level top, not one tilted by hx or hy");
         s.label = switch (type) {
             case "wall" -> "wall";
             case "circle" -> "cylinder";

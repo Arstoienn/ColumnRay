@@ -244,6 +244,10 @@ public final class Host {
                 Double.parseDouble(System.getProperty("grade.lift",
                         String.valueOf(World.num(g, "lift", 0.0)))));
         Renderer.fogOn = !Boolean.FALSE.equals(lg.get("fog"));
+        Renderer.maxDist = world.maxDist;
+        Map<String, Object> sk = lg.get("sky") instanceof Map ? World.obj(lg.get("sky")) : Map.of();
+        Renderer.sky(World.color(sk, "horizon", "#cddeee"), World.color(sk, "zenith", "#5087d2"),
+                World.color(sk, "below", "#3a3c40"));
         Renderer.hdr = o.hdr;
         // The bounce comes with the shading now, because a surface returns the light its colour
         // says it returns and not the sRGB number the colour is written as. It was a switch of its
@@ -255,6 +259,15 @@ public final class Host {
         if (!o.flat) {
             lighting = Lighting.bake(world);
             renderer.setLighting(lighting);
+            // -Dflicker.levels=0,1,0.35: hold each flicker group at a level, so a capture - which
+            // otherwise takes every light full on - can show a lamp that has dropped out.
+            String held = System.getProperty("flicker.levels");
+            if (held != null && lighting.flickerGroups() > 0) {
+                double[] k = new double[lighting.flickerGroups()];
+                String[] f = held.split(",");
+                for (int i = 0; i < k.length; i++) k[i] = Double.parseDouble(f[Math.min(i, f.length - 1)].trim());
+                lighting.flicker(k);
+            }
         }
     }
 
@@ -451,13 +464,14 @@ public final class Host {
         }, "columnray-stop");
         Runtime.getRuntime().addShutdownHook(stopped);
 
-        long last = System.nanoTime();
+        long last = System.nanoTime(), started = last;
         while (running) {
             long now = System.nanoTime();
             double dt = Math.min(0.05, (now - last) / 1e9);
             last = now;
             input.begin(!Keys.physical() || surface.active());
             game.update(dt, input);
+            flicker((now - started) / 1e9);
             frame();
             present();
             surface.pump();
@@ -557,6 +571,14 @@ public final class Host {
     }
 
     /** Render one view, whoever it belongs to: a headless capture's, or a game's. */
+    /** Set the map's flickering lights for this moment: a level a group, which every lightmap
+     *  sample reads, the CPU's and the card's alike. A capture never comes here, so it takes
+     *  every light full on. */
+    private void flicker(double seconds) {
+        if (lighting == null || lighting.flickerGroups() == 0) return;
+        lighting.flicker(lighting.flickerLevels(seconds));
+    }
+
     public void frame(View v) {
         // A window with a context of its own - GLFW's, and its ray-view panel has a second - made
         // its own current to show the last frame, and none of the card's textures or framebuffers
