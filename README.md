@@ -219,10 +219,6 @@ subsystem.
 
 ![Mid Doors](docs/images/mid-doors.jpg)
 
-**C Long**
-
-![C Long](docs/images/c-long.jpg)
-
 **Heaven and Hell**
 
 ![Heaven, left, and Hell, right](docs/images/heaven-hell.jpg)
