@@ -87,6 +87,12 @@ public final class World {
         // and rocky ground are not flat, and read as flat they come out as staircases of steps.
         double hx, hy;
         double hTop;                  // the highest corner: what the grid and the culling must use
+        // A surface that gives off light of its own - a lamp's diffuser - as a level the bake adds
+        // to its lightmap after the light has bounced, so it glows without lighting the room twice
+        // (the lamp under it does that). "flicker" puts it in a flicker group with its lamp.
+        double glow;
+        int glowColor = 0xffffff;
+        String flicker;
         // The bottom can tilt the same way: bottom(x, y) = z0 + zx * (x - midX) + zy * (y - midY).
         // With both planes free a shape is a slab of any slope - a diagonal brace, the underside of
         // an arch, one triangle of a mesh - and it is still a column of solid between two heights
@@ -714,6 +720,11 @@ public final class World {
         room(out, 1, "shapes");
 
         Shape s = new Shape();
+        s.glow = num(m, "glow", 0);
+        if (s.glow > 0) {
+            s.glowColor = color(m, "glowColor", "#ffffff");
+            s.flicker = m.get("flicker") == null ? null : String.valueOf(m.get("flicker"));
+        }
         s.z0 = num(m, "z0", 0);
         s.h = num(m, "h", 1);
         s.hx = num(m, "hx", 0);

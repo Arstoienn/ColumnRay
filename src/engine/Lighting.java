@@ -48,6 +48,11 @@ final class Lighting {
         final LightMap base;                     // for a view: the map whose texels these are
         int mat;                                 // its material, for the ceiling panels that glow
         int gpuIndex = -1;                       // where GpuLights packed it, or -1 if it never did
+        // Up to two flicker groups' light over this map, each a rectangle like rgb, added at the
+        // group's level when the map is sampled: what dims a lamp is a number, not a texel.
+        float[] over0, over1;
+        int group0 = -1, group1 = -1;
+        float[] levels;                          // the Lighting's levels, shared, set every frame
 
         /** Every surface in the map gets one of these, so a texel count is a decision the map makes:
          *  a 2 km wall at 20 cm texels is ten thousand across, and w * h * 3 in int wraps long
@@ -63,6 +68,7 @@ final class Lighting {
          */
         private LightMap(LightMap base, double u0) {
             this.base = base;
+            // over0/over1 are set on the base after the bake, so a view reads them from there.
             this.u0 = u0;
             this.v0 = base.v0;
             this.step = base.step;
@@ -121,6 +127,18 @@ final class Lighting {
                 float top = rgb[k00 + c] + (rgb[k10 + c] - rgb[k00 + c]) * a;
                 float bot = rgb[k01 + c] + (rgb[k11 + c] - rgb[k01 + c]) * a;
                 out[c] = top + (bot - top) * b;
+            }
+            LightMap o = base != null ? base : this;
+            if (o.over0 != null) add(o.over0, o.levels[o.group0], k00, k10, k01, k11, a, b, out);
+            if (o.over1 != null) add(o.over1, o.levels[o.group1], k00, k10, k01, k11, a, b, out);
+        }
+
+        private static void add(float[] g, float k, int k00, int k10, int k01, int k11, float a, float b, float[] out) {
+            if (k == 0) return;
+            for (int c = 0; c < 3; c++) {
+                float top = g[k00 + c] + (g[k10 + c] - g[k00 + c]) * a;
+                float bot = g[k01 + c] + (g[k11 + c] - g[k01 + c]) * a;
+                out[c] += k * (top + (bot - top) * b);
             }
         }
     }
@@ -189,7 +207,13 @@ final class Lighting {
         double v(double v) { return Math.max(v0, Math.min(v1, v)); }
     }
 
-    private record Light(double x, double y, double z, float r, float g, float b, double range) {}
+    /** A point of light. {@code group} is the flicker group it belongs to, or -1 for a light that
+     *  is simply on: a flickering light is baked on its own so it can be dimmed at run time. */
+    private record Light(double x, double y, double z, float r, float g, float b, double range, int group) {
+        Light(double x, double y, double z, float r, float g, float b, double range) {
+            this(x, y, z, r, g, b, range, -1);
+        }
+    }
 
     final LightMap[] floor, ceil, top, bottom;
     final LightMap[][] side, edge;               // per shape: one per face; per region: one per edge
@@ -221,6 +245,158 @@ final class Lighting {
     private final double[][] hemi;                   // cosine-weighted directions around +z
     private final int samples, bounces, shadow, blurs;
     long rays;                                       // shadow and gather rays cast by the bake
+
+    // ---- Flickering lights ----
+    //
+    // A light that says "flicker": "name" is baked apart from the rest, with the other lights in
+    // its group. A map it reaches keeps the base in rgb and the group's own light beside it
+    // (LightMap.over0/over1), and a sample adds the group at its level - so a lamp dropping out is
+    // one number changing, with nothing recomputed and nothing sent to the card but that number.
+
+    private int pass = -1;                           // what the bake is lighting: -1 the base, else that group
+    private static final float FAINT = Float.parseFloat(System.getProperty("flicker.faint", "0.003"));   // light, linear: well under a level of the picture
+    private final List<String> flickerNames = new ArrayList<>();
+    private final List<Map<String, Object>> flickerSpecs = new ArrayList<>();
+    private float[][][] groupRgb;                    // [group][map]: what the group adds there, or null
+    private float[] levels;                          // each group's level, shared with every map it reaches
+
+    /** How many groups of flickering lights the map has; 0 for nearly every map. */
+    int flickerGroups() { return flickerNames.size(); }
+
+    private static java.nio.file.Path groupFile(java.nio.file.Path base, int g) {
+        String n = base.getFileName().toString();
+        return base.resolveSibling(n.substring(0, n.length() - ".bin".length()) + "-flicker" + g + ".bin");
+    }
+
+    /**
+     * Add the glow of every glowing shape in group g (-1: those in none) to its own maps, top and
+     * bottom. After the bounces, so the glow is seen and does not light anything: the lamp beside
+     * it does that. A map shared with other surfaces is left alone, since the glow would spread
+     * over them - a glowing shape should be a material of its own on its plane.
+     */
+    private void glow(int group) {
+        java.util.IdentityHashMap<LightMap, Integer> uses = null;
+        for (Shape s : world.shapes) {
+            if (!(s.glow > 0)) continue;
+            int g = s.flicker == null ? -1 : flickerNames.indexOf(s.flicker);
+            if (g != group) continue;
+            if (uses == null) {
+                uses = new java.util.IdentityHashMap<>();
+                for (LightMap[] ms : new LightMap[][] {floor, ceil, top, bottom})
+                    for (LightMap m : ms) if (m != null) uses.merge(m, 1, Integer::sum);
+            }
+            float[] c = rgb(s.glowColor, s.glow);
+            for (LightMap m : new LightMap[] {top[s.id], bottom[s.id]}) {
+                if (m == null || uses.getOrDefault(m, 0) != 1) continue;
+                for (int i = 0; i < m.rgb.length; i += 3) {
+                    m.rgb[i] += c[0];
+                    m.rgb[i + 1] += c[1];
+                    m.rgb[i + 2] += c[2];
+                }
+            }
+        }
+    }
+
+    /** Take what the maps hold now as group g's own light. */
+    private void keepGroup(int g, List<LightMap> maps) {
+        if (groupRgb == null) groupRgb = new float[flickerNames.size()][][];
+        groupRgb[g] = new float[maps.size()][];
+        for (int i = 0; i < maps.size(); i++) {
+            float[] rgb = maps.get(i).rgb;
+            for (float v : rgb)
+                if (v != 0) { groupRgb[g][i] = rgb.clone(); break; }
+        }
+    }
+
+    /** The maps now hold the base. Hand each map the groups that reach it as overlays, folding
+     *  what is too faint to see, and a third group or more, into the base for good. */
+    private void lightUp(List<LightMap> maps) {
+        int groups = flickerNames.size();
+        if (groups == 0) return;
+        levels = new float[groups];
+        Arrays.fill(levels, 1);
+        int reached = 0;
+        long texels = 0;
+        for (int i = 0; i < maps.size(); i++) {
+            LightMap m = maps.get(i);
+            // Bounced light reaches nearly everything, a little: on Backrooms three lamps touched
+            // 60,571 maps. Where a group adds less than FAINT anywhere in a map, that map simply
+            // has it full on - exact while it is on, and invisible while it is not.
+            int kept = 0;
+            for (int g = 0; g < groups; g++) {
+                float[] add = groupRgb[g][i];
+                if (add == null) continue;
+                float most = 0;
+                for (float v : add) most = Math.max(most, Math.abs(v));
+                if (most >= FAINT && kept < 2) {
+                    if (kept++ == 0) { m.over0 = add; m.group0 = g; } else { m.over1 = add; m.group1 = g; }
+                    continue;
+                }
+                for (int q = 0; q < m.rgb.length; q++) m.rgb[q] += add[q];
+            }
+            if (kept > 0) {
+                m.levels = levels;
+                reached++;
+                texels += (long) m.w * m.h * kept;
+            }
+        }
+        groupRgb = null;
+        if (Boolean.getBoolean("flicker.stats"))
+            System.out.printf("flicker: %d groups over %,d maps, %,d texels%n", groups, reached, texels);
+    }
+
+    /** Each group's level now, 1 full on and 0 off: read by every lightmap sample, the CPU's
+     *  directly and the card's through GpuLights. Null for a map without flicker. */
+    float[] groupLevels() { return levels; }
+
+    /** Hold the groups at these levels. */
+    void flicker(double[] k) {
+        if (levels == null) return;
+        for (int g = 0; g < levels.length; g++) levels[g] = (float) k[g];
+    }
+
+    /**
+     * Each group's level at a time in seconds. A group says how in the map's lighting, under
+     * "flicker": {"name": {"pattern": ...}}:
+     *
+     * "buzz" (the default) is a tube on its way out: steady, and every so often a stutter of a
+     * fraction of a second to a second in which it drops out and catches again. (It had a 4 %
+     * shimmer at 50 Hz between stutters as well; on screen that read as never being still.)
+     * "every" is how many seconds apart the stutters are on average (6). "dead" is off,
+     * which is a lamp that has gone and still darkens its corner of the bake's bounce light
+     * correctly, and "steady" is on.
+     *
+     * Everything is a hash of the time and the group's name, so it repeats run to run and two
+     * groups do not stutter together.
+     */
+    double[] flickerLevels(double seconds) {
+        double[] k = new double[flickerNames.size()];
+        for (int g = 0; g < k.length; g++) {
+            Map<String, Object> how = flickerSpecs.get(g);
+            String pattern = String.valueOf(how.getOrDefault("pattern", "buzz"));
+            int seed = flickerNames.get(g).hashCode();
+            k[g] = switch (pattern) {
+                case "dead" -> 0;
+                case "steady" -> 1;
+                default -> buzz(seconds, seed, World.num(how, "every", 6));
+            };
+        }
+        return k;
+    }
+
+    private static double buzz(double t, int seed, double every) {
+        long epoch = (long) Math.floor(t / every);
+        double into = t - epoch * every;
+        int e = (int) epoch;
+        double length = 0.25 + 0.9 * rnd(seed, e, 11);
+        double begins = rnd(seed, e, 12) * Math.max(0, every - length);
+        if (into >= begins && into < begins + length) {
+            int step = (int) Math.floor(t * 18);          // a fluorescent tube catches and drops in steps
+            double r = rnd(seed, step, 13);
+            return r < 0.45 ? 0.04 : r < 0.65 ? 0.35 : 1.0;
+        }
+        return 1.0;
+    }
     private List<LightMap> allMaps = List.of();      // every map in bake order, for the cache and hash()
     private final List<LightMap> shownMaps = new ArrayList<>();   // those, plus every view onto them
     private final List<LightMap> viewMaps = new ArrayList<>();    // the views, made while merging
@@ -348,7 +524,18 @@ final class Lighting {
                 Map<String, Object> m = World.obj(o);
                 double[] p = World.pt(m.get("pos"));
                 float[] c = rgb(World.color(m, "color", "#fff1de"), World.num(m, "intensity", 1.0));
-                lights.add(new Light(p[0], p[1], World.num(m, "z", 2.5), c[0], c[1], c[2], World.num(m, "range", 7)));
+                int group = -1;
+                if (m.get("flicker") != null) {
+                    String name = String.valueOf(m.get("flicker"));
+                    group = flickerNames.indexOf(name);
+                    if (group < 0) {
+                        group = flickerNames.size();
+                        flickerNames.add(name);
+                        Object how = sub(spec, "flicker").get(name);
+                        flickerSpecs.add(how == null ? Map.of() : World.obj(how));
+                    }
+                }
+                lights.add(new Light(p[0], p[1], World.num(m, "z", 2.5), c[0], c[1], c[2], World.num(m, "range", 7), group));
             }
         }
         indexLights();
@@ -464,11 +651,20 @@ final class Lighting {
         allMaps = maps;
         shownMaps.addAll(maps);
         shownMaps.addAll(viewMaps);
+        int groups = flickerNames.size();
         if (cacheFile != null) {
             long[] cached = new long[1];
-            if (LightCache.load(cacheFile, key, maps, cached)) {
+            boolean all = true;
+            // Every flicker group's own bake first, then the base, which leaves the base's texels
+            // in the maps; all of them or none, or a stale group would be dimmed over a new base.
+            for (int g = 0; g < groups && all; g++) {
+                all = LightCache.load(groupFile(cacheFile, g), key, maps, cached);
+                if (all) keepGroup(g, maps);
+            }
+            if (all && LightCache.load(cacheFile, key, maps, cached)) {
                 rays = cached[0];
                 fromCache = cacheFile;
+                lightUp(maps);
                 return;
             }
             for (LightMap m : maps) Arrays.fill(m.rgb, 0);         // a file that did not fit may have written some
@@ -485,10 +681,45 @@ final class Lighting {
         int rows = start[jobs.size()];
         // Say what is happening. On Haven this is minutes of a silent black screen otherwise, and
         // the first person to run it waited, decided it had hung, and killed it.
+        System.out.printf("baking light: %,d surfaces, %,d texel rows, %d lights, %d bounces%s%n",
+                jobs.size(), rows, lights.size(), bounces,
+                groups == 0 ? "" : ", %d flicker group%s baked apart".formatted(groups, groups == 1 ? "" : "s"));
+        // The bake is linear in the light: the same rays, the same smoothing, the same dilate,
+        // each a sum of what arrives. So a group's lights baked alone - no sun, no sky, no ambient,
+        // nobody else's lamps - is exactly what that group adds to the base, bounces included, and
+        // the base plus every group at its level is the picture. Nothing to do for a map without one.
+        for (int g = 0; g < groups; g++) {
+            pass = g;
+            passes(jobs, start, rows, occ, "  flicker " + flickerNames.get(g) + ": ");
+            glow(g);
+            keepGroup(g, maps);
+            if (cacheFile != null) {
+                long counted = 0;
+                for (Occluder o : all) counted += o.rays;
+                LightCache.save(groupFile(cacheFile, g), key, maps, counted);
+            }
+        }
+        pass = -1;
+        passes(jobs, start, rows, occ, "  ");
+        glow(-1);
+        for (Occluder o : all) rays += o.rays;
+        if (cacheFile != null) LightCache.save(cacheFile, key, maps, rays);
+        lightUp(maps);
+    }
+
+    /** One bake of every map: direct light, then each bounce, then dilate, for whichever lights
+     *  {@link #pass} says. */
+    private void passes(List<Job> jobs, int[] start, int rows, ThreadLocal<Occluder> occ, String label) {
+        // Each pass starts from nothing: dilate marks the texels it filled as good, and a second
+        // pass that inherited that would light texels inside walls the first pass had skipped.
+        // A map without flicker has one pass and fresh arrays, so this changes nothing there.
+        jobs.parallelStream().forEach(j -> {
+            Arrays.fill(j.ok, false);
+            Arrays.fill(j.direct, 0);
+            Arrays.fill(j.bounced, 0);
+        });
         long t = System.nanoTime();
-        System.out.printf("baking light: %,d surfaces, %,d texel rows, %d lights, %d bounces%n",
-                jobs.size(), rows, lights.size(), bounces);
-        try (Progress p = new Progress("  sun, sky and lamps", rows)) {
+        try (Progress p = new Progress(label + "sun, sky and lamps", rows)) {
             IntStream.range(0, rows).parallel().forEach(row -> {
                 int k = owner(start, row);
                 directRow(jobs.get(k), row - start[k], occ.get());
@@ -496,9 +727,9 @@ final class Lighting {
             });
         }
         jobs.parallelStream().forEach(Lighting::total);
-        t = step("  sun, sky and lamps", t);
-        for (int pass = 0; pass < bounces; pass++) {
-            try (Progress p = new Progress("  bounce " + (pass + 1) + " of " + bounces, rows)) {
+        t = step(label + "sun, sky and lamps", t);
+        for (int bounce = 0; bounce < bounces; bounce++) {
+            try (Progress p = new Progress(label + "bounce " + (bounce + 1) + " of " + bounces, rows)) {
                 IntStream.range(0, rows).parallel().forEach(row -> {
                     int k = owner(start, row);
                     gatherRow(jobs.get(k), row - start[k], occ.get());
@@ -509,11 +740,9 @@ final class Lighting {
                 for (int b = 0; b < blurs; b++) smooth(j);
                 total(j);
             });
-            t = step("  bounce " + (pass + 1) + " of " + bounces, t);
+            t = step(label + "bounce " + (bounce + 1) + " of " + bounces, t);
         }
         jobs.parallelStream().forEach(j -> dilate(j.map, j.ok));
-        for (Occluder o : all) rays += o.rays;
-        if (cacheFile != null) LightCache.save(cacheFile, key, maps, rays);
     }
 
     /**
@@ -776,7 +1005,8 @@ final class Lighting {
      *  {@code seed} picks this sample's spot on the sun and on each lamp; averaging several of them
      *  is what makes an edge soft. */
     private void direct(Occluder oc, double x, double y, double z, double[] n, int seed, float[] out) {
-        float r = ambient[0], g = ambient[1], b = ambient[2];
+        boolean env = pass < 0;                           // a flicker group's pass is its lights alone
+        float r = env ? ambient[0] : 0, g = env ? ambient[1] : 0, b = env ? ambient[2] : 0;
 
         // The sun is a disc about half a degree wide, not a point, so aim at a spot on it.
         double ja = 2 * Math.PI * rnd(seed, 0, 5), jr = sunSoft * Math.sqrt(rnd(seed, 0, 6));
@@ -790,7 +1020,7 @@ final class Lighting {
         double dx = sunX + jx, dy = sunY + jy, dz = sunZ + jz;
 
         double ndl = n[0] * dx + n[1] * dy + n[2] * dz;
-        if (ndl > 0 && oc.clear(x, y, z, x + dx * SUN_REACH, y + dy * SUN_REACH, z + dz * SUN_REACH)) {
+        if (env && ndl > 0 && oc.clear(x, y, z, x + dx * SUN_REACH, y + dy * SUN_REACH, z + dz * SUN_REACH)) {
             r += sunColor[0] * ndl;
             g += sunColor[1] * ndl;
             b += sunColor[2] * ndl;
@@ -800,6 +1030,7 @@ final class Lighting {
         int[] near = cx >= 0 && cy >= 0 && cx < lightNx && cy < lightNy ? lightCells[cy * lightNx + cx] : NO_LIGHTS;
         for (int i : near) {
             Light l = lights.get(i);
+            if (l.group != pass) continue;                   // the base pass takes the lights that are simply on
             int li = i + 1;                                  // its place in the whole list: the same spot as ever
             // A ceiling panel is a square of light, so aim at a spot on it, not at its middle.
             double a = 2 * Math.PI * rnd(seed, li, 7), rr = 0.5 * lampSize * Math.sqrt(rnd(seed, li, 8));
@@ -846,7 +1077,7 @@ final class Lighting {
             double dy = uy * d[0] + vy * d[1] + n[1] * d[2];
             double dz = uz * d[0] + vz * d[1] + n[2] * d[2];
             if (!oc.hit(x, y, z, x + dx * reach, y + dy * reach, z + dz * reach, h)) {
-                if (dz > 0.02) {                             // below the horizon there is no sky
+                if (dz > 0.02 && pass < 0) {                 // below the horizon there is no sky
                     r += skyColor[0];
                     g += skyColor[1];
                     b += skyColor[2];
@@ -894,7 +1125,8 @@ final class Lighting {
             return;
         }
         if (Materials.emissive(m.mat, h.x, h.y)) {
-            System.arraycopy(panelGlow, 0, out, 0, 3);
+            if (pass < 0) System.arraycopy(panelGlow, 0, out, 0, 3);
+            else out[0] = out[1] = out[2] = 0;           // a lit panel is part of the base
             return;
         }
         m.sample(u, v, out);
@@ -1393,7 +1625,12 @@ final class Lighting {
                 for (int i = i0; i <= i1; i++)
                     if (p.has(m.u(i), m.v(j))) m.own[j * m.w + i] = c;
         }
-        jobs.add(new Job(m, ground(first) ? onItsOwn(run, m, u0, v0, texel) : first.place(u0, u1 - u0),
+        // The map's u is measured along the line from the line's own zero (m.u(i) runs from u0), so
+        // a wall's samples are placed from that zero too. Placing them from u0 counted u0 twice and
+        // baked a wall far from the origin with the light of a point as far again down its line -
+        // outside the building, on a converted map, which is how it showed: walls lit by ambient
+        // alone. A wall alone is untouched: its map starts at 0 and its place at its own end.
+        jobs.add(new Job(m, ground(first) ? onItsOwn(run, m, u0, v0, texel) : first.place(0, u1 - u0),
                 new boolean[m.w * m.h], new float[m.w * m.h * 3], new float[m.w * m.h * 3], null, ground(first)));
         for (Piece p : run) {
             if (p.origin() == 0) { p.take(m); continue; }
