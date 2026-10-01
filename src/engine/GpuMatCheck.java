@@ -69,7 +69,7 @@ final class GpuMatCheck {
             MemorySegment back = arena.allocate((long) N * N * 4 * Float.BYTES);
             boolean bad = false;
             System.out.printf("%-12s %10s %10s   %s%n", "material", "max err", "mean err", "worst at");
-            for (int m = 0; m < 13; m++) {
+            for (int m = 0; m < Materials.count(); m++) {
                 double worst = 0, sum = 0;
                 String where = "";
                 long samples = 0;
@@ -111,7 +111,7 @@ final class GpuMatCheck {
             case 0 -> "concrete"; case 1 -> "plaster"; case 2 -> "brick"; case 3 -> "wood";
             case 4 -> "stone"; case 5 -> "metal"; case 6 -> "tile"; case 7 -> "water";
             case 8 -> "grass"; case 9 -> "leaf"; case 10 -> "board"; case 11 -> "panel";
-            default -> "terracotta";
+            case 12 -> "terracotta"; default -> "asphalt";
         };
     }
 
