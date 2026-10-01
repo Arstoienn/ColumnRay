@@ -185,6 +185,10 @@ final class Gl {
         glUniform1f(glGetUniformLocation(program, name), value);
     }
 
+    static void uniform(int program, String name, float[] values) {
+        glUniform1fv(glGetUniformLocation(program, name), values);
+    }
+
     static void deleteTexture(int name) { glDeleteTextures(name); }
 
     static void deleteFramebuffer(int name) { glDeleteFramebuffers(name); }

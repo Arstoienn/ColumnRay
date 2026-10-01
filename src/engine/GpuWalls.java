@@ -261,6 +261,7 @@ final class GpuWalls implements AutoCloseable {
             Gl.viewport(w, h);
         }
         Gl.useProgram(program);
+        if (lights != null) lights.levels(program);
         if (table > 0) Gl.uniform(program, "tableAt", columns);
         Gl.uniform(program, "eye", (float) cam.eye);
         Gl.uniform(program, "hz", (float) horizon);
