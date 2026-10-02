@@ -382,6 +382,24 @@ a wider view barely touches. Haven's is mostly the rays, and overscan lands squa
 are costs at a fixed render size. With the frame-time controller on, a tilted view on Haven comes
 back as a coarser picture, not as 4 fps.
 
+**Most of that penalty is gone since (2026-10-03.)** The warp moved onto the card and then only what
+the warp reads is shaded and walked at all, which is exactly the overscan a wide tilted view was
+paying for. Measured today on the same machine, alternated and rested, at the tilt the camera now
+allows (50 degrees, where the table above is 45):
+
+| 1920x1080, card | level | pitch 50 |
+|---|---|---|
+| Haven, 67 degrees | 41.4 ms | 40.2 ms (25 fps) |
+| Haven, 90 degrees | 43.3 ms | 72.1 ms (14 fps) |
+| school, 67 degrees | 4.36 ms | 4.99 ms |
+| school, 90 degrees | 4.66 ms | 14.43 ms |
+
+So Haven's penalty for the wider view is 1.8 times rather than four, and the tilted frame itself
+went from 237 ms at 45 degrees to 72 at 50 - a third of the cost at more tilt. School's ratio is now
+the larger of the two (2.9) because its frame is small enough that overscan is most of it, and
+level is within the noise on both maps: the level frames are a few milliseconds and the run-to-run
+p95 is three times that, so anything under about a tenth there is not measurable on this machine.
+
 Measuring that taught two things worth more than the numbers.
 
 Give Haven `-Xmx8g`, not `-Xmx12g`. Its live heap after a collection is 5.3 GB, and with 12 on a
