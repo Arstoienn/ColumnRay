@@ -82,7 +82,7 @@ final class Glfw {
             // machine, a CI runner. Say what to do about it rather than what failed.
             throw new IllegalStateException("no OpenGL 3.3 here: this machine offers no core "
                     + "profile, which is a software renderer or a driver without one. Install the "
-                    + "graphics driver's OpenGL, or drop --gpu");
+                    + "graphics driver's OpenGL; without it only --shot, --verify and --bench run");
         return root;
     }
 
