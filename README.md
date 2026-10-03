@@ -37,8 +37,10 @@ The rest:
 
 ## Requirements
 
-A JDK, 22 or newer. Nothing else: the build fetches LWJGL and checks it. Shading runs on the graphics
-card through OpenGL 3.3, and where there is no card the CPU renderer takes over. More in
+A JDK, 22 or newer, and a graphics card with OpenGL 3.3. The build fetches LWJGL and checks it. The
+rays are walked on the CPU; the card shades the frame, applies the pitch warp and draws the window,
+so the window needs it. Screenshots, `--verify` and `--bench` run without a window, and there the
+CPU renderer does everything when there is no card. More in
 [Using ColumnRay](docs/USAGE.md#requirements).
 
 ## Quick start
