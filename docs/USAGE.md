@@ -9,10 +9,13 @@ How to build and run the engine, every command-line option, and the controls. Ba
 - LWJGL 3.4.3, fetched by `build.sh` through `lib/fetch.sh` against checksums tracked in that
   script. The jars are not committed, and a jar that does not hash as the script says it should
   is deleted rather than used, so a clone needs nothing but a JDK
-- Shading on the card is the default and needs an OpenGL 3.3 core context, which GLFW asks for on
-  every platform. Where the machine cannot give one - a software renderer, a virtual machine, a
-  CI runner - it prints a sentence and the CPU renderer carries on, which is the whole engine.
-  `--shade cpu` asks for that path on purpose. On a machine with two graphics cards, which one draws is
+- An OpenGL 3.3 core context, which GLFW asks for on every platform. The window is drawn through
+  it, so the window does not open without one. Shading on the card is the default; the rays are
+  walked on the CPU either way. The runs that open no window - `--shot`, `--shots`, `--verify`,
+  `--bench` - need no card: where the machine cannot give a context (a software renderer, a
+  virtual machine, a CI runner) they print a sentence and the CPU renderer does the whole frame.
+  With a window open, a map the card cannot hold is shaded on the CPU the same way.
+  `--shade cpu` asks for the CPU path on purpose. On a machine with two graphics cards, which one draws is
   Windows' per-application preference for `java.exe` (Settings > System > Display > Graphics),
   and the card it ended up on is named on the first line of the run
 
@@ -50,7 +53,7 @@ engine.
 | `--feet M` | Starting floor height in metres, e.g. to start on an upper storey |
 | `--fov N` | Field of view in degrees, 30-120 (default 90). Applies to the window, `--shot`, `--shots` and `--bench` alike |
 | `--play` | The game with nothing on the screen but the game: no overlay, no minimap, no toggles, no flying |
-| `--shade card\|cpu` | Where the frame is shaded. The card by default and three to four times faster; the CPU by default for `--verify`, `--shot` and `--shots`. `--gpu` and `--cpu` are the old spellings |
+| `--shade card\|cpu` | Where the frame is shaded. The card by default and several times faster, more so tilted; the CPU by default for `--verify`, `--shot` and `--shots`. `--gpu` and `--cpu` are the old spellings |
 | `--hdr` | Shade in light rather than in sRGB numbers, and roll the highlights off filmically |
 | `--unlit` | Skip the lightmap bake and use flat shading (`--flat` was its old name) |
 | `--shear` | Use y-shearing for pitch instead of the perspective warp |
