@@ -708,8 +708,7 @@ public final class Host {
             //
             // The height has no such problem and is left alone. The warp sets c.pitch to
             // hz - srcH/2.0 and the renderer puts the horizon at srcH/2.0 + c.pitch, so srcH
-            // cancels exactly - which is what docs/GPU-REVIEW.md found when it went looking for
-            // this in the wrong dimension.
+            // cancels exactly.
             srcW += srcW & 1;
             srcH = Math.max(srcH, Math.max(wantH, warp.needH()));
             src = new int[srcW * srcH];
